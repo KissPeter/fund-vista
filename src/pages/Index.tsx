@@ -21,6 +21,7 @@ const Index = () => {
   const [selectedFund, setSelectedFund] = useState<Fund | null>(null);
   const [chartData, setChartData] = useState<ChartData | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState("funds");
   const { toast } = useToast();
 
   useEffect(() => {
@@ -38,27 +39,37 @@ const Index = () => {
   const loadFunds = async () => {
     try {
       setLoading(true);
-      const data = await investmentApi.getFunds();
-      setFunds(data);
-      setFilteredFunds(data);
       
-      // Load yield data for first 20 funds to avoid rate limiting
-      const yieldsMap: Record<number, string> = {};
-      const fundBatch = data.slice(0, 20);
+      // Check cache first
+      const cacheKey = 'investment_funds_cache';
+      const cached = localStorage.getItem(cacheKey);
+      const now = Date.now();
       
-      for (const fund of fundBatch) {
-        try {
-          const calcData = await investmentApi.getCalculationData(fund.primaryKey, 50000, 12, 'ONETIME');
-          const result = Object.values(calcData.calculationResults)[0];
-          if (result?.yieldPercent) {
-            yieldsMap[fund.primaryKey] = result.yieldPercent;
-          }
-        } catch (error) {
-          console.warn(`Failed to load yield for fund ${fund.primaryKey}:`, error);
+      if (cached) {
+        const { data, timestamp } = JSON.parse(cached);
+        const oneDay = 24 * 60 * 60 * 1000;
+        
+        if (now - timestamp < oneDay) {
+          setFunds(data);
+          setFilteredFunds(data);
+          loadYieldData(data);
+          setLoading(false);
+          return;
         }
       }
       
-      setFundYields(yieldsMap);
+      // Fetch fresh data
+      const data = await investmentApi.getFunds();
+      
+      // Cache the data
+      localStorage.setItem(cacheKey, JSON.stringify({
+        data,
+        timestamp: now
+      }));
+      
+      setFunds(data);
+      setFilteredFunds(data);
+      loadYieldData(data);
     } catch (error) {
       toast({
         title: "Error",
@@ -71,9 +82,30 @@ const Index = () => {
     }
   };
 
+  const loadYieldData = async (fundsData: Fund[]) => {
+    // Load yield data for first 20 funds to avoid rate limiting
+    const yieldsMap: Record<number, string> = {};
+    const fundBatch = fundsData.slice(0, 20);
+    
+    for (const fund of fundBatch) {
+      try {
+        const calcData = await investmentApi.getCalculationData(fund.primaryKey, 50000, selectedRange, 'ONETIME');
+        const result = Object.values(calcData.calculationResults)[0];
+        if (result?.yieldPercent) {
+          yieldsMap[fund.primaryKey] = result.yieldPercent;
+        }
+      } catch (error) {
+        console.warn(`Failed to load yield for fund ${fund.primaryKey}:`, error);
+      }
+    }
+    
+    setFundYields(yieldsMap);
+  };
+
   const handleFundClick = async (fund: Fund) => {
     setSelectedFund(fund);
     setChartLoading(true);
+    setActiveTab("analysis");
     
     try {
       const data = await investmentApi.getCalculationData(
@@ -99,6 +131,10 @@ const Index = () => {
     setSelectedRange(months);
     if (selectedFund) {
       handleFundClick(selectedFund);
+    }
+    // Recalculate yields for current timeframe
+    if (funds.length > 0) {
+      loadYieldData(funds);
     }
   };
 
@@ -129,7 +165,7 @@ const Index = () => {
           </p>
         </div>
 
-        <Tabs defaultValue="funds" className="space-y-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <TabsList className="grid w-full grid-cols-2 max-w-[400px] mx-auto">
             <TabsTrigger value="funds">Fund Explorer</TabsTrigger>
             <TabsTrigger value="analysis">Analysis</TabsTrigger>
