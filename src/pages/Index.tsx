@@ -85,6 +85,23 @@ const Index = () => {
 
   const loadYieldData = async (fundsData: Fund[]) => {
     setYieldsLoading(true);
+    
+    // Check cache first
+    const cacheKey = `yield_data_${selectedRange}months`;
+    const cached = localStorage.getItem(cacheKey);
+    const now = Date.now();
+    
+    if (cached) {
+      const { data, timestamp } = JSON.parse(cached);
+      const twelveHours = 12 * 60 * 60 * 1000;
+      
+      if (now - timestamp < twelveHours) {
+        setFundYields(data);
+        setYieldsLoading(false);
+        return;
+      }
+    }
+    
     // Load yield data for first 20 funds to avoid rate limiting
     const yieldsMap: Record<number, string> = {};
     const fundBatch = fundsData.slice(0, 20);
@@ -100,6 +117,12 @@ const Index = () => {
         console.warn(`Failed to load yield for fund ${fund.primaryKey}:`, error);
       }
     }
+    
+    // Cache the yield data
+    localStorage.setItem(cacheKey, JSON.stringify({
+      data: yieldsMap,
+      timestamp: now
+    }));
     
     setFundYields(yieldsMap);
     setYieldsLoading(false);
