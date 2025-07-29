@@ -22,6 +22,7 @@ const Index = () => {
   const [chartData, setChartData] = useState<ChartData | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("funds");
+  const [yieldsLoading, setYieldsLoading] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -83,6 +84,7 @@ const Index = () => {
   };
 
   const loadYieldData = async (fundsData: Fund[]) => {
+    setYieldsLoading(true);
     // Load yield data for first 20 funds to avoid rate limiting
     const yieldsMap: Record<number, string> = {};
     const fundBatch = fundsData.slice(0, 20);
@@ -100,6 +102,7 @@ const Index = () => {
     }
     
     setFundYields(yieldsMap);
+    setYieldsLoading(false);
   };
 
   const handleFundClick = async (fund: Fund) => {
@@ -200,9 +203,9 @@ const Index = () => {
                 
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <span>Found {sortedFunds.length} funds</span>
-                  {loading && (
+                  {(loading || yieldsLoading) && (
                     <Badge variant="secondary" className="animate-pulse">
-                      Loading yields...
+                      {loading ? 'Loading funds...' : `Calculating yields for ${selectedRange} months...`}
                     </Badge>
                   )}
                 </div>
@@ -232,6 +235,7 @@ const Index = () => {
                     key={fund.primaryKey}
                     fund={fund}
                     yieldPercent={fundYields[fund.primaryKey]}
+                    isLoadingYield={yieldsLoading}
                     onClick={() => handleFundClick(fund)}
                   />
                 ))}

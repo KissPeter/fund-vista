@@ -5,10 +5,11 @@ import type { Fund } from "@/services/investmentApi";
 interface FundCardProps {
   fund: Fund;
   yieldPercent?: string;
+  isLoadingYield?: boolean;
   onClick: () => void;
 }
 
-export const FundCard = ({ fund, yieldPercent, onClick }: FundCardProps) => {
+export const FundCard = ({ fund, yieldPercent, isLoadingYield, onClick }: FundCardProps) => {
   const getDeviceClassColor = (deviceClass: string) => {
     switch (deviceClass) {
       case 'STOCK_MATERIAL':
@@ -40,9 +41,17 @@ export const FundCard = ({ fund, yieldPercent, onClick }: FundCardProps) => {
           <CardTitle className="text-base font-medium leading-tight">
             {fund.portfolioName}
           </CardTitle>
-          {yieldPercent && (
-            <Badge variant="secondary" className="font-mono text-sm font-semibold">
-              {yieldPercent}
+          {isLoadingYield ? (
+            <Badge variant="secondary" className="animate-pulse">
+              Loading...
+            </Badge>
+          ) : yieldPercent ? (
+            <Badge variant="default" className="font-mono text-sm font-bold bg-primary text-primary-foreground px-3 py-1">
+              {yieldPercent.includes('%') ? yieldPercent : `${yieldPercent}%`}
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="text-muted-foreground">
+              No data
             </Badge>
           )}
         </div>
