@@ -95,5 +95,31 @@ export const investmentApi = {
     }
 
     return response.json();
+  },
+
+  // Simple yield calculation based on historical data
+  async getSimpleYield(primaryKey: number, months: number): Promise<string | null> {
+    try {
+      const data = await this.getCalculationData(primaryKey, 50000, months, 'ONETIME');
+      
+      if (data.diagram?.series?.[0]?.values && data.diagram.series[0].values.length > 1) {
+        const values = data.diagram.series[0].values;
+        const startValue = values[0];
+        const endValue = values[values.length - 1];
+        
+        if (startValue !== undefined && endValue !== undefined) {
+          // Simple percentage calculation: ((end - start) / start) * 100
+          const percentChange = ((endValue - startValue) / Math.abs(startValue)) * 100;
+          return `${percentChange.toFixed(2)}%`;
+        }
+      }
+      
+      // Fallback to the API's calculated yield if chart data isn't available
+      const result = Object.values(data.calculationResults)[0] as CalculationResult;
+      return result?.yieldPercent || null;
+    } catch (error) {
+      console.warn(`Failed to calculate simple yield for fund ${primaryKey}:`, error);
+      return null;
+    }
   }
 };

@@ -108,10 +108,9 @@ const Index = () => {
     
     for (const fund of fundBatch) {
       try {
-        const calcData = await investmentApi.getCalculationData(fund.primaryKey, 50000, selectedRange, 'ONETIME');
-        const result = Object.values(calcData.calculationResults)[0];
-        if (result?.yieldPercent) {
-          yieldsMap[fund.primaryKey] = result.yieldPercent;
+        const yieldPercent = await investmentApi.getSimpleYield(fund.primaryKey, selectedRange);
+        if (yieldPercent) {
+          yieldsMap[fund.primaryKey] = yieldPercent;
         }
       } catch (error) {
         console.warn(`Failed to load yield for fund ${fund.primaryKey}:`, error);
