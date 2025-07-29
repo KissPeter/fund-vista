@@ -86,46 +86,56 @@ const Index = () => {
   const loadYieldData = async (fundsData: Fund[]) => {
     setYieldsLoading(true);
     
-    // Check cache first
-    const cacheKey = `yield_data_${selectedRange}months`;
-    const cached = localStorage.getItem(cacheKey);
-    const now = Date.now();
-    
-    if (cached) {
-      const { data, timestamp } = JSON.parse(cached);
-      const twelveHours = 12 * 60 * 60 * 1000;
-      
-      if (now - timestamp < twelveHours) {
-        setFundYields(data);
-        setYieldsLoading(false);
-        return;
-      }
-    }
-    
     // Load yield data for first 20 funds to avoid rate limiting
-    const yieldsMap: Record<number, string> = {};
     const fundBatch = fundsData.slice(0, 20);
+    const now = Date.now();
+    const twelveHours = 12 * 60 * 60 * 1000;
+    const yieldsMap: Record<number, string> = {};
     
     for (const fund of fundBatch) {
+      // Check cache first - cache by individual fund and timeframe
+      const cacheKey = `yield_${fund.primaryKey}_${selectedRange}months`;
+      const cached = localStorage.getItem(cacheKey);
+      
+      if (cached) {
+        const { data, timestamp } = JSON.parse(cached);
+        if (now - timestamp < twelveHours) {
+          yieldsMap[fund.primaryKey] = data;
+          continue;
+        }
+      }
+      
+      // Calculate yield for funds not in cache
       try {
         const yieldPercent = await investmentApi.getSimpleYield(fund.primaryKey, selectedRange);
         if (yieldPercent) {
           yieldsMap[fund.primaryKey] = yieldPercent;
+          
+          // Cache individual result
+          localStorage.setItem(cacheKey, JSON.stringify({
+            data: yieldPercent,
+            timestamp: now
+          }));
         }
       } catch (error) {
         console.warn(`Failed to load yield for fund ${fund.primaryKey}:`, error);
       }
     }
     
-    // Cache the yield data
-    localStorage.setItem(cacheKey, JSON.stringify({
-      data: yieldsMap,
-      timestamp: now
-    }));
-    
     setFundYields(yieldsMap);
     setYieldsLoading(false);
   };
+
+  // Load yields when switching back to funds tab if needed
+  useEffect(() => {
+    if (activeTab === "funds" && funds.length > 0) {
+      // Check if we have yields for the current timeframe
+      const hasYieldsForCurrentTimeframe = funds.slice(0, 20).some(fund => fundYields[fund.primaryKey]);
+      if (!hasYieldsForCurrentTimeframe) {
+        loadYieldData(funds);
+      }
+    }
+  }, [activeTab, selectedRange]);
 
   const handleFundClick = async (fund: Fund) => {
     setSelectedFund(fund);

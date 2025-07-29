@@ -39,13 +39,26 @@ export const InvestmentChart = ({ data, loading }: InvestmentChartProps) => {
     );
   }
 
-  const chartData = data.diagram['scale-x'].labels.map((label, index) => {
-    const item: any = { date: label };
-    data.diagram.series.forEach((series, seriesIndex) => {
-      item[`series${seriesIndex}`] = series.values[index] || 0;
+  // Transform chart data to show percentage changes from start
+  const transformChartData = () => {
+    if (!data?.diagram?.series?.[0]?.values) return [];
+    
+    return data.diagram['scale-x'].labels.map((label, index) => {
+      const item: any = { date: label };
+      data.diagram.series.forEach((series, seriesIndex) => {
+        const values = series.values;
+        const startValue = values[0] || 0;
+        const currentValue = values[index] || 0;
+        
+        // Calculate percentage change from start
+        const percentChange = startValue === 0 ? 0 : ((currentValue - startValue) / Math.abs(startValue)) * 100;
+        item[`series${seriesIndex}`] = percentChange;
+      });
+      return item;
     });
-    return item;
-  });
+  };
+
+  const chartData = transformChartData();
 
   const chartConfig = data.diagram.series.reduce((config, series, index) => {
     config[`series${index}`] = {
