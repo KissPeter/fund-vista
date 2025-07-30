@@ -125,8 +125,21 @@ const Index = () => {
       
       // Calculate yield for funds not in cache
       try {
+        console.log(`🔍 Calculating yield for fund ${fund.primaryKey} (${fund.portfolioName}) for ${selectedRange} months`);
         const yieldPercent = await investmentApi.getSimpleYield(fund.primaryKey, selectedRange);
+        console.log(`📊 Yield result for fund ${fund.primaryKey}:`, {
+          yieldPercent,
+          type: typeof yieldPercent,
+          isNull: yieldPercent === null,
+          isUndefined: yieldPercent === undefined,
+          isStringNull: yieldPercent === 'null',
+          isZeroPercent: yieldPercent === '0.00%',
+          isEmpty: yieldPercent === '',
+          actualValue: JSON.stringify(yieldPercent)
+        });
+        
         if (yieldPercent && yieldPercent !== 'null' && yieldPercent !== '0.00%') {
+          console.log(`✅ Accepting yield for fund ${fund.primaryKey}: ${yieldPercent}`);
           yieldsMap[fund.primaryKey] = yieldPercent;
           
           // Cache successful result
@@ -135,13 +148,19 @@ const Index = () => {
             timestamp: now
           }));
         } else {
+          console.log(`❌ Rejecting yield for fund ${fund.primaryKey}:`, {
+            reason: !yieldPercent ? 'falsy value' : 
+                   yieldPercent === 'null' ? 'string "null"' :
+                   yieldPercent === '0.00%' ? 'zero percent' : 'unknown',
+            value: yieldPercent
+          });
           // Cache failure for shorter time
           localStorage.setItem(failCacheKey, JSON.stringify({
             timestamp: now
           }));
         }
       } catch (error) {
-        console.warn(`Failed to load yield for fund ${fund.primaryKey}:`, error);
+        console.error(`💥 Error calculating yield for fund ${fund.primaryKey} (${fund.portfolioName}):`, error);
         // Cache failure for shorter time
         localStorage.setItem(failCacheKey, JSON.stringify({
           timestamp: now

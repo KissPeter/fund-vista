@@ -100,25 +100,48 @@ export const investmentApi = {
   // Simple yield calculation based on historical data
   async getSimpleYield(primaryKey: number, months: number): Promise<string | null> {
     try {
+      console.log(`🌐 API: Fetching calculation data for fund ${primaryKey}, ${months} months`);
       const data = await this.getCalculationData(primaryKey, 50000, months, 'ONETIME');
+      
+      console.log(`📈 API: Chart data for fund ${primaryKey}:`, {
+        hasChartData: !!data.diagram?.series?.[0]?.values,
+        valuesLength: data.diagram?.series?.[0]?.values?.length || 0,
+        firstValue: data.diagram?.series?.[0]?.values?.[0],
+        lastValue: data.diagram?.series?.[0]?.values?.[data.diagram?.series?.[0]?.values?.length - 1],
+        hasCalculationResults: !!Object.keys(data.calculationResults).length
+      });
       
       if (data.diagram?.series?.[0]?.values && data.diagram.series[0].values.length > 1) {
         const values = data.diagram.series[0].values;
         const startValue = values[0];
         const endValue = values[values.length - 1];
         
+        console.log(`🧮 API: Calculating percentage for fund ${primaryKey}:`, {
+          startValue,
+          endValue,
+          valuesCount: values.length
+        });
+        
         if (startValue !== undefined && endValue !== undefined) {
           // Simple percentage calculation: ((end - start) / start) * 100
           const percentChange = ((endValue - startValue) / Math.abs(startValue)) * 100;
-          return `${percentChange.toFixed(2)}%`;
+          const result = `${percentChange.toFixed(2)}%`;
+          console.log(`✅ API: Calculated yield for fund ${primaryKey}: ${result}`);
+          return result;
         }
       }
       
       // Fallback to the API's calculated yield if chart data isn't available
       const result = Object.values(data.calculationResults)[0] as CalculationResult;
-      return result?.yieldPercent || null;
+      const fallbackYield = result?.yieldPercent || null;
+      console.log(`⚠️ API: Using fallback yield for fund ${primaryKey}:`, {
+        hasCalculationResult: !!result,
+        yieldPercent: result?.yieldPercent,
+        fallbackYield
+      });
+      return fallbackYield;
     } catch (error) {
-      console.warn(`Failed to calculate simple yield for fund ${primaryKey}:`, error);
+      console.error(`💥 API: Failed to calculate simple yield for fund ${primaryKey}:`, error);
       return null;
     }
   }
