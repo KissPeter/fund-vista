@@ -115,6 +115,88 @@ export const InvestmentChart = ({ data, loading }: InvestmentChartProps) => {
           </ResponsiveContainer>
         </ChartContainer>
         
+        {/* Returns Analysis Table */}
+        <div className="mt-6">
+          <h3 className="text-lg font-semibold mb-4">Returns Analysis</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse border border-border">
+              <thead>
+                <tr className="bg-muted/50">
+                  <th className="border border-border p-3 text-left">Period</th>
+                  <th className="border border-border p-3 text-right">Return %</th>
+                  <th className="border border-border p-3 text-right">Start Value</th>
+                  <th className="border border-border p-3 text-right">End Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(() => {
+                  const periods = [
+                    { label: '1 Month', months: 1 },
+                    { label: '3 Months', months: 3 },
+                    { label: '6 Months', months: 6 },
+                    { label: '12 Months', months: 12 }
+                  ];
+
+                  return periods.map(({ label, months }) => {
+                    const series = data.diagram.series[0]; // Use first series
+                    if (!series?.values || series.values.length === 0) {
+                      return (
+                        <tr key={label}>
+                          <td className="border border-border p-3">{label}</td>
+                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
+                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
+                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
+                        </tr>
+                      );
+                    }
+
+                    const values = series.values;
+                    const totalDataPoints = values.length;
+                    const endValue = values[totalDataPoints - 1];
+                    
+                    // Estimate data points for the period (assuming roughly daily data)
+                    const approximateDataPointsPerMonth = Math.floor(totalDataPoints / 12); // Assume 12 months of data
+                    const dataPointsBack = Math.min(months * approximateDataPointsPerMonth, totalDataPoints - 1);
+                    const startIndex = Math.max(0, totalDataPoints - 1 - dataPointsBack);
+                    const startValue = values[startIndex];
+                    
+                    if (startValue === 0 || !startValue || !endValue) {
+                      return (
+                        <tr key={label}>
+                          <td className="border border-border p-3">{label}</td>
+                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
+                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
+                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
+                        </tr>
+                      );
+                    }
+
+                    const returnPercent = ((endValue - startValue) / startValue) * 100;
+                    const isPositive = returnPercent >= 0;
+
+                    return (
+                      <tr key={label}>
+                        <td className="border border-border p-3">{label}</td>
+                        <td className={`border border-border p-3 text-right font-semibold ${
+                          isPositive ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
+                        }`}>
+                          {isPositive ? '+' : ''}{returnPercent.toFixed(2)}%
+                        </td>
+                        <td className="border border-border p-3 text-right">
+                          {startValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="border border-border p-3 text-right">
+                          {endValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </td>
+                      </tr>
+                    );
+                  });
+                })()}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         {data.calculationResults && Object.keys(data.calculationResults).length > 0 && (
           <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
             {Object.entries(data.calculationResults).map(([key, result]) => (
