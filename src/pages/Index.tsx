@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { FundCard } from "@/components/FundCard";
 import { InvestmentChart } from "@/components/InvestmentChart";
+import { Progress } from "@/components/ui/progress";
 import { investmentApi, type Fund, type ChartData } from "@/services/investmentApi";
 import { Search } from "lucide-react";
 
@@ -23,6 +24,7 @@ const Index = () => {
   const [chartLoading, setChartLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("funds");
   const [yieldsLoading, setYieldsLoading] = useState(false);
+  const [yieldProgress, setYieldProgress] = useState(0);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -85,6 +87,7 @@ const Index = () => {
 
   const loadYieldData = async (fundsData: Fund[]) => {
     setYieldsLoading(true);
+    setYieldProgress(0);
     
     // Load yield data for first 20 funds to avoid rate limiting
     const fundBatch = fundsData.slice(0, 20);
@@ -93,7 +96,8 @@ const Index = () => {
     const thirtyMinutes = 30 * 60 * 1000; // Shorter cache for failed requests
     const yieldsMap: Record<number, string> = {};
     
-    for (const fund of fundBatch) {
+    for (let i = 0; i < fundBatch.length; i++) {
+      const fund = fundBatch[i];
       // Check success cache first
       const cacheKey = `yield_${fund.primaryKey}_${selectedRange}months`;
       const failCacheKey = `yield_fail_${fund.primaryKey}_${selectedRange}months`;
@@ -143,6 +147,9 @@ const Index = () => {
           timestamp: now
         }));
       }
+      
+      // Update progress
+      setYieldProgress(((i + 1) / fundBatch.length) * 100);
       
       // Add small delay to reduce rate limiting
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -267,6 +274,16 @@ const Index = () => {
                     </Badge>
                   )}
                 </div>
+                
+                {yieldsLoading && (
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm text-muted-foreground">
+                      <span>Processing yield calculations...</span>
+                      <span>{Math.round(yieldProgress)}%</span>
+                    </div>
+                    <Progress value={yieldProgress} className="h-2" />
+                  </div>
+                )}
               </CardContent>
             </Card>
 
