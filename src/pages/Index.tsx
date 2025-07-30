@@ -90,13 +90,27 @@ const Index = () => {
     const fundBatch = fundsData.slice(0, 20);
     const now = Date.now();
     const twelveHours = 12 * 60 * 60 * 1000;
+    const thirtyMinutes = 30 * 60 * 1000; // Shorter cache for failed requests
     const yieldsMap: Record<number, string> = {};
     
     for (const fund of fundBatch) {
-      // Check cache first - cache by individual fund and timeframe
+      // Check success cache first
       const cacheKey = `yield_${fund.primaryKey}_${selectedRange}months`;
+      const failCacheKey = `yield_fail_${fund.primaryKey}_${selectedRange}months`;
       const cached = localStorage.getItem(cacheKey);
+      const failCached = localStorage.getItem(failCacheKey);
       
+      // Skip if recently failed (shorter cache for failures)
+      if (failCached) {
+        const { timestamp } = JSON.parse(failCached);
+        if (now - timestamp < thirtyMinutes) {
+          continue;
+        } else {
+          localStorage.removeItem(failCacheKey);
+        }
+      }
+      
+      // Use cached success if available
       if (cached) {
         const { data, timestamp } = JSON.parse(cached);
         if (now - timestamp < twelveHours) {
@@ -108,18 +122,30 @@ const Index = () => {
       // Calculate yield for funds not in cache
       try {
         const yieldPercent = await investmentApi.getSimpleYield(fund.primaryKey, selectedRange);
-        if (yieldPercent) {
+        if (yieldPercent && yieldPercent !== 'null' && yieldPercent !== '0.00%') {
           yieldsMap[fund.primaryKey] = yieldPercent;
           
-          // Cache individual result
+          // Cache successful result
           localStorage.setItem(cacheKey, JSON.stringify({
             data: yieldPercent,
+            timestamp: now
+          }));
+        } else {
+          // Cache failure for shorter time
+          localStorage.setItem(failCacheKey, JSON.stringify({
             timestamp: now
           }));
         }
       } catch (error) {
         console.warn(`Failed to load yield for fund ${fund.primaryKey}:`, error);
+        // Cache failure for shorter time
+        localStorage.setItem(failCacheKey, JSON.stringify({
+          timestamp: now
+        }));
       }
+      
+      // Add small delay to reduce rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
     
     setFundYields(yieldsMap);
