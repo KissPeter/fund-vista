@@ -39,7 +39,7 @@ export const InvestmentChart = ({ data, loading }: InvestmentChartProps) => {
     );
   }
 
-  // Transform chart data to show percentage changes from start
+  // Transform chart data to show actual values
   const transformChartData = () => {
     if (!data?.diagram?.series?.[0]?.values) return [];
     
@@ -47,12 +47,10 @@ export const InvestmentChart = ({ data, loading }: InvestmentChartProps) => {
       const item: any = { date: label };
       data.diagram.series.forEach((series, seriesIndex) => {
         const values = series.values;
-        const startValue = values[0] || 0;
         const currentValue = values[index] || 0;
         
-        // Calculate percentage change from start
-        const percentChange = startValue === 0 ? 0 : ((currentValue - startValue) / Math.abs(startValue)) * 100;
-        item[`series${seriesIndex}`] = percentChange;
+        // Use actual values instead of percentage changes
+        item[`series${seriesIndex}`] = currentValue;
       });
       return item;
     });
@@ -98,7 +96,7 @@ export const InvestmentChart = ({ data, loading }: InvestmentChartProps) => {
               />
               <YAxis 
                 tick={{ fontSize: 12 }}
-                tickFormatter={(value) => `${value}%`}
+                tickFormatter={(value) => value.toLocaleString()}
               />
               <Tooltip content={<ChartTooltipContent />} />
               <Legend />

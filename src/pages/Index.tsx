@@ -104,12 +104,27 @@ const Index = () => {
       const cached = localStorage.getItem(cacheKey);
       const failCached = localStorage.getItem(failCacheKey);
       
+      console.log(`🔍 Cache check for fund ${fund.primaryKey} (${selectedRange} months):`, {
+        cacheKey,
+        hasCachedSuccess: !!cached,
+        hasCachedFailure: !!failCached
+      });
+      
       // Skip if recently failed (shorter cache for failures)
       if (failCached) {
         const { timestamp } = JSON.parse(failCached);
-        if (now - timestamp < thirtyMinutes) {
+        const timeSinceFailure = now - timestamp;
+        console.log(`⏱️ Failure cache check for fund ${fund.primaryKey}:`, {
+          timestamp,
+          timeSinceFailure,
+          thirtyMinutes,
+          shouldSkip: timeSinceFailure < thirtyMinutes
+        });
+        if (timeSinceFailure < thirtyMinutes) {
+          console.log(`⏭️ Skipping fund ${fund.primaryKey} due to recent failure`);
           continue;
         } else {
+          console.log(`🗑️ Removing expired failure cache for fund ${fund.primaryKey}`);
           localStorage.removeItem(failCacheKey);
         }
       }
@@ -117,9 +132,21 @@ const Index = () => {
       // Use cached success if available
       if (cached) {
         const { data, timestamp } = JSON.parse(cached);
-        if (now - timestamp < twelveHours) {
+        const timeSinceCache = now - timestamp;
+        console.log(`✅ Success cache check for fund ${fund.primaryKey}:`, {
+          data,
+          timestamp,
+          timeSinceCache,
+          twelveHours,
+          isValid: timeSinceCache < twelveHours
+        });
+        if (timeSinceCache < twelveHours) {
+          console.log(`🎯 Using cached yield for fund ${fund.primaryKey}: ${data}`);
           yieldsMap[fund.primaryKey] = data;
           continue;
+        } else {
+          console.log(`🗑️ Removing expired success cache for fund ${fund.primaryKey}`);
+          localStorage.removeItem(cacheKey);
         }
       }
       
