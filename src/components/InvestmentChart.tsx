@@ -151,14 +151,8 @@ export const InvestmentChart = ({ data, loading }: InvestmentChartProps) => {
                     }
 
                     const values = series.values;
-                    const totalDataPoints = values.length;
-                    const endValue = values[totalDataPoints - 1];
-                    
-                    // Estimate data points for the period (assuming roughly daily data)
-                    const approximateDataPointsPerMonth = Math.floor(totalDataPoints / 12); // Assume 12 months of data
-                    const dataPointsBack = Math.min(months * approximateDataPointsPerMonth, totalDataPoints - 1);
-                    const startIndex = Math.max(0, totalDataPoints - 1 - dataPointsBack);
-                    const startValue = values[startIndex];
+                    const startValue = values[0];
+                    const endValue = values[values.length - 1];
                     
                     if (startValue === 0 || !startValue || !endValue) {
                       return (
@@ -171,7 +165,8 @@ export const InvestmentChart = ({ data, loading }: InvestmentChartProps) => {
                       );
                     }
 
-                    const returnPercent = ((endValue - startValue) / startValue) * 100;
+                    // Use same calculation as API: Math.abs(startValue) as denominator
+                    const returnPercent = ((endValue - startValue) / Math.abs(startValue)) * 100;
                     const isPositive = returnPercent >= 0;
 
                     return (
