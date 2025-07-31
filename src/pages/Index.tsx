@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { FundCard } from "@/components/FundCard";
 import { InvestmentChart } from "@/components/InvestmentChart";
+import { InvestmentsTab } from "@/components/InvestmentsTab";
 import { Progress } from "@/components/ui/progress";
 import { investmentApi, type Fund, type ChartData } from "@/services/investmentApi";
 import { Search } from "lucide-react";
@@ -280,9 +281,10 @@ const Index = () => {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-2 max-w-[400px] mx-auto">
+          <TabsList className="grid w-full grid-cols-3 max-w-[600px] mx-auto">
             <TabsTrigger value="funds">Fund Explorer</TabsTrigger>
             <TabsTrigger value="analysis">Analysis</TabsTrigger>
+            <TabsTrigger value="investments">Investments</TabsTrigger>
           </TabsList>
 
           <TabsContent value="funds" className="space-y-6">
@@ -366,7 +368,11 @@ const Index = () => {
 
           <TabsContent value="analysis" className="space-y-6">
             <div className="grid grid-cols-1 gap-6">
-              <InvestmentChart data={chartData} loading={chartLoading} />
+            <InvestmentChart 
+              data={chartData} 
+              loading={chartLoading} 
+              selectedFund={selectedFund} 
+            />
               
               {selectedFund && (
                 <Card>
@@ -427,6 +433,10 @@ const Index = () => {
                 </Card>
               )}
             </div>
+          </TabsContent>
+
+          <TabsContent value="investments" className="space-y-6">
+            <InvestmentsTab />
           </TabsContent>
         </Tabs>
       </div>

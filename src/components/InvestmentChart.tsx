@@ -1,14 +1,16 @@
 import { Line, LineChart, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from "recharts";
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { ChartData } from "@/services/investmentApi";
+import { InvestModal } from "@/components/InvestModal";
+import type { ChartData, Fund } from "@/services/investmentApi";
 
 interface InvestmentChartProps {
   data: ChartData | null;
   loading: boolean;
+  selectedFund?: Fund;
 }
 
-export const InvestmentChart = ({ data, loading }: InvestmentChartProps) => {
+export const InvestmentChart = ({ data, loading, selectedFund }: InvestmentChartProps) => {
   if (loading) {
     return (
       <Card>
@@ -205,6 +207,16 @@ export const InvestmentChart = ({ data, loading }: InvestmentChartProps) => {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+        
+        {/* Investment Button */}
+        {selectedFund && data && (
+          <div className="mt-6">
+            <InvestModal 
+              fund={selectedFund} 
+              currentFundValue={data.diagram?.series?.[0]?.values?.slice(-1)[0] || 0} 
+            />
           </div>
         )}
       </CardContent>
