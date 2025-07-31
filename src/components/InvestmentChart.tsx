@@ -153,10 +153,51 @@ export const InvestmentChart = ({ data, loading, selectedFund }: InvestmentChart
                     }
 
                     const values = series.values;
-                    const startValue = values[0];
+                    const labels = data.diagram['scale-x'].labels;
                     const endValue = values[values.length - 1];
                     
-                    if (startValue === 0 || !startValue || !endValue) {
+                    // Calculate start value based on the actual time period
+                    // Find the date that is approximately 'months' months ago from the end
+                    const endDate = labels[labels.length - 1];
+                    let startIndex = 0;
+                    
+                    if (endDate && typeof endDate === 'string') {
+                      // Parse the end date (format: DD.MM.YYYY)
+                      const endDateParts = endDate.split('.');
+                      if (endDateParts.length === 3) {
+                        const endDateObj = new Date(
+                          parseInt(endDateParts[2]), 
+                          parseInt(endDateParts[1]) - 1, 
+                          parseInt(endDateParts[0])
+                        );
+                        
+                        // Calculate target start date
+                        const targetStartDate = new Date(endDateObj);
+                        targetStartDate.setMonth(targetStartDate.getMonth() - months);
+                        
+                        // Find the closest data point to the target start date
+                        let closestDistance = Infinity;
+                        for (let i = 0; i < labels.length; i++) {
+                          const labelParts = labels[i].split('.');
+                          if (labelParts.length === 3) {
+                            const labelDate = new Date(
+                              parseInt(labelParts[2]), 
+                              parseInt(labelParts[1]) - 1, 
+                              parseInt(labelParts[0])
+                            );
+                            const distance = Math.abs(labelDate.getTime() - targetStartDate.getTime());
+                            if (distance < closestDistance) {
+                              closestDistance = distance;
+                              startIndex = i;
+                            }
+                          }
+                        }
+                      }
+                    }
+                    
+                    const startValue = values[startIndex];
+                    
+                    if (startValue === 0 || !startValue || !endValue || startIndex >= values.length - 1) {
                       return (
                         <tr key={label}>
                           <td className="border border-border p-3">{label}</td>
