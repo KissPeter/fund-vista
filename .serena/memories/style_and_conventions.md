@@ -1,0 +1,1 @@
+TypeScript + React codebase using Vite tooling. Follow existing ESLint config (eslint.config.js). Keep changes minimal and consistent with current React/Tailwind patterns; no separate backend in this repository.

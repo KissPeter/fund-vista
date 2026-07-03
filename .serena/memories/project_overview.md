@@ -1,0 +1,1 @@
+Single-page frontend project generated from Lovable. Tech stack: Vite + React 18 + TypeScript + Tailwind CSS + shadcn-ui components. Main code is under src/, static assets under public/.

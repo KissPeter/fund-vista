@@ -1,0 +1,1 @@
+After code changes, run targeted validation via existing npm scripts. For this repo, prefer npm run lint for static checks and npm run build when changes may affect bundling/runtime.
