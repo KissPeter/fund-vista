@@ -3,12 +3,17 @@ export interface Investment {
   fundId: number;
   fundName: string;
   amount: number;
+  fundCurrency?: string;
+  amountInFundCurrency?: number;
+  fxRateToHufAtInvestment?: number;
+  currentFxRateToHuf?: number;
   investmentDate: string;
   fundValueAtInvestment: number;
   currentFundValue?: number;
   sold: boolean;
   soldDate?: string;
   soldFundValue?: number;
+  soldFxRateToHuf?: number;
 }
 
 export interface InvestmentCalculation {

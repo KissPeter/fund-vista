@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,24 +8,67 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { CalendarIcon, TrendingUp } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
-import type { Fund } from "@/services/investmentApi";
+import type { ChartData, Fund } from "@/services/investmentApi";
 import type { Investment } from "@/types/investment";
 import { investmentStorage } from "@/services/investmentStorage";
+import { exchangeRateApi } from "@/services/exchangeRateApi";
 import { useToast } from "@/hooks/use-toast";
 
 interface InvestModalProps {
   fund: Fund;
   currentFundValue: number;
+  chartData?: ChartData | null;
 }
 
-export const InvestModal = ({ fund, currentFundValue }: InvestModalProps) => {
+const parseKhDate = (value: string): Date | null => {
+  const parts = value.split(".").filter(Boolean);
+  if (parts.length !== 3) return null;
+  const [a, b, c] = parts.map(Number);
+  const isYearFirst = parts[0].length === 4;
+  const year = isYearFirst ? a : c;
+  const month = b;
+  const day = isYearFirst ? c : a;
+  if (!day || !month || !year) return null;
+  return new Date(year, month - 1, day);
+};
+
+export const InvestModal = ({ fund, currentFundValue, chartData }: InvestModalProps) => {
   const [open, setOpen] = useState(false);
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState<Date>();
-  const [fundValueAtDate, setFundValueAtDate] = useState("");
+  const [fundValueAtDate, setFundValueAtDate] = useState(currentFundValue.toString());
+  const [saving, setSaving] = useState(false);
   const { toast } = useToast();
 
-  const handleInvest = () => {
+  useEffect(() => {
+    if (!date) {
+      setFundValueAtDate(currentFundValue.toString());
+      return;
+    }
+
+    const labels = chartData?.diagram?.["scale-x"]?.labels ?? [];
+    const values = chartData?.diagram?.series?.[0]?.values ?? [];
+    if (labels.length === 0 || values.length === 0 || labels.length !== values.length) {
+      setFundValueAtDate(currentFundValue.toString());
+      return;
+    }
+
+    let bestIndex = values.length - 1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < labels.length; i++) {
+      const d = parseKhDate(labels[i]);
+      if (!d) continue;
+      const distance = Math.abs(d.getTime() - date.getTime());
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = i;
+      }
+    }
+
+    setFundValueAtDate((values[bestIndex] ?? currentFundValue).toString());
+  }, [date, chartData, currentFundValue]);
+
+  const handleInvest = async () => {
     if (!amount || !date || !fundValueAtDate) {
       toast({
         title: "Error",
@@ -35,29 +78,62 @@ export const InvestModal = ({ fund, currentFundValue }: InvestModalProps) => {
       return;
     }
 
-    const investment: Investment = {
-      id: `inv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      fundId: fund.primaryKey,
-      fundName: fund.portfolioName,
-      amount: parseFloat(amount),
-      investmentDate: format(date, "yyyy-MM-dd"),
-      fundValueAtInvestment: parseFloat(fundValueAtDate),
-      currentFundValue,
-      sold: false,
-    };
+    const amountValue = parseFloat(amount);
+    const fundValue = parseFloat(fundValueAtDate);
+    if (!Number.isFinite(amountValue) || amountValue <= 0 || !Number.isFinite(fundValue) || fundValue <= 0) {
+      toast({
+        title: "Error",
+        description: "Invalid investment amount or fund value",
+        variant: "destructive",
+      });
+      return;
+    }
 
-    investmentStorage.saveInvestment(investment);
-    
-    toast({
-      title: "Investment Added",
-      description: `Added investment of $${amount} in ${fund.portfolioName}`,
-    });
+    setSaving(true);
+    try {
+      const investmentDate = format(date, "yyyy-MM-dd");
+      const fundCurrency = (fund.currencyType || "HUF").toUpperCase();
+      const fxRateToHufAtInvestment = await exchangeRateApi.getRateToHuf(fundCurrency, investmentDate);
+      const currentFxRateToHuf = await exchangeRateApi.getRateToHuf(fundCurrency);
+      const amountInFundCurrency = amountValue / fxRateToHufAtInvestment;
 
-    // Reset form
-    setAmount("");
-    setDate(undefined);
-    setFundValueAtDate("");
-    setOpen(false);
+      const investment: Investment = {
+        id: `inv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        fundId: fund.primaryKey,
+        fundName: fund.portfolioName,
+        amount: amountValue,
+        fundCurrency,
+        amountInFundCurrency,
+        fxRateToHufAtInvestment,
+        currentFxRateToHuf,
+        investmentDate,
+        fundValueAtInvestment: fundValue,
+        currentFundValue,
+        sold: false,
+      };
+
+      investmentStorage.saveInvestment(investment);
+      
+      toast({
+        title: "Investment Added",
+        description: `Added investment of ${amount} HUF in ${fund.portfolioName}`,
+      });
+
+      // Reset form
+      setAmount("");
+      setDate(undefined);
+      setFundValueAtDate("");
+      setOpen(false);
+    } catch (error) {
+      toast({
+        title: "FX error",
+        description: "Could not fetch exchange rate for this investment date.",
+        variant: "destructive",
+      });
+      console.error("Failed to save investment with FX conversion:", error);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -79,7 +155,7 @@ export const InvestModal = ({ fund, currentFundValue }: InvestModalProps) => {
           </div>
           
           <div className="space-y-2">
-            <Label htmlFor="amount">Investment Amount ($)</Label>
+            <Label htmlFor="amount">Investment Amount (HUF)</Label>
             <Input
               id="amount"
               type="number"
@@ -117,22 +193,16 @@ export const InvestModal = ({ fund, currentFundValue }: InvestModalProps) => {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="fundValue">Fund Value at Investment Date</Label>
-            <Input
-              id="fundValue"
-              type="number"
-              placeholder="150.00"
-              value={fundValueAtDate}
-              onChange={(e) => setFundValueAtDate(e.target.value)}
-            />
+            <Label htmlFor="fundValue">Fund Value at Investment Date (auto)</Label>
+            <Input id="fundValue" type="number" value={fundValueAtDate} disabled />
           </div>
 
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => setOpen(false)} className="flex-1">
               Cancel
             </Button>
-            <Button onClick={handleInvest} className="flex-1">
-              Add Investment
+            <Button onClick={handleInvest} className="flex-1" disabled={saving}>
+              {saving ? "Adding..." : "Add Investment"}
             </Button>
           </div>
         </div>

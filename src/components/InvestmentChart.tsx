@@ -2,15 +2,33 @@ import { Line, LineChart, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } f
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { InvestModal } from "@/components/InvestModal";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
 import type { ChartData, Fund } from "@/services/investmentApi";
+
+export interface ReturnAnalysisRow {
+  label: string;
+  returnPercent: number | null;
+  startValue: number | null;
+  endValue: number | null;
+}
 
 interface InvestmentChartProps {
   data: ChartData | null;
   loading: boolean;
   selectedFund?: Fund;
+  returnAnalysisRows?: ReturnAnalysisRow[];
+  selectedRangeMonths?: number;
+  onRangeChange?: (months: number) => void;
 }
 
-export const InvestmentChart = ({ data, loading, selectedFund }: InvestmentChartProps) => {
+export const InvestmentChart = ({
+  data,
+  loading,
+  selectedFund,
+  returnAnalysisRows = [],
+  selectedRangeMonths = 12,
+  onRangeChange,
+}: InvestmentChartProps) => {
   if (loading) {
     return (
       <Card>
@@ -50,9 +68,13 @@ export const InvestmentChart = ({ data, loading, selectedFund }: InvestmentChart
       data.diagram.series.forEach((series, seriesIndex) => {
         const values = series.values;
         const currentValue = values[index] || 0;
+        const startValue = values[0] || 0;
         
         // Use actual values instead of percentage changes
         item[`series${seriesIndex}`] = currentValue;
+        item[`series${seriesIndex}Pct`] = startValue
+          ? ((currentValue - startValue) / Math.abs(startValue)) * 100
+          : 0;
       });
       return item;
     });
@@ -71,7 +93,12 @@ export const InvestmentChart = ({ data, loading, selectedFund }: InvestmentChart
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Performance Chart</CardTitle>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <CardTitle>Performance Chart</CardTitle>
+          {onRangeChange && (
+            <DateRangeFilter selectedRange={selectedRangeMonths} onRangeChange={onRangeChange} />
+          )}
+        </div>
         {data.tableData.results.length > 0 && (
           <div className="text-sm text-muted-foreground">
             {data.tableData.results[0].portfolioName}
@@ -79,7 +106,7 @@ export const InvestmentChart = ({ data, loading, selectedFund }: InvestmentChart
         )}
       </CardHeader>
       <CardContent>
-        <ChartContainer config={chartConfig} className="h-[400px]">
+        <ChartContainer config={chartConfig} className="h-[320px] w-full !aspect-auto">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData}>
               <XAxis 
@@ -107,6 +134,7 @@ export const InvestmentChart = ({ data, loading, selectedFund }: InvestmentChart
                   key={index}
                   type="monotone"
                   dataKey={`series${index}`}
+                  name={series.text}
                   stroke={series['line-color']}
                   strokeWidth={2}
                   dot={{ r: 3 }}
@@ -116,6 +144,47 @@ export const InvestmentChart = ({ data, loading, selectedFund }: InvestmentChart
             </LineChart>
           </ResponsiveContainer>
         </ChartContainer>
+
+        <div className="mt-6">
+          <h3 className="text-lg font-semibold mb-3">Performance (%)</h3>
+          <ChartContainer config={chartConfig} className="h-[260px] w-full !aspect-auto">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData}>
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 12 }}
+                  tickFormatter={(value) => {
+                    if (typeof value === "string") {
+                      const parts = value.split(".");
+                      if (parts.length >= 2) {
+                        return `${parts[1]}/${parts[2]}`;
+                      }
+                    }
+                    return value;
+                  }}
+                />
+                <YAxis
+                  tick={{ fontSize: 12 }}
+                  domain={[-20, "auto"]}
+                  tickFormatter={(value) => `${value.toFixed(1)}%`}
+                />
+                <Tooltip content={<ChartTooltipContent />} />
+                <Legend />
+                {data.diagram.series.map((series, index) => (
+                  <Line
+                    key={`pct-${index}`}
+                    type="monotone"
+                    dataKey={`series${index}Pct`}
+                    name={`${series.text} (%)`}
+                    stroke={series["line-color"]}
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </ChartContainer>
+        </div>
         
         {/* Returns Analysis Table */}
         <div className="mt-6">
@@ -131,105 +200,25 @@ export const InvestmentChart = ({ data, loading, selectedFund }: InvestmentChart
                 </tr>
               </thead>
               <tbody>
-                {(() => {
-                  const periods = [
-                    { label: '1 Month', months: 1 },
-                    { label: '3 Months', months: 3 },
-                    { label: '6 Months', months: 6 },
-                    { label: '12 Months', months: 12 }
-                  ];
+                {returnAnalysisRows.map((row) => {
+                  const isEmpty = row.returnPercent === null || row.startValue === null || row.endValue === null;
+                  const isPositive = (row.returnPercent ?? 0) >= 0;
 
-                  return periods.map(({ label, months }) => {
-                    const series = data.diagram.series[0]; // Use first series
-                    if (!series?.values || series.values.length === 0) {
-                      return (
-                        <tr key={label}>
-                          <td className="border border-border p-3">{label}</td>
-                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
-                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
-                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
-                        </tr>
-                      );
-                    }
-
-                    const values = series.values;
-                    const labels = data.diagram['scale-x'].labels;
-                    const endValue = values[values.length - 1];
-                    
-                    // Calculate start value based on the actual time period
-                    // Find the date that is approximately 'months' months ago from the end
-                    const endDate = labels[labels.length - 1];
-                    let startIndex = 0;
-                    
-                    if (endDate && typeof endDate === 'string') {
-                      // Parse the end date (format: DD.MM.YYYY)
-                      const endDateParts = endDate.split('.');
-                      if (endDateParts.length === 3) {
-                        const endDateObj = new Date(
-                          parseInt(endDateParts[2]), 
-                          parseInt(endDateParts[1]) - 1, 
-                          parseInt(endDateParts[0])
-                        );
-                        
-                        // Calculate target start date
-                        const targetStartDate = new Date(endDateObj);
-                        targetStartDate.setMonth(targetStartDate.getMonth() - months);
-                        
-                        // Find the closest data point to the target start date
-                        let closestDistance = Infinity;
-                        for (let i = 0; i < labels.length; i++) {
-                          const labelParts = labels[i].split('.');
-                          if (labelParts.length === 3) {
-                            const labelDate = new Date(
-                              parseInt(labelParts[2]), 
-                              parseInt(labelParts[1]) - 1, 
-                              parseInt(labelParts[0])
-                            );
-                            const distance = Math.abs(labelDate.getTime() - targetStartDate.getTime());
-                            if (distance < closestDistance) {
-                              closestDistance = distance;
-                              startIndex = i;
-                            }
-                          }
-                        }
-                      }
-                    }
-                    
-                    const startValue = values[startIndex];
-                    
-                    if (startValue === 0 || !startValue || !endValue || startIndex >= values.length - 1) {
-                      return (
-                        <tr key={label}>
-                          <td className="border border-border p-3">{label}</td>
-                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
-                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
-                          <td className="border border-border p-3 text-right text-muted-foreground">-</td>
-                        </tr>
-                      );
-                    }
-
-                    // Use same calculation as API: Math.abs(startValue) as denominator
-                    const returnPercent = ((endValue - startValue) / Math.abs(startValue)) * 100;
-                    const isPositive = returnPercent >= 0;
-
-                    return (
-                      <tr key={label}>
-                        <td className="border border-border p-3">{label}</td>
-                        <td className={`border border-border p-3 text-right font-semibold ${
-                          isPositive ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
-                        }`}>
-                          {isPositive ? '+' : ''}{returnPercent.toFixed(2)}%
-                        </td>
-                        <td className="border border-border p-3 text-right">
-                          {startValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                        </td>
-                        <td className="border border-border p-3 text-right">
-                          {endValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                        </td>
-                      </tr>
-                    );
-                  });
-                })()}
+                  return (
+                    <tr key={row.label}>
+                      <td className="border border-border p-3">{row.label}</td>
+                      <td className={`border border-border p-3 text-right ${isEmpty ? "text-muted-foreground" : `font-semibold ${isPositive ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}`}>
+                        {isEmpty ? "-" : `${isPositive ? "+" : ""}${row.returnPercent!.toFixed(2)}%`}
+                      </td>
+                      <td className="border border-border p-3 text-right">
+                        {isEmpty ? "-" : row.startValue!.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="border border-border p-3 text-right">
+                        {isEmpty ? "-" : row.endValue!.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -256,7 +245,8 @@ export const InvestmentChart = ({ data, loading, selectedFund }: InvestmentChart
           <div className="mt-6">
             <InvestModal 
               fund={selectedFund} 
-              currentFundValue={data.diagram?.series?.[0]?.values?.slice(-1)[0] || 0} 
+              currentFundValue={data.diagram?.series?.[0]?.values?.slice(-1)[0] || 0}
+              chartData={data}
             />
           </div>
         )}

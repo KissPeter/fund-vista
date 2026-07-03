@@ -1,5 +1,7 @@
 const BASE_URL = import.meta.env.VITE_INVESTMENT_API_BASE_URL || '/api';
+const ERSTE_BASE_URL = import.meta.env.VITE_ERSTE_API_BASE_URL || '/ersteapi';
 const CALC_CACHE_TTL_MS = 30 * 60 * 1000;
+const ERSTE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 
 export interface Fund {
   primaryKey: number;
@@ -53,6 +55,25 @@ export interface ChartData {
   calculationResults: Record<string, CalculationResult>;
 }
 
+export interface ProviderFundsData {
+  funds: Fund[];
+  yields: Record<number, string>;
+}
+
+const getErsteYieldColumnIndex = (months: number) => {
+  if (months <= 3) return 5; // 3 hó
+  return 6; // 1 év
+};
+
+const mapErsteCategoryToDeviceClass = (category: string) => {
+  const normalized = category.toLowerCase();
+  if (normalized.includes("részvény")) return "STOCK_MATERIAL";
+  if (normalized.includes("vegyes")) return "MIXED";
+  if (normalized.includes("nyersanyag")) return "STOCK_MATERIAL";
+  if (normalized.includes("abszolút")) return "MIXED";
+  return "MIXED";
+};
+
 export const investmentApi = {
   async getFunds(): Promise<Fund[]> {
     const response = await fetch(
@@ -61,6 +82,10 @@ export const investmentApi = {
 
     if (!response.ok) {
       throw new Error('Failed to fetch funds');
+    }
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      throw new Error(`Unexpected funds response content-type: ${contentType || "unknown"}`);
     }
 
     const data = await response.json();
@@ -102,6 +127,10 @@ export const investmentApi = {
     if (!response.ok) {
       throw new Error('Failed to fetch calculation data');
     }
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      throw new Error(`Unexpected calculation response content-type: ${contentType || "unknown"}`);
+    }
 
     const data = await response.json();
     localStorage.setItem(cacheKey, JSON.stringify({
@@ -109,6 +138,93 @@ export const investmentApi = {
       data,
     }));
     return data;
+  },
+
+  async getErsteFunds(months: number): Promise<ProviderFundsData> {
+    const cacheKey = `erste_funds_${months}m`;
+    const cached = localStorage.getItem(cacheKey);
+    const now = Date.now();
+
+    if (cached) {
+      const parsed = JSON.parse(cached) as { timestamp: number; data: ProviderFundsData };
+      if (now - parsed.timestamp < ERSTE_CACHE_TTL_MS) {
+        return parsed.data;
+      }
+      localStorage.removeItem(cacheKey);
+    }
+
+    const searchParams = "parameters%5B%5D=man_2&parameters%5B%5D=man_52&ret_min=13&ret_max=160";
+    const refererUrl = `${ERSTE_BASE_URL}/befektetesi_alapok/kereses?${searchParams}`;
+    const listUrl = `${ERSTE_BASE_URL}/funds/search_results/list?layout=website`;
+    const requestBody = "parameters%5B%5D=man_2&parameters%5B%5D=man_52&keyword=&toggles%5Bstarred%5D=1&ret_min=13&ret_max=160";
+
+    await fetch(refererUrl);
+
+    const response = await fetch(listUrl, {
+      method: "POST",
+      headers: {
+        "Accept": "text/html, */*; q=0.01",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: requestBody,
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch Erste funds");
+    }
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("text/html")) {
+      throw new Error(`Unexpected Erste response content-type: ${contentType || "unknown"}`);
+    }
+
+    const html = await response.text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const rows = Array.from(doc.querySelectorAll("tr.fundClick"));
+    const yieldColumn = getErsteYieldColumnIndex(months);
+    const funds: Fund[] = [];
+    const yields: Record<number, string> = {};
+
+    rows.forEach((row) => {
+      const cells = row.querySelectorAll("td");
+      if (cells.length < 7) return;
+
+      const anchor = cells[0]?.querySelector("a");
+      const id = Number(row.getAttribute("id"));
+      if (!anchor || !Number.isFinite(id)) return;
+
+      const name = anchor.textContent?.trim() || "";
+      const fundNo = anchor.getAttribute("href")?.split("/").pop() || `${id}`;
+      const currency = cells[2]?.textContent?.trim() || "N/A";
+      const category = cells[3]?.textContent?.trim() || "Unknown";
+      const yieldText = cells[yieldColumn]?.textContent?.trim() || "";
+
+      funds.push({
+        primaryKey: id,
+        portfolioName: name,
+        fundNo,
+        localeLanguage: "hu",
+        investmentType: "ERSTE",
+        regularityTypes: ["ONETIME"],
+        currencyType: currency,
+        dateFrom: 0,
+        dateTo: 0,
+        deviceClassType: mapErsteCategoryToDeviceClass(category),
+        riskClassificationType: "",
+        sustainabilityType: "TRADITIONAL",
+      });
+
+      if (yieldText && yieldText !== "-") {
+        yields[id] = yieldText;
+      }
+    });
+
+    const result = { funds, yields };
+    localStorage.setItem(cacheKey, JSON.stringify({
+      timestamp: now,
+      data: result,
+    }));
+    return result;
   },
 
   // Simple yield calculation based on historical data

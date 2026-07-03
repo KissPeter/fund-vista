@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { FundCard } from "@/components/FundCard";
-import { InvestmentChart } from "@/components/InvestmentChart";
+import { InvestmentChart, type ReturnAnalysisRow } from "@/components/InvestmentChart";
 import { InvestmentsTab } from "@/components/InvestmentsTab";
 import { Progress } from "@/components/ui/progress";
 import { investmentApi, type Fund, type ChartData } from "@/services/investmentApi";
@@ -16,6 +16,7 @@ import { Search } from "lucide-react";
 const YIELD_BATCH_SIZE = 10;
 
 const Index = () => {
+  const [provider, setProvider] = useState<"KH" | "ERSTE">("KH");
   const [funds, setFunds] = useState<Fund[]>([]);
   const [filteredFunds, setFilteredFunds] = useState<Fund[]>([]);
   const [fundYields, setFundYields] = useState<Record<number, string>>({});
@@ -24,6 +25,7 @@ const Index = () => {
   const [selectedRange, setSelectedRange] = useState(12);
   const [selectedFund, setSelectedFund] = useState<Fund | null>(null);
   const [chartData, setChartData] = useState<ChartData | null>(null);
+  const [returnAnalysisRows, setReturnAnalysisRows] = useState<ReturnAnalysisRow[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("funds");
   const [yieldsLoading, setYieldsLoading] = useState(false);
@@ -32,7 +34,7 @@ const Index = () => {
 
   useEffect(() => {
     loadFunds();
-  }, []);
+  }, [provider]);
 
   useEffect(() => {
     const filtered = funds.filter(fund =>
@@ -42,9 +44,24 @@ const Index = () => {
     setFilteredFunds(filtered);
   }, [funds, searchTerm]);
 
-  const loadFunds = async () => {
+  const loadFunds = async (range: number = selectedRange) => {
     try {
       setLoading(true);
+      setFunds([]);
+      setFilteredFunds([]);
+      setFundYields({});
+      setSelectedFund(null);
+      setChartData(null);
+      setReturnAnalysisRows([]);
+
+      if (provider === "ERSTE") {
+        const ersteData = await investmentApi.getErsteFunds(range);
+        setFunds(ersteData.funds);
+        setFilteredFunds(ersteData.funds);
+        setFundYields(ersteData.yields);
+        setYieldsLoading(false);
+        return;
+      }
       
       // Check cache first
       const cacheKey = 'investment_funds_cache';
@@ -66,6 +83,10 @@ const Index = () => {
       
       // Fetch fresh data
       const data = await investmentApi.getFunds();
+
+      if (!Array.isArray(data) || data.length === 0) {
+        throw new Error("KH fund list is temporarily empty (likely throttled)");
+      }
       
       // Cache the data
       localStorage.setItem(cacheKey, JSON.stringify({
@@ -75,8 +96,33 @@ const Index = () => {
       
       setFunds(data);
       setFilteredFunds(data);
+      setFundYields({});
       loadYieldData(data);
     } catch (error) {
+      if (provider === "ERSTE") {
+        toast({
+          title: "Error",
+          description: "Failed to load Erste funds.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const fallbackCached = localStorage.getItem('investment_funds_cache');
+      if (fallbackCached) {
+        const { data } = JSON.parse(fallbackCached);
+        if (Array.isArray(data) && data.length > 0) {
+          setFunds(data);
+          setFilteredFunds(data);
+          setFundYields({});
+          loadYieldData(data);
+          toast({
+            title: "Using cached funds",
+            description: "Live source is rate-limited right now.",
+          });
+          return;
+        }
+      }
+
       toast({
         title: "Error",
         description: "Failed to load funds. Please check if the API is accessible.",
@@ -210,29 +256,80 @@ const Index = () => {
 
   // Load yields when switching back to funds tab if needed
   useEffect(() => {
-    if (activeTab === "funds" && funds.length > 0) {
+    if (provider === "KH" && activeTab === "funds" && funds.length > 0) {
       // Check if we have yields for the current timeframe
       const hasYieldsForCurrentTimeframe = funds.slice(0, YIELD_BATCH_SIZE).some(fund => fundYields[fund.primaryKey]);
       if (!hasYieldsForCurrentTimeframe) {
         loadYieldData(funds);
       }
     }
-  }, [activeTab, selectedRange, funds, fundYields]);
+  }, [provider, activeTab, selectedRange, funds, fundYields]);
 
-  const handleFundClick = async (fund: Fund) => {
+  const handleFundClick = async (fund: Fund, months: number = selectedRange) => {
+    if (provider === "ERSTE") {
+      toast({
+        title: "Erste list mode",
+        description: "Detailed analysis is currently available for KH funds only.",
+      });
+      return;
+    }
+
     setSelectedFund(fund);
     setChartLoading(true);
     setActiveTab("analysis");
     
     try {
+      const regularityType = fund.regularityTypes.includes('REGULAR') ? 'REGULAR' : 'ONETIME';
       const data = await investmentApi.getCalculationData(
         fund.primaryKey, 
         50000, 
-        selectedRange, 
-        fund.regularityTypes.includes('REGULAR') ? 'REGULAR' : 'ONETIME'
+        months, 
+        regularityType
       );
       setChartData(data);
+
+      const periods = [
+        { label: "1 Month", months: 1 },
+        { label: "3 Months", months: 3 },
+        { label: "6 Months", months: 6 },
+        { label: "12 Months", months: 12 },
+      ];
+
+      const toRow = (label: string, periodData: ChartData): ReturnAnalysisRow => {
+        const values = periodData.diagram?.series?.[0]?.values ?? [];
+        if (values.length < 2) {
+          return { label, returnPercent: null, startValue: null, endValue: null };
+        }
+        const startValue = values[0];
+        const endValue = values[values.length - 1];
+        if (!startValue || !endValue) {
+          return { label, returnPercent: null, startValue: null, endValue: null };
+        }
+
+        return {
+          label,
+          returnPercent: ((endValue - startValue) / Math.abs(startValue)) * 100,
+          startValue,
+          endValue,
+        };
+      };
+
+      // ponytail: use existing API cache so this stays cheap after first load.
+      const analysisRows = await Promise.all(
+        periods.map(async (period) => {
+          try {
+            const periodData = period.months === months
+              ? data
+              : await investmentApi.getCalculationData(fund.primaryKey, 50000, period.months, regularityType);
+            return toRow(period.label, periodData);
+          } catch {
+            return { label: period.label, returnPercent: null, startValue: null, endValue: null };
+          }
+        })
+      );
+      setReturnAnalysisRows(analysisRows);
     } catch (error) {
+      setReturnAnalysisRows([]);
       toast({
         title: "Error",
         description: "Failed to load chart data for this fund.",
@@ -246,12 +343,20 @@ const Index = () => {
 
   const handleRangeChange = (months: number) => {
     setSelectedRange(months);
+    if (provider === "ERSTE") {
+      loadFunds(months);
+      return;
+    }
     if (selectedFund) {
-      handleFundClick(selectedFund);
+      handleFundClick(selectedFund, months);
     }
   };
 
   const handleFindTopGainer = () => {
+    if (provider === "ERSTE") {
+      loadFunds(selectedRange);
+      return;
+    }
     loadYieldData(funds, funds.length);
   };
 
@@ -278,7 +383,7 @@ const Index = () => {
             Investment Tracker
           </h1>
           <p className="text-xl text-muted-foreground">
-            Track and analyze K&H investment funds performance
+            Track and analyze K&H and Erste investment funds
           </p>
         </div>
 
@@ -301,6 +406,22 @@ const Index = () => {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="flex gap-2">
+                  <Button
+                    variant={provider === "KH" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setProvider("KH")}
+                  >
+                    K&H
+                  </Button>
+                  <Button
+                    variant={provider === "ERSTE" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setProvider("ERSTE")}
+                  >
+                    ERSTE
+                  </Button>
+                </div>
                 <div className="flex flex-col sm:flex-row gap-4">
                   <div className="flex-1">
                     <Input
@@ -382,6 +503,9 @@ const Index = () => {
               data={chartData} 
               loading={chartLoading} 
               selectedFund={selectedFund} 
+              returnAnalysisRows={returnAnalysisRows}
+              selectedRangeMonths={selectedRange}
+              onRangeChange={handleRangeChange}
             />
               
               {selectedFund && (

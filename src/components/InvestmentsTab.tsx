@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Download, Upload, TrendingDown, AlertCircle } from "lucide-react";
 import { investmentStorage } from "@/services/investmentStorage";
 import { investmentApi } from "@/services/investmentApi";
+import { exchangeRateApi } from "@/services/exchangeRateApi";
 import type { Investment, InvestmentCalculation } from "@/types/investment";
 import { useToast } from "@/hooks/use-toast";
 
@@ -13,6 +14,8 @@ export const InvestmentsTab = () => {
   const [investments, setInvestments] = useState<Investment[]>([]);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
+  const formatHuf = (value: number) =>
+    `${value.toLocaleString("hu-HU", { maximumFractionDigits: 0 })} HUF`;
 
   useEffect(() => {
     loadInvestments();
@@ -32,8 +35,19 @@ export const InvestmentsTab = () => {
         try {
           const data = await investmentApi.getCalculationData(investment.fundId);
           const currentValue = data.diagram?.series?.[0]?.values?.slice(-1)[0];
+          const currency = (investment.fundCurrency || "HUF").toUpperCase();
+          const fxRateToHufAtInvestment = investment.fxRateToHufAtInvestment
+            ?? await exchangeRateApi.getRateToHuf(currency, investment.investmentDate);
+          const currentFxRateToHuf = investment.sold
+            ? (investment.soldFxRateToHuf ?? investment.currentFxRateToHuf ?? await exchangeRateApi.getRateToHuf(currency))
+            : await exchangeRateApi.getRateToHuf(currency);
+
           return {
             ...investment,
+            fundCurrency: currency,
+            fxRateToHufAtInvestment,
+            amountInFundCurrency: investment.amountInFundCurrency ?? (investment.amount / fxRateToHufAtInvestment),
+            currentFxRateToHuf,
             currentFundValue: currentValue || investment.currentFundValue
           };
         } catch (error) {
@@ -49,17 +63,23 @@ export const InvestmentsTab = () => {
 
   const calculateInvestment = (investment: Investment): InvestmentCalculation => {
     const currentValue = investment.sold ? investment.soldFundValue! : investment.currentFundValue!;
-    const shares = investment.amount / investment.fundValueAtInvestment;
+    const fxAtInvestment = investment.fxRateToHufAtInvestment ?? 1;
+    const currentFx = investment.sold
+      ? (investment.soldFxRateToHuf ?? investment.currentFxRateToHuf ?? 1)
+      : (investment.currentFxRateToHuf ?? 1);
+    const amountInFundCurrency = investment.amountInFundCurrency ?? (investment.amount / fxAtInvestment);
+    const shares = amountInFundCurrency / investment.fundValueAtInvestment;
     const grossValue = shares * currentValue;
-    const grossProfit = grossValue - investment.amount;
+    const grossValueHuf = grossValue * currentFx;
+    const grossProfit = grossValueHuf - investment.amount;
     const grossProfitPercent = (grossProfit / investment.amount) * 100;
     
-    const netValue = grossValue * 0.67; // 33% tax
+    const netValue = grossValueHuf * 0.67; // 33% tax
     const netProfit = netValue - investment.amount;
     const netProfitPercent = (netProfit / investment.amount) * 100;
     
     return {
-      grossValue,
+      grossValue: grossValueHuf,
       netValue,
       grossProfit,
       netProfit,
@@ -68,26 +88,61 @@ export const InvestmentsTab = () => {
     };
   };
 
-  const handleSell = (investmentId: string) => {
+  const handleSell = async (investmentId: string) => {
     const investment = investments.find(inv => inv.id === investmentId);
     if (!investment || investment.sold) return;
+    try {
+      const currency = (investment.fundCurrency || "HUF").toUpperCase();
+      const soldFxRateToHuf = await exchangeRateApi.getRateToHuf(currency);
+
+      const updates = {
+        sold: true,
+        soldDate: new Date().toISOString().split('T')[0],
+        soldFundValue: investment.currentFundValue,
+        soldFxRateToHuf,
+      };
+
+      investmentStorage.updateInvestment(investmentId, updates);
+      setInvestments(prev => 
+        prev.map(inv => 
+          inv.id === investmentId ? { ...inv, ...updates } : inv
+        )
+      );
+
+      toast({
+        title: "Investment Sold",
+        description: "Investment has been marked as sold",
+      });
+    } catch (error) {
+      toast({
+        title: "FX error",
+        description: "Could not fetch current exchange rate for selling.",
+        variant: "destructive",
+      });
+      console.error("Failed to mark investment as sold:", error);
+    }
+  };
+
+  const handleRevertSell = (investmentId: string) => {
+    const investment = investments.find(inv => inv.id === investmentId);
+    if (!investment || !investment.sold) return;
 
     const updates = {
-      sold: true,
-      soldDate: new Date().toISOString().split('T')[0],
-      soldFundValue: investment.currentFundValue
+      sold: false,
+      soldDate: undefined,
+      soldFundValue: undefined
     };
 
     investmentStorage.updateInvestment(investmentId, updates);
-    setInvestments(prev => 
-      prev.map(inv => 
+    setInvestments(prev =>
+      prev.map(inv =>
         inv.id === investmentId ? { ...inv, ...updates } : inv
       )
     );
 
     toast({
-      title: "Investment Sold",
-      description: "Investment has been marked as sold",
+      title: "Sale Reverted",
+      description: "Investment is active again",
     });
   };
 
@@ -183,7 +238,7 @@ export const InvestmentsTab = () => {
             <CardTitle className="text-sm font-medium">Total Invested</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${totalInvested.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{formatHuf(totalInvested)}</div>
           </CardContent>
         </Card>
         <Card>
@@ -191,7 +246,7 @@ export const InvestmentsTab = () => {
             <CardTitle className="text-sm font-medium">Portfolio Value (Net)</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${totalPortfolio.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{formatHuf(totalPortfolio)}</div>
           </CardContent>
         </Card>
         <Card>
@@ -200,7 +255,7 @@ export const InvestmentsTab = () => {
           </CardHeader>
           <CardContent>
             <div className={`text-2xl font-bold ${totalNetProfit >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-              {totalNetProfit >= 0 ? '+' : ''}${totalNetProfit.toLocaleString()}
+              {totalNetProfit >= 0 ? "+" : ""}{formatHuf(totalNetProfit)}
             </div>
             <div className={`text-sm ${totalNetProfitPercent >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
               {totalNetProfitPercent >= 0 ? '+' : ''}{totalNetProfitPercent.toFixed(2)}%
@@ -230,7 +285,7 @@ export const InvestmentsTab = () => {
                 <thead>
                   <tr className="bg-muted/50">
                     <th className="border border-border p-3 text-left">Fund</th>
-                    <th className="border border-border p-3 text-right">Amount</th>
+                    <th className="border border-border p-3 text-right">Amount (HUF)</th>
                     <th className="border border-border p-3 text-right">Date</th>
                     <th className="border border-border p-3 text-right">Gross Value</th>
                     <th className="border border-border p-3 text-right">Net Value</th>
@@ -248,21 +303,21 @@ export const InvestmentsTab = () => {
                       <tr key={investment.id}>
                         <td className="border border-border p-3">{investment.fundName}</td>
                         <td className="border border-border p-3 text-right">
-                          ${investment.amount.toLocaleString()}
+                          {formatHuf(investment.amount)}
                         </td>
                         <td className="border border-border p-3 text-right">
                           {investment.investmentDate}
                         </td>
                         <td className="border border-border p-3 text-right">
-                          ${calc.grossValue.toLocaleString()}
+                          {formatHuf(calc.grossValue)}
                         </td>
                         <td className="border border-border p-3 text-right">
-                          ${calc.netValue.toLocaleString()}
+                          {formatHuf(calc.netValue)}
                         </td>
                         <td className={`border border-border p-3 text-right font-semibold ${
                           isPositive ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
                         }`}>
-                          {isPositive ? '+' : ''}${calc.netProfit.toLocaleString()}
+                          {isPositive ? "+" : ""}{formatHuf(calc.netProfit)}
                           <div className="text-xs font-normal">
                             {isPositive ? '+' : ''}{calc.netProfitPercent.toFixed(2)}%
                           </div>
@@ -273,7 +328,7 @@ export const InvestmentsTab = () => {
                           </Badge>
                         </td>
                         <td className="border border-border p-3 text-center">
-                          {!investment.sold && (
+                          {!investment.sold ? (
                             <Button
                               variant="outline"
                               size="sm"
@@ -281,6 +336,14 @@ export const InvestmentsTab = () => {
                             >
                               <TrendingDown className="mr-1 h-3 w-3" />
                               Sell
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleRevertSell(investment.id)}
+                            >
+                              Revert sell
                             </Button>
                           )}
                         </td>
