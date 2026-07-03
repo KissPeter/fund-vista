@@ -8,23 +8,6 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
-    proxy: {
-      "/api": {
-        target: "https://www.kh.hu",
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ""),
-      },
-      "/ersteapi": {
-        target: "https://www.erstemarket.hu",
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/ersteapi/, ""),
-      },
-      "/fxapi": {
-        target: "https://api.frankfurter.app",
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/fxapi/, ""),
-      },
-    },
   },
   plugins: [
     react(),

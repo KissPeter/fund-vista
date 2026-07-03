@@ -71,3 +71,33 @@ Yes, you can!
 To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
 
 Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+
+## Local proxy backend (FastAPI + Redis)
+
+The app now expects a local FastAPI proxy at `http://localhost:8000` for KH/Erste/FX requests.
+
+1. Start Redis:
+```sh
+docker run --name fund-vista-redis -p 6379:6379 redis:7-alpine
+```
+2. Install backend deps:
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+```
+3. Configure env files:
+```sh
+cp .env.example .env
+cp backend/.env.example backend/.env
+```
+4. Start FastAPI proxy:
+```sh
+npm run dev:api
+```
+5. Start frontend:
+```sh
+npm run dev
+```
+
+Proxy responses are cached in Redis until end of day (server local time).
