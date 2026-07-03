@@ -41,7 +41,8 @@ export const InvestmentsTab = () => {
         }
       })
     );
-    
+
+    investmentStorage.replaceInvestments(updatedInvestments);
     setInvestments(updatedInvestments);
     setLoading(false);
   };

@@ -1,4 +1,5 @@
-const BASE_URL = import.meta.env.VITE_INVESTMENT_API_BASE_URL || 'https://www.kh.hu';
+const BASE_URL = import.meta.env.VITE_INVESTMENT_API_BASE_URL || '/api';
+const CALC_CACHE_TTL_MS = 30 * 60 * 1000;
 
 export interface Fund {
   primaryKey: number;
@@ -54,21 +55,16 @@ export interface ChartData {
 
 export const investmentApi = {
   async getFunds(): Promise<Fund[]> {
-    const response = await fetch(`${BASE_URL}/megtakaritas-befektetes/befektetes-kalkulator?p_p_id=yield_detailed_calculator&p_p_lifecycle=2&p_p_state=pop_up&p_p_mode=view&p_p_resource_id=cmdInvestmentFundsSearch&p_p_cacheability=cacheLevelPage`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Accept': 'application/json, text/javascript, */*',
-      },
-      body: '_yield_detailed_calculator_sustainabilityType=&_yield_detailed_calculator_currencyType=&_yield_detailed_calculator_deviceClassType=&_yield_detailed_calculator_riskClassificationType='
-    });
+    const response = await fetch(
+      `${BASE_URL}/megtakaritas-befektetes/befektetes-kalkulator?p_p_id=yield_detailed_calculator&p_p_lifecycle=2&p_p_state=pop_up&p_p_mode=view&p_p_resource_id=cmdInvestmentFundsSearch&p_p_cacheability=cacheLevelPage`
+    );
 
     if (!response.ok) {
       throw new Error('Failed to fetch funds');
     }
 
     const data = await response.json();
-    return data.map((item: string) => JSON.parse(item));
+    return data.map((item: string | Fund) => typeof item === "string" ? JSON.parse(item) : item);
   },
 
   async getCalculationData(
@@ -77,6 +73,19 @@ export const investmentApi = {
     months: number = 12,
     regularityType: 'ONETIME' | 'REGULAR' = 'ONETIME'
   ): Promise<ChartData> {
+    const cacheKey = `calc_${fundId}_${amount}_${months}_${regularityType}`;
+    const cached = localStorage.getItem(cacheKey);
+    const cacheNow = Date.now();
+
+    if (cached) {
+      const parsed = JSON.parse(cached) as { timestamp: number; data: ChartData };
+      // ponytail: short TTL to cut rate-limit risk; raise only if KH data is stable enough.
+      if (cacheNow - parsed.timestamp < CALC_CACHE_TTL_MS) {
+        return parsed.data;
+      }
+      localStorage.removeItem(cacheKey);
+    }
+
     const now = Date.now();
     const dateFrom = now - (months * 30 * 24 * 60 * 60 * 1000); // Approximate months to milliseconds
     const dateTo = now;
@@ -94,7 +103,12 @@ export const investmentApi = {
       throw new Error('Failed to fetch calculation data');
     }
 
-    return response.json();
+    const data = await response.json();
+    localStorage.setItem(cacheKey, JSON.stringify({
+      timestamp: cacheNow,
+      data,
+    }));
+    return data;
   },
 
   // Simple yield calculation based on historical data

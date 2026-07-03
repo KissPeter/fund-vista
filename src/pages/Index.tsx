@@ -13,6 +13,8 @@ import { Progress } from "@/components/ui/progress";
 import { investmentApi, type Fund, type ChartData } from "@/services/investmentApi";
 import { Search } from "lucide-react";
 
+const YIELD_BATCH_SIZE = 10;
+
 const Index = () => {
   const [funds, setFunds] = useState<Fund[]>([]);
   const [filteredFunds, setFilteredFunds] = useState<Fund[]>([]);
@@ -86,12 +88,12 @@ const Index = () => {
     }
   };
 
-  const loadYieldData = async (fundsData: Fund[]) => {
+  const loadYieldData = async (fundsData: Fund[], limit: number = YIELD_BATCH_SIZE) => {
     setYieldsLoading(true);
     setYieldProgress(0);
     
-    // Load yield data for first 20 funds to avoid rate limiting
-    const fundBatch = fundsData.slice(0, 20);
+    // ponytail: smaller batch lowers burst traffic; increase only if KH rate limit allows.
+    const fundBatch = fundsData.slice(0, limit);
     const now = Date.now();
     const twelveHours = 12 * 60 * 60 * 1000;
     const thirtyMinutes = 30 * 60 * 1000; // Shorter cache for failed requests
@@ -210,12 +212,12 @@ const Index = () => {
   useEffect(() => {
     if (activeTab === "funds" && funds.length > 0) {
       // Check if we have yields for the current timeframe
-      const hasYieldsForCurrentTimeframe = funds.slice(0, 20).some(fund => fundYields[fund.primaryKey]);
+      const hasYieldsForCurrentTimeframe = funds.slice(0, YIELD_BATCH_SIZE).some(fund => fundYields[fund.primaryKey]);
       if (!hasYieldsForCurrentTimeframe) {
         loadYieldData(funds);
       }
     }
-  }, [activeTab, selectedRange]);
+  }, [activeTab, selectedRange, funds, fundYields]);
 
   const handleFundClick = async (fund: Fund) => {
     setSelectedFund(fund);
@@ -247,10 +249,10 @@ const Index = () => {
     if (selectedFund) {
       handleFundClick(selectedFund);
     }
-    // Recalculate yields for current timeframe
-    if (funds.length > 0) {
-      loadYieldData(funds);
-    }
+  };
+
+  const handleFindTopGainer = () => {
+    loadYieldData(funds, funds.length);
   };
 
   // Sort funds by yield percentage (descending)
@@ -316,6 +318,14 @@ const Index = () => {
                 
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <span>Found {sortedFunds.length} funds</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleFindTopGainer}
+                    disabled={yieldsLoading || funds.length === 0}
+                  >
+                    Find highest gain
+                  </Button>
                   {(loading || yieldsLoading) && (
                     <Badge variant="secondary" className="animate-pulse">
                       {loading ? 'Loading funds...' : `Calculating yields for ${selectedRange} months...`}

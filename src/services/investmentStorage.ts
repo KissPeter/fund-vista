@@ -23,6 +23,14 @@ export const investmentStorage = {
     }
   },
 
+  replaceInvestments(investments: Investment[]): void {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(investments));
+    } catch (error) {
+      console.error('Failed to replace investments:', error);
+    }
+  },
+
   updateInvestment(investmentId: string, updates: Partial<Investment>): void {
     try {
       const investments = this.getInvestments();
