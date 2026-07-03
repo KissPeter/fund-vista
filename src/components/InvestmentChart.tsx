@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { Brush, Line, LineChart, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from "recharts";
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,6 +30,38 @@ export const InvestmentChart = ({
   selectedRangeMonths = 12,
   onRangeChange,
 }: InvestmentChartProps) => {
+  const [rebaseStartIndex, setRebaseStartIndex] = useState(0);
+  const [committedBrushRange, setCommittedBrushRange] = useState<{ startIndex: number; endIndex: number }>({
+    startIndex: 0,
+    endIndex: 0,
+  });
+  const pendingBrushRangeRef = useRef<{ startIndex: number; endIndex: number } | null>(null);
+
+  useEffect(() => {
+    const maxIndex = Math.max(0, (data?.diagram?.series?.[0]?.values?.length || 1) - 1);
+    setRebaseStartIndex(0);
+    setCommittedBrushRange({ startIndex: 0, endIndex: maxIndex });
+    pendingBrushRangeRef.current = null;
+  }, [data, selectedRangeMonths]);
+
+  useEffect(() => {
+    const commitPendingRange = () => {
+      const pending = pendingBrushRangeRef.current;
+      if (pending) {
+        setCommittedBrushRange(pending);
+        setRebaseStartIndex(pending.startIndex);
+        pendingBrushRangeRef.current = null;
+      }
+    };
+
+    window.addEventListener("mouseup", commitPendingRange);
+    window.addEventListener("touchend", commitPendingRange);
+    return () => {
+      window.removeEventListener("mouseup", commitPendingRange);
+      window.removeEventListener("touchend", commitPendingRange);
+    };
+  }, []);
+
   if (loading) {
     return (
       <Card>
@@ -68,7 +101,8 @@ export const InvestmentChart = ({
       data.diagram.series.forEach((series, seriesIndex) => {
         const values = series.values;
         const currentValue = values[index] || 0;
-        const startValue = values[0] || 0;
+        const safeStartIndex = Math.max(0, Math.min(rebaseStartIndex, values.length - 1));
+        const startValue = values[safeStartIndex] || values[0] || 0;
         
         // Use actual values instead of percentage changes
         item[`series${seriesIndex}`] = currentValue;
@@ -89,6 +123,18 @@ export const InvestmentChart = ({
     };
     return config;
   }, {} as any);
+
+  const handleBrushChange = (range: { startIndex?: number; endIndex?: number }) => {
+    if (typeof range.startIndex !== "number" && typeof range.endIndex !== "number") return;
+    const nextStart = typeof range.startIndex === "number" ? range.startIndex : committedBrushRange.startIndex;
+    const nextEnd = typeof range.endIndex === "number" ? range.endIndex : committedBrushRange.endIndex;
+    const startIndex = Math.max(0, Math.min(nextStart, nextEnd));
+    const endIndex = Math.max(startIndex, nextEnd);
+    const currentPending = pendingBrushRangeRef.current ?? committedBrushRange;
+    if (startIndex === currentPending.startIndex && endIndex === currentPending.endIndex) return;
+    // ponytail: apply after drag release to avoid fighting brush interaction.
+    pendingBrushRangeRef.current = { startIndex, endIndex };
+  };
 
   return (
     <Card>
@@ -181,7 +227,14 @@ export const InvestmentChart = ({
                     dot={false}
                   />
                 ))}
-                <Brush dataKey="date" height={30} stroke="#8884d8" />
+                <Brush
+                  dataKey="date"
+                  height={30}
+                  stroke="#8884d8"
+                  startIndex={committedBrushRange.startIndex}
+                  endIndex={committedBrushRange.endIndex}
+                  onChange={handleBrushChange}
+                />
               </LineChart>
             </ResponsiveContainer>
           </ChartContainer>
