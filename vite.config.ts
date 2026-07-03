@@ -14,6 +14,11 @@ export default defineConfig(({ mode }) => ({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
+      "/ersteapi": {
+        target: "https://www.erstemarket.hu",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/ersteapi/, ""),
+      },
     },
   },
   plugins: [
