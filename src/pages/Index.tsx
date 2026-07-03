@@ -30,6 +30,7 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState("funds");
   const [yieldsLoading, setYieldsLoading] = useState(false);
   const [yieldProgress, setYieldProgress] = useState(0);
+  const [loadedYieldRange, setLoadedYieldRange] = useState<number | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -50,6 +51,7 @@ const Index = () => {
       setFunds([]);
       setFilteredFunds([]);
       setFundYields({});
+      setLoadedYieldRange(null);
       setSelectedFund(null);
       setChartData(null);
       setReturnAnalysisRows([]);
@@ -75,7 +77,7 @@ const Index = () => {
         if (now - timestamp < oneDay) {
           setFunds(data);
           setFilteredFunds(data);
-          loadYieldData(data);
+          loadYieldData(data, YIELD_BATCH_SIZE, range);
           setLoading(false);
           return;
         }
@@ -97,7 +99,7 @@ const Index = () => {
       setFunds(data);
       setFilteredFunds(data);
       setFundYields({});
-      loadYieldData(data);
+      loadYieldData(data, YIELD_BATCH_SIZE, range);
     } catch (error) {
       if (provider === "ERSTE") {
         toast({
@@ -114,7 +116,7 @@ const Index = () => {
           setFunds(data);
           setFilteredFunds(data);
           setFundYields({});
-          loadYieldData(data);
+          loadYieldData(data, YIELD_BATCH_SIZE, range);
           toast({
             title: "Using cached funds",
             description: "Live source is rate-limited right now.",
@@ -134,7 +136,11 @@ const Index = () => {
     }
   };
 
-  const loadYieldData = async (fundsData: Fund[], limit: number = YIELD_BATCH_SIZE) => {
+  const loadYieldData = async (
+    fundsData: Fund[],
+    limit: number = YIELD_BATCH_SIZE,
+    range: number = selectedRange
+  ) => {
     setYieldsLoading(true);
     setYieldProgress(0);
     
@@ -148,12 +154,12 @@ const Index = () => {
     for (let i = 0; i < fundBatch.length; i++) {
       const fund = fundBatch[i];
       // Check success cache first
-      const cacheKey = `yield_${fund.primaryKey}_${selectedRange}months`;
-      const failCacheKey = `yield_fail_${fund.primaryKey}_${selectedRange}months`;
+      const cacheKey = `yield_${fund.primaryKey}_${range}months`;
+      const failCacheKey = `yield_fail_${fund.primaryKey}_${range}months`;
       const cached = localStorage.getItem(cacheKey);
       const failCached = localStorage.getItem(failCacheKey);
       
-      console.log(`🔍 Cache check for fund ${fund.primaryKey} (${selectedRange} months):`, {
+      console.log(`🔍 Cache check for fund ${fund.primaryKey} (${range} months):`, {
         cacheKey,
         hasCachedSuccess: !!cached,
         hasCachedFailure: !!failCached
@@ -201,8 +207,8 @@ const Index = () => {
       
       // Calculate yield for funds not in cache
       try {
-        console.log(`🔍 Calculating yield for fund ${fund.primaryKey} (${fund.portfolioName}) for ${selectedRange} months`);
-        const yieldPercent = await investmentApi.getSimpleYield(fund.primaryKey, selectedRange);
+        console.log(`🔍 Calculating yield for fund ${fund.primaryKey} (${fund.portfolioName}) for ${range} months`);
+        const yieldPercent = await investmentApi.getSimpleYield(fund.primaryKey, range);
         console.log(`📊 Yield result for fund ${fund.primaryKey}:`, {
           yieldPercent,
           type: typeof yieldPercent,
@@ -251,22 +257,29 @@ const Index = () => {
     }
     
     setFundYields(yieldsMap);
+    setLoadedYieldRange(range);
     setYieldsLoading(false);
   };
 
   // Load yields when switching back to funds tab if needed
   useEffect(() => {
-    if (provider === "KH" && activeTab === "funds" && funds.length > 0) {
-      // Check if we have yields for the current timeframe
-      const hasYieldsForCurrentTimeframe = funds.slice(0, YIELD_BATCH_SIZE).some(fund => fundYields[fund.primaryKey]);
-      if (!hasYieldsForCurrentTimeframe) {
-        loadYieldData(funds);
-      }
+    if (
+      provider === "KH" &&
+      activeTab === "funds" &&
+      funds.length > 0 &&
+      !yieldsLoading &&
+      loadedYieldRange !== selectedRange
+    ) {
+      loadYieldData(funds, YIELD_BATCH_SIZE, selectedRange);
     }
-  }, [provider, activeTab, selectedRange, funds, fundYields]);
+  }, [provider, activeTab, selectedRange, funds, yieldsLoading, loadedYieldRange]);
 
-  const handleFundClick = async (fund: Fund, months: number = selectedRange) => {
-    if (provider === "ERSTE") {
+  const handleFundClick = async (
+    fund: Fund,
+    months: number = selectedRange,
+    skipProviderGuard: boolean = false
+  ) => {
+    if (provider === "ERSTE" && !skipProviderGuard) {
       toast({
         title: "Erste list mode",
         description: "Detailed analysis is currently available for KH funds only.",
@@ -349,6 +362,10 @@ const Index = () => {
     }
     if (selectedFund) {
       handleFundClick(selectedFund, months);
+      return;
+    }
+    if (funds.length > 0) {
+      loadYieldData(funds, YIELD_BATCH_SIZE, months);
     }
   };
 
@@ -357,7 +374,41 @@ const Index = () => {
       loadFunds(selectedRange);
       return;
     }
-    loadYieldData(funds, funds.length);
+    loadYieldData(funds, funds.length, selectedRange);
+  };
+
+  const handleAnalyzeInvestmentFund = async (fundId: number) => {
+    try {
+      let targetFund = funds.find((fund) => fund.primaryKey === fundId);
+      if (!targetFund) {
+        const khFunds = await investmentApi.getFunds();
+        targetFund = khFunds.find((fund) => fund.primaryKey === fundId);
+        if (khFunds.length > 0) {
+          setProvider("KH");
+          setFunds(khFunds);
+          setFilteredFunds(khFunds);
+        }
+      }
+
+      if (!targetFund) {
+        toast({
+          title: "Fund not found",
+          description: "Could not open analysis for this investment.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setProvider("KH");
+      await handleFundClick(targetFund, selectedRange, true);
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to open investment analysis.",
+        variant: "destructive",
+      });
+      console.error("Failed to open investment analysis:", error);
+    }
   };
 
   // Sort funds by yield percentage (descending)
@@ -570,7 +621,7 @@ const Index = () => {
           </TabsContent>
 
           <TabsContent value="investments" className="space-y-6">
-            <InvestmentsTab />
+            <InvestmentsTab onAnalyzeFund={handleAnalyzeInvestmentFund} />
           </TabsContent>
         </Tabs>
       </div>

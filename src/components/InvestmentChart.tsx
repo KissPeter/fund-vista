@@ -124,6 +124,11 @@ export const InvestmentChart = ({
     return config;
   }, {} as any);
 
+  const zoomedChartData = chartData.slice(
+    committedBrushRange.startIndex,
+    committedBrushRange.endIndex + 1
+  );
+
   const handleBrushChange = (range: { startIndex?: number; endIndex?: number }) => {
     if (typeof range.startIndex !== "number" && typeof range.endIndex !== "number") return;
     const nextStart = typeof range.startIndex === "number" ? range.startIndex : committedBrushRange.startIndex;
@@ -154,7 +159,7 @@ export const InvestmentChart = ({
       <CardContent>
         <ChartContainer config={chartConfig} className="h-[320px] w-full !aspect-auto">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
+            <LineChart data={zoomedChartData}>
               <XAxis 
                 dataKey="date" 
                 tick={{ fontSize: 12 }}

@@ -19,6 +19,11 @@ export default defineConfig(({ mode }) => ({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/ersteapi/, ""),
       },
+      "/fxapi": {
+        target: "https://api.frankfurter.app",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/fxapi/, ""),
+      },
     },
   },
   plugins: [

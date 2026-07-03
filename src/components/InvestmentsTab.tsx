@@ -3,14 +3,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Download, Upload, TrendingDown, AlertCircle } from "lucide-react";
+import { Download, Upload, TrendingDown, AlertCircle, Trash2 } from "lucide-react";
 import { investmentStorage } from "@/services/investmentStorage";
 import { investmentApi } from "@/services/investmentApi";
 import { exchangeRateApi } from "@/services/exchangeRateApi";
 import type { Investment, InvestmentCalculation } from "@/types/investment";
 import { useToast } from "@/hooks/use-toast";
 
-export const InvestmentsTab = () => {
+interface InvestmentsTabProps {
+  onAnalyzeFund?: (fundId: number) => void;
+}
+
+export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
   const [investments, setInvestments] = useState<Investment[]>([]);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
@@ -20,6 +24,9 @@ export const InvestmentsTab = () => {
   useEffect(() => {
     loadInvestments();
   }, []);
+
+  const getInvestmentKey = (investment: Investment) =>
+    investment.id || `${investment.fundId}-${investment.investmentDate}-${investment.amount}`;
 
   const loadInvestments = async () => {
     setLoading(true);
@@ -73,8 +80,7 @@ export const InvestmentsTab = () => {
     const grossValueHuf = grossValue * currentFx;
     const grossProfit = grossValueHuf - investment.amount;
     const grossProfitPercent = (grossProfit / investment.amount) * 100;
-    
-    const netValue = grossValueHuf * 0.67; // 33% tax
+    const netValue = grossValueHuf;
     const netProfit = netValue - investment.amount;
     const netProfitPercent = (netProfit / investment.amount) * 100;
     
@@ -146,6 +152,22 @@ export const InvestmentsTab = () => {
     });
   };
 
+  const handleDeleteInvestment = (investment: Investment) => {
+    if (!investment.sold) return;
+    const updated = investments.map((inv) =>
+      getInvestmentKey(inv) === getInvestmentKey(investment)
+        ? { ...inv, hidden: true }
+        : inv
+    );
+    investmentStorage.replaceInvestments(updated);
+    setInvestments(updated);
+
+    toast({
+      title: "Investment Hidden",
+      description: "Sold investment hidden from this list",
+    });
+  };
+
   const handleExport = () => {
     const data = investmentStorage.exportInvestments();
     const blob = new Blob([data], { type: 'application/json' });
@@ -193,12 +215,17 @@ export const InvestmentsTab = () => {
     event.target.value = '';
   };
 
-  const totalPortfolio = investments.reduce((total, investment) => {
+  const visibleInvestments = investments.filter(
+    (investment) => !investment.hidden
+  );
+  const activeInvestments = visibleInvestments.filter((investment) => !investment.sold);
+
+  const totalPortfolio = activeInvestments.reduce((total, investment) => {
     const calc = calculateInvestment(investment);
     return total + calc.netValue;
   }, 0);
 
-  const totalInvested = investments.reduce((total, investment) => total + investment.amount, 0);
+  const totalInvested = activeInvestments.reduce((total, investment) => total + investment.amount, 0);
   const totalNetProfit = totalPortfolio - totalInvested;
   const totalNetProfitPercent = totalInvested > 0 ? (totalNetProfit / totalInvested) * 100 : 0;
 
@@ -274,7 +301,7 @@ export const InvestmentsTab = () => {
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
             </div>
-          ) : investments.length === 0 ? (
+          ) : visibleInvestments.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
               <AlertCircle className="mx-auto h-12 w-12 mb-4 opacity-50" />
               <p>No investments found. Start by adding an investment from the Analysis tab.</p>
@@ -295,13 +322,25 @@ export const InvestmentsTab = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {investments.map((investment) => {
+                  {visibleInvestments.map((investment) => {
                     const calc = calculateInvestment(investment);
                     const isPositive = calc.netProfit >= 0;
                     
                     return (
-                      <tr key={investment.id}>
-                        <td className="border border-border p-3">{investment.fundName}</td>
+                      <tr key={getInvestmentKey(investment)}>
+                        <td className="border border-border p-3">
+                          {onAnalyzeFund ? (
+                            <button
+                              type="button"
+                              className="text-primary underline-offset-2 hover:underline"
+                              onClick={() => onAnalyzeFund(investment.fundId)}
+                            >
+                              {investment.fundName}
+                            </button>
+                          ) : (
+                            investment.fundName
+                          )}
+                        </td>
                         <td className="border border-border p-3 text-right">
                           {formatHuf(investment.amount)}
                         </td>
@@ -338,13 +377,23 @@ export const InvestmentsTab = () => {
                               Sell
                             </Button>
                           ) : (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleRevertSell(investment.id)}
-                            >
-                              Revert sell
-                            </Button>
+                            <div className="flex items-center justify-center gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleRevertSell(investment.id)}
+                              >
+                                Revert sell
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                onClick={() => handleDeleteInvestment(investment)}
+                                aria-label="Delete sold investment"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
                           )}
                         </td>
                       </tr>

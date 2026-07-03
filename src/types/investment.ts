@@ -14,6 +14,7 @@ export interface Investment {
   soldDate?: string;
   soldFundValue?: number;
   soldFxRateToHuf?: number;
+  hidden?: boolean;
 }
 
 export interface InvestmentCalculation {

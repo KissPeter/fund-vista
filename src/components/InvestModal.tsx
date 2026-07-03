@@ -95,13 +95,14 @@ export const InvestModal = ({ fund, currentFundValue, chartData }: InvestModalPr
       const fundCurrency = (fund.currencyType || "HUF").toUpperCase();
       const fxRateToHufAtInvestment = await exchangeRateApi.getRateToHuf(fundCurrency, investmentDate);
       const currentFxRateToHuf = await exchangeRateApi.getRateToHuf(fundCurrency);
-      const amountInFundCurrency = amountValue / fxRateToHufAtInvestment;
+      const amountInFundCurrency = amountValue;
+      const amountInHuf = amountInFundCurrency * fxRateToHufAtInvestment;
 
       const investment: Investment = {
         id: `inv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         fundId: fund.primaryKey,
         fundName: fund.portfolioName,
-        amount: amountValue,
+        amount: amountInHuf,
         fundCurrency,
         amountInFundCurrency,
         fxRateToHufAtInvestment,
@@ -116,7 +117,7 @@ export const InvestModal = ({ fund, currentFundValue, chartData }: InvestModalPr
       
       toast({
         title: "Investment Added",
-        description: `Added investment of ${amount} HUF in ${fund.portfolioName}`,
+        description: `Added investment of ${amount} ${fundCurrency} in ${fund.portfolioName}`,
       });
 
       // Reset form
@@ -155,7 +156,7 @@ export const InvestModal = ({ fund, currentFundValue, chartData }: InvestModalPr
           </div>
           
           <div className="space-y-2">
-            <Label htmlFor="amount">Investment Amount (HUF)</Label>
+            <Label htmlFor="amount">Investment Amount ({(fund.currencyType || "HUF").toUpperCase()})</Label>
             <Input
               id="amount"
               type="number"

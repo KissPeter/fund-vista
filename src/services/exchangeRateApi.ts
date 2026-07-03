@@ -1,9 +1,20 @@
-const FX_BASE_URL = "https://api.frankfurter.app";
+const FX_BASE_URL = import.meta.env.VITE_FX_API_BASE_URL || "/fxapi";
 const FX_LATEST_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 interface FxResponse {
   rates?: Record<string, number>;
 }
+
+const fetchRate = async (url: string): Promise<number | null> => {
+  const response = await fetch(url);
+  if (!response.ok) return null;
+  const body = (await response.json()) as FxResponse;
+  const rate = body.rates?.HUF;
+  if (!rate || !Number.isFinite(rate)) return null;
+  return rate;
+};
+
+const toIsoDate = (date: Date) => date.toISOString().slice(0, 10);
 
 const getCachedRate = (key: string, ttlMs?: number): number | null => {
   const cached = localStorage.getItem(key);
@@ -47,19 +58,23 @@ export const exchangeRateApi = {
     const cached = getCachedRate(cacheKey, date ? undefined : FX_LATEST_CACHE_TTL_MS);
     if (cached !== null) return cached;
 
-    const url = date
-      ? `${FX_BASE_URL}/${date}?from=${normalized}&to=HUF`
-      : `${FX_BASE_URL}/latest?from=${normalized}&to=HUF`;
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch FX rate for ${normalized}/HUF`);
+    let rate: number | null = null;
+    if (date) {
+      // ponytail: nearest-previous fallback for non-business days / missing daily quotes.
+      const requested = new Date(`${date}T00:00:00`);
+      for (let i = 0; i < 10; i++) {
+        const probe = new Date(requested);
+        probe.setDate(requested.getDate() - i);
+        const probeDate = toIsoDate(probe);
+        rate = await fetchRate(`${FX_BASE_URL}/${probeDate}?from=${normalized}&to=HUF`);
+        if (rate !== null) break;
+      }
+    } else {
+      rate = await fetchRate(`${FX_BASE_URL}/latest?from=${normalized}&to=HUF`);
     }
 
-    const body = (await response.json()) as FxResponse;
-    const rate = body.rates?.HUF;
-    if (!rate || !Number.isFinite(rate)) {
-      throw new Error(`Invalid FX rate for ${normalized}/HUF`);
+    if (rate === null) {
+      throw new Error(`Failed to fetch FX rate for ${normalized}/HUF`);
     }
 
     // ponytail: cache rates in browser; swap provider only if this API becomes unavailable.
