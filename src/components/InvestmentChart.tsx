@@ -1,4 +1,4 @@
-import { Line, LineChart, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from "recharts";
+import { Brush, Line, LineChart, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from "recharts";
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { InvestModal } from "@/components/InvestModal";
@@ -181,6 +181,7 @@ export const InvestmentChart = ({
                     dot={false}
                   />
                 ))}
+                <Brush dataKey="date" height={30} stroke="#8884d8" />
               </LineChart>
             </ResponsiveContainer>
           </ChartContainer>
