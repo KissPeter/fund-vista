@@ -5,6 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { InvestModal } from "@/components/InvestModal";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import type { ChartData, Fund } from "@/services/investmentApi";
+import { getFundExternalLink } from "@/lib/fundExternalLink";
+import { ExternalLink } from "lucide-react";
 
 export interface ReturnAnalysisRow {
   label: string;
@@ -115,6 +117,7 @@ export const InvestmentChart = ({
   };
 
   const chartData = transformChartData();
+  const externalLink = getFundExternalLink(selectedFund);
 
   const chartConfig = data.diagram.series.reduce((config, series, index) => {
     config[`series${index}`] = {
@@ -151,8 +154,20 @@ export const InvestmentChart = ({
           )}
         </div>
         {data.tableData.results.length > 0 && (
-          <div className="text-sm text-muted-foreground">
-            {data.tableData.results[0].portfolioName}
+          <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <span>{data.tableData.results[0].portfolioName}</span>
+            {externalLink && (
+              <a
+                href={externalLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-primary hover:bg-primary/10"
+                title="Open external details"
+                aria-label="Open external details"
+              >
+                <ExternalLink className="h-4 w-4" />
+              </a>
+            )}
           </div>
         )}
       </CardHeader>

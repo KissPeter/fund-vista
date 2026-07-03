@@ -60,6 +60,13 @@ export interface ProviderFundsData {
   yields: Record<number, string>;
 }
 
+interface ErsteChartResponse {
+  series?: Array<[number, number]>;
+  title?: string;
+  ticker?: string;
+  id?: string;
+}
+
 const getErsteYieldColumnIndex = (months: number) => {
   if (months <= 3) return 5; // 3 hó
   return 6; // 1 év
@@ -72,6 +79,14 @@ const mapErsteCategoryToDeviceClass = (category: string) => {
   if (normalized.includes("nyersanyag")) return "STOCK_MATERIAL";
   if (normalized.includes("abszolút")) return "MIXED";
   return "MIXED";
+};
+
+const formatHuDate = (timestamp: number) => {
+  const d = new Date(timestamp);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}.${mm}.${dd}.`;
 };
 
 export const investmentApi = {
@@ -225,6 +240,108 @@ export const investmentApi = {
       data: result,
     }));
     return result;
+  },
+
+  async getErsteCalculationData(fundId: number, months: number = 12): Promise<ChartData> {
+    const rawCacheKey = `erste_chart_raw_${fundId}`;
+    const rawCached = localStorage.getItem(rawCacheKey);
+    const now = Date.now();
+    let raw: ErsteChartResponse | null = null;
+
+    if (rawCached) {
+      const parsed = JSON.parse(rawCached) as { timestamp: number; data: ErsteChartResponse };
+      if (now - parsed.timestamp < CALC_CACHE_TTL_MS) {
+        raw = parsed.data;
+      } else {
+        localStorage.removeItem(rawCacheKey);
+      }
+    }
+
+    if (!raw) {
+      await fetch(`${ERSTE_BASE_URL}/befektetesi_alapok/kereses`);
+      const response = await fetch(`${ERSTE_BASE_URL}/funds/chart/${fundId}?_=${now}`, {
+        headers: {
+          Accept: "*/*",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch Erste chart data");
+      }
+
+      raw = (await response.json()) as ErsteChartResponse;
+      localStorage.setItem(
+        rawCacheKey,
+        JSON.stringify({
+          timestamp: now,
+          data: raw,
+        })
+      );
+    }
+
+    const rawPoints = (raw.series || []).filter(
+      (point): point is [number, number] =>
+        Array.isArray(point) &&
+        point.length >= 2 &&
+        Number.isFinite(point[0]) &&
+        Number.isFinite(point[1])
+    );
+
+    if (rawPoints.length < 2) {
+      throw new Error("Insufficient Erste chart points");
+    }
+
+    const fromTs = now - months * 30 * 24 * 60 * 60 * 1000;
+    const filtered = rawPoints.filter(([ts]) => ts >= fromTs);
+    const points = filtered.length >= 2 ? filtered : rawPoints;
+
+    const labels = points.map(([ts]) => formatHuDate(ts));
+    const values = points.map(([, v]) => v);
+    const startValue = values[0];
+    const endValue = values[values.length - 1];
+    const yieldPercent = startValue
+      ? `${(((endValue - startValue) / Math.abs(startValue)) * 100).toFixed(2)}%`
+      : "0.00%";
+
+    return {
+      diagram: {
+        "scale-x": { labels },
+        series: [
+          {
+            text: raw.title || raw.ticker || `ERSTE ${fundId}`,
+            values,
+            "line-color": "#2563eb",
+          },
+        ],
+      },
+      tableData: {
+        results: [
+          {
+            primaryKey: fundId,
+            portfolioName: raw.title || raw.ticker || `ERSTE ${fundId}`,
+            yield: yieldPercent,
+            fundType: "ERSTE",
+            currency: "",
+            riskClassification: "",
+            nav: endValue.toString(),
+          },
+        ],
+      },
+      calculationResults: {
+        erste: {
+          startRate: startValue.toString(),
+          sumInvestment: "50000",
+          annualizedYieldPercent: yieldPercent,
+          dateTo: points[points.length - 1][0],
+          endRate: endValue.toString(),
+          yieldValue: (endValue - startValue).toString(),
+          regularityType: "ONETIME",
+          yieldPercent,
+          dateFrom: points[0][0],
+        },
+      },
+    };
   },
 
   // Simple yield calculation based on historical data

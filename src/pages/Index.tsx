@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { FundCard } from "@/components/FundCard";
@@ -11,17 +12,19 @@ import { InvestmentChart, type ReturnAnalysisRow } from "@/components/Investment
 import { InvestmentsTab } from "@/components/InvestmentsTab";
 import { Progress } from "@/components/ui/progress";
 import { investmentApi, type Fund, type ChartData } from "@/services/investmentApi";
-import { Search } from "lucide-react";
+import { Search, Shield, X } from "lucide-react";
 
 const YIELD_BATCH_SIZE = 10;
 
 const Index = () => {
+  const privacyBannerKey = "privacy_banner_dismissed";
   const [provider, setProvider] = useState<"KH" | "ERSTE">("KH");
   const [funds, setFunds] = useState<Fund[]>([]);
   const [filteredFunds, setFilteredFunds] = useState<Fund[]>([]);
   const [fundYields, setFundYields] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedCurrency, setSelectedCurrency] = useState("ALL");
   const [selectedRange, setSelectedRange] = useState(12);
   const [selectedFund, setSelectedFund] = useState<Fund | null>(null);
   const [chartData, setChartData] = useState<ChartData | null>(null);
@@ -31,6 +34,7 @@ const Index = () => {
   const [yieldsLoading, setYieldsLoading] = useState(false);
   const [yieldProgress, setYieldProgress] = useState(0);
   const [loadedYieldRange, setLoadedYieldRange] = useState<number | null>(null);
+  const [showPrivacyBanner, setShowPrivacyBanner] = useState(true);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -38,12 +42,23 @@ const Index = () => {
   }, [provider]);
 
   useEffect(() => {
+    setShowPrivacyBanner(localStorage.getItem(privacyBannerKey) !== "1");
+  }, []);
+
+  useEffect(() => {
     const filtered = funds.filter(fund =>
-      fund.portfolioName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      fund.fundNo.toLowerCase().includes(searchTerm.toLowerCase())
+      (
+        fund.portfolioName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        fund.fundNo.toLowerCase().includes(searchTerm.toLowerCase())
+      ) &&
+      (selectedCurrency === "ALL" || fund.currencyType === selectedCurrency)
     );
     setFilteredFunds(filtered);
-  }, [funds, searchTerm]);
+  }, [funds, searchTerm, selectedCurrency]);
+
+  useEffect(() => {
+    setSelectedCurrency("ALL");
+  }, [provider]);
 
   const loadFunds = async (range: number = selectedRange) => {
     try {
@@ -279,26 +294,25 @@ const Index = () => {
     months: number = selectedRange,
     skipProviderGuard: boolean = false
   ) => {
-    if (provider === "ERSTE" && !skipProviderGuard) {
-      toast({
-        title: "Erste list mode",
-        description: "Detailed analysis is currently available for KH funds only.",
-      });
-      return;
-    }
-
     setSelectedFund(fund);
     setChartLoading(true);
     setActiveTab("analysis");
     
     try {
       const regularityType = fund.regularityTypes.includes('REGULAR') ? 'REGULAR' : 'ONETIME';
-      const data = await investmentApi.getCalculationData(
-        fund.primaryKey, 
-        50000, 
-        months, 
-        regularityType
-      );
+      const getPeriodData = async (periodMonths: number) => {
+        if (provider === "ERSTE" && !skipProviderGuard) {
+          return investmentApi.getErsteCalculationData(fund.primaryKey, periodMonths);
+        }
+        return investmentApi.getCalculationData(
+          fund.primaryKey,
+          50000,
+          periodMonths,
+          regularityType
+        );
+      };
+
+      const data = await getPeriodData(months);
       setChartData(data);
 
       const periods = [
@@ -333,7 +347,7 @@ const Index = () => {
           try {
             const periodData = period.months === months
               ? data
-              : await investmentApi.getCalculationData(fund.primaryKey, 50000, period.months, regularityType);
+              : await getPeriodData(period.months);
             return toRow(period.label, periodData);
           } catch {
             return { label: period.label, returnPercent: null, startValue: null, endValue: null };
@@ -356,7 +370,7 @@ const Index = () => {
 
   const handleRangeChange = (months: number) => {
     setSelectedRange(months);
-    if (provider === "ERSTE") {
+    if (provider === "ERSTE" && !selectedFund) {
       loadFunds(months);
       return;
     }
@@ -411,7 +425,14 @@ const Index = () => {
     }
   };
 
+  const dismissPrivacyBanner = () => {
+    localStorage.setItem(privacyBannerKey, "1");
+    setShowPrivacyBanner(false);
+  };
+
   // Sort funds by yield percentage (descending)
+  const currencyButtons = ["ALL", "HUF", "EUR", "USD"];
+
   const sortedFunds = [...filteredFunds].sort((a, b) => {
     const yieldA = fundYields[a.primaryKey];
     const yieldB = fundYields[b.primaryKey];
@@ -427,86 +448,133 @@ const Index = () => {
   });
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background to-muted/20 p-4 md:p-8">
+    <div className="min-h-screen bg-gradient-to-br from-background to-muted/20 p-4 md:p-6">
       <div className="max-w-7xl mx-auto">
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent mb-4">
+        {showPrivacyBanner && (
+          <Alert className="mb-6 border-primary/30 bg-primary/5 text-primary">
+            <Shield className="h-4 w-4" />
+            <AlertDescription className="pr-8">
+              All data is saved only in your browser. Nobody else can read it.
+            </AlertDescription>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={dismissPrivacyBanner}
+              className="absolute right-2 top-2 h-7 w-7 text-primary/80 hover:text-primary"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </Alert>
+        )}
+        <div className="text-center mb-4">
+          <h1 className="text-3xl md:text-4xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent mb-2">
             Investment Tracker
           </h1>
-          <p className="text-xl text-muted-foreground">
+          <p className="text-base md:text-lg text-muted-foreground">
             Track and analyze K&H and Erste investment funds
           </p>
         </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
           <TabsList className="grid w-full grid-cols-3 max-w-[600px] mx-auto">
-            <TabsTrigger value="funds">Fund Explorer</TabsTrigger>
+            <TabsTrigger value="funds">Controls</TabsTrigger>
             <TabsTrigger value="analysis">Analysis</TabsTrigger>
             <TabsTrigger value="investments">Investments</TabsTrigger>
           </TabsList>
 
           <TabsContent value="funds" className="space-y-6">
             <Card>
-              <CardHeader>
+              <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2">
                   <Search className="h-5 w-5" />
                   Search & Filter
                 </CardTitle>
-                <CardDescription>
-                  Find investment funds and analyze their performance
-                </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex gap-2">
-                  <Button
-                    variant={provider === "KH" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setProvider("KH")}
-                  >
-                    K&H
-                  </Button>
-                  <Button
-                    variant={provider === "ERSTE" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setProvider("ERSTE")}
-                  >
-                    ERSTE
-                  </Button>
-                </div>
-                <div className="flex flex-col sm:flex-row gap-4">
-                  <div className="flex-1">
-                    <Input
-                      placeholder="Search by fund name or number..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="w-full"
-                    />
+              <CardContent>
+                <div className="flex items-end gap-3 flex-wrap lg:flex-nowrap">
+                  <div className="flex flex-wrap items-end gap-3 flex-1 min-w-0">
+                    <div className="rounded-md border bg-muted/20 px-3 py-2">
+                      <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Provider</div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          variant={provider === "KH" ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setProvider("KH")}
+                        >
+                          K&H
+                        </Button>
+                        <Button
+                          variant={provider === "ERSTE" ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setProvider("ERSTE")}
+                        >
+                          ERSTE
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-md border bg-muted/20 px-3 py-2">
+                      <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Currency</div>
+                      <div className="flex flex-wrap gap-2">
+                        {currencyButtons.map((currency) => (
+                          <Button
+                            key={currency}
+                            variant={selectedCurrency === currency ? "default" : "outline"}
+                            size="sm"
+                            onClick={() => setSelectedCurrency(currency)}
+                            className="min-w-[56px]"
+                          >
+                            {currency}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-md border bg-muted/20 px-3 py-2">
+                      <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Time</div>
+                      <DateRangeFilter
+                        selectedRange={selectedRange}
+                        onRangeChange={handleRangeChange}
+                      />
+                    </div>
+
+                    <div className="rounded-md border bg-muted/20 px-3 py-2">
+                      <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Search</div>
+                      <Input
+                        placeholder="Search fund by name or number"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="h-9 w-[220px] bg-background"
+                      />
+                    </div>
                   </div>
-                  <DateRangeFilter 
-                    selectedRange={selectedRange}
-                    onRangeChange={handleRangeChange}
-                  />
+
+                  <div className="rounded-md border bg-muted/20 px-3 py-2 shrink-0 lg:ml-auto">
+                    <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Action</div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleFindTopGainer}
+                        disabled={yieldsLoading || funds.length === 0}
+                      >
+                        Find highest gain
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-                
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <span>Found {sortedFunds.length} funds</span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleFindTopGainer}
-                    disabled={yieldsLoading || funds.length === 0}
-                  >
-                    Find highest gain
-                  </Button>
+
+                <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+                  <span>Found {sortedFunds.length}</span>
                   {(loading || yieldsLoading) && (
                     <Badge variant="secondary" className="animate-pulse">
                       {loading ? 'Loading funds...' : `Calculating yields for ${selectedRange} months...`}
                     </Badge>
                   )}
                 </div>
-                
+
                 {yieldsLoading && (
-                  <div className="space-y-2">
+                  <div className="mt-3 space-y-2">
                     <div className="flex justify-between text-sm text-muted-foreground">
                       <span>Processing yield calculations...</span>
                       <span>{Math.round(yieldProgress)}%</span>

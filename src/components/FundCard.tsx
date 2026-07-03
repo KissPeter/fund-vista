@@ -1,6 +1,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import type { Fund } from "@/services/investmentApi";
+import { getFundExternalLink } from "@/lib/fundExternalLink";
+import { ExternalLink } from "lucide-react";
 
 interface FundCardProps {
   fund: Fund;
@@ -10,6 +12,8 @@ interface FundCardProps {
 }
 
 export const FundCard = ({ fund, yieldPercent, isLoadingYield, onClick }: FundCardProps) => {
+  const externalLink = getFundExternalLink(fund);
+
   const getDeviceClassColor = (deviceClass: string) => {
     switch (deviceClass) {
       case 'STOCK_MATERIAL':
@@ -58,7 +62,20 @@ export const FundCard = ({ fund, yieldPercent, isLoadingYield, onClick }: FundCa
       </CardHeader>
       <CardContent className="pt-0">
         <div className="space-y-2">
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap items-center gap-1">
+            {externalLink && (
+              <a
+                href={externalLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-primary hover:bg-primary/10"
+                onClick={(event) => event.stopPropagation()}
+                title="Open external details"
+                aria-label="Open external details"
+              >
+                <ExternalLink className="h-4 w-4" />
+              </a>
+            )}
             <Badge 
               variant="outline" 
               className={getDeviceClassColor(fund.deviceClassType)}
