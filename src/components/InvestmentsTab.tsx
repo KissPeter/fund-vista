@@ -270,7 +270,7 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Portfolio Value (Net)</CardTitle>
+            <CardTitle className="text-sm font-medium">Portfolio Value (Gross)</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{formatHuf(totalPortfolio)}</div>
@@ -278,7 +278,7 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Net Profit</CardTitle>
+            <CardTitle className="text-sm font-medium">Gross Profit</CardTitle>
           </CardHeader>
           <CardContent>
             <div className={`text-2xl font-bold ${totalNetProfit >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
@@ -315,8 +315,7 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
                     <th className="border border-border p-3 text-right">Amount (HUF)</th>
                     <th className="border border-border p-3 text-right">Date</th>
                     <th className="border border-border p-3 text-right">Gross Value</th>
-                    <th className="border border-border p-3 text-right">Net Value</th>
-                    <th className="border border-border p-3 text-right">Net Profit</th>
+                    <th className="border border-border p-3 text-right">Gross Profit</th>
                     <th className="border border-border p-3 text-center">Status</th>
                     <th className="border border-border p-3 text-center">Action</th>
                   </tr>
@@ -324,7 +323,7 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
                 <tbody>
                   {visibleInvestments.map((investment) => {
                     const calc = calculateInvestment(investment);
-                    const isPositive = calc.netProfit >= 0;
+                    const isPositive = calc.grossProfit >= 0;
                     
                     return (
                       <tr key={getInvestmentKey(investment)}>
@@ -350,15 +349,12 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
                         <td className="border border-border p-3 text-right">
                           {formatHuf(calc.grossValue)}
                         </td>
-                        <td className="border border-border p-3 text-right">
-                          {formatHuf(calc.netValue)}
-                        </td>
                         <td className={`border border-border p-3 text-right font-semibold ${
                           isPositive ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
                         }`}>
-                          {isPositive ? "+" : ""}{formatHuf(calc.netProfit)}
+                          {isPositive ? "+" : ""}{formatHuf(calc.grossProfit)}
                           <div className="text-xs font-normal">
-                            {isPositive ? '+' : ''}{calc.netProfitPercent.toFixed(2)}%
+                            {isPositive ? '+' : ''}{calc.grossProfitPercent.toFixed(2)}%
                           </div>
                         </td>
                         <td className="border border-border p-3 text-center">
