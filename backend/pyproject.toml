@@ -7,7 +7,7 @@ requires-python = "==3.13.*"
 [tool.poetry.dependencies]
 python = "==3.13.*"
 
-[project.dependencies]
+[project]
 dependencies = [
     "fastapi[standard]==0.115.0",
     "uvicorn[standard]==0.30.6",
