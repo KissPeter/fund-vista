@@ -369,12 +369,12 @@ const Index = () => {
 
   const handleRangeChange = (months: number) => {
     setSelectedRange(months);
-    if (provider === "ERSTE" && !selectedFund) {
-      loadFunds(months);
+    if (selectedFund && activeTab === "analysis") {
+      handleFundClick(selectedFund, months);
       return;
     }
-    if (selectedFund) {
-      handleFundClick(selectedFund, months);
+    if (provider === "ERSTE") {
+      loadFunds(months);
       return;
     }
     if (funds.length > 0) {
