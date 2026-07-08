@@ -19,7 +19,7 @@ UPSTREAMS: Dict[str, str] = {
 
 
 CACHEABLE_METHODS = {"GET", "POST"}
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.getenv("REDIS_CLOUD_URL", "redis://localhost:6379/0")
 CACHE_PREFIX = "fund-vista-proxy"
 CORS_ALLOW_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8080").split(",") if origin.strip()]
 CORS_ALLOW_ORIGIN_REGEX = os.getenv(
