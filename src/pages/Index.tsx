@@ -14,7 +14,6 @@ import { Progress } from "@/components/ui/progress";
 import { investmentApi, type Fund, type ChartData } from "@/services/investmentApi";
 import { Search, Shield, X } from "lucide-react";
 
-const YIELD_BATCH_SIZE = 10;
 
 const Index = () => {
   const privacyBannerKey = "privacy_banner_dismissed";
@@ -92,7 +91,7 @@ const Index = () => {
         if (now - timestamp < oneDay) {
           setFunds(data);
           setFilteredFunds(data);
-          loadYieldData(data, YIELD_BATCH_SIZE, range);
+          loadYieldData(data, data.length, range);
           setLoading(false);
           return;
         }
@@ -114,7 +113,7 @@ const Index = () => {
       setFunds(data);
       setFilteredFunds(data);
       setFundYields({});
-      loadYieldData(data, YIELD_BATCH_SIZE, range);
+      loadYieldData(data, data.length, range);
     } catch (error) {
       if (provider === "ERSTE") {
         toast({
@@ -131,7 +130,7 @@ const Index = () => {
           setFunds(data);
           setFilteredFunds(data);
           setFundYields({});
-          loadYieldData(data, YIELD_BATCH_SIZE, range);
+          loadYieldData(data, data.length, range);
           toast({
             title: "Using cached funds",
             description: "Live source is rate-limited right now.",
@@ -153,7 +152,7 @@ const Index = () => {
 
   const loadYieldData = async (
     fundsData: Fund[],
-    limit: number = YIELD_BATCH_SIZE,
+    limit: number = fundsData.length,
     range: number = selectedRange
   ) => {
     setYieldsLoading(true);
@@ -285,7 +284,7 @@ const Index = () => {
       !yieldsLoading &&
       loadedYieldRange !== selectedRange
     ) {
-      loadYieldData(funds, YIELD_BATCH_SIZE, selectedRange);
+      loadYieldData(funds, funds.length, selectedRange);
     }
   }, [provider, activeTab, selectedRange, funds, yieldsLoading, loadedYieldRange]);
 
@@ -379,7 +378,7 @@ const Index = () => {
       return;
     }
     if (funds.length > 0) {
-      loadYieldData(funds, YIELD_BATCH_SIZE, months);
+      loadYieldData(funds, funds.length, months);
     }
   };
 
