@@ -397,11 +397,6 @@ const Index = () => {
       if (!targetFund) {
         const khFunds = await investmentApi.getFunds();
         targetFund = khFunds.find((fund) => fund.primaryKey === fundId);
-        if (khFunds.length > 0) {
-          setProvider("KH");
-          setFunds(khFunds);
-          setFilteredFunds(khFunds);
-        }
       }
 
       if (!targetFund) {
@@ -413,7 +408,6 @@ const Index = () => {
         return;
       }
 
-      setProvider("KH");
       await handleFundClick(targetFund, selectedRange, true);
     } catch (error) {
       toast({
@@ -494,6 +488,16 @@ const Index = () => {
                 <div className="flex items-end gap-3 flex-wrap lg:flex-nowrap">
                   <div className="flex flex-wrap items-end gap-3 flex-1 min-w-0">
                     <div className="rounded-md border bg-muted/20 px-3 py-2">
+                      <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Search</div>
+                      <Input
+                        placeholder="Search fund by name or number"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="h-9 w-[220px] bg-background"
+                      />
+                    </div>
+
+                    <div className="rounded-md border bg-muted/20 px-3 py-2">
                       <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Provider</div>
                       <div className="flex flex-wrap items-center gap-2">
                         <Button
@@ -535,16 +539,6 @@ const Index = () => {
                       <DateRangeFilter
                         selectedRange={selectedRange}
                         onRangeChange={handleRangeChange}
-                      />
-                    </div>
-
-                    <div className="rounded-md border bg-muted/20 px-3 py-2">
-                      <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Search</div>
-                      <Input
-                        placeholder="Search fund by name or number"
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        className="h-9 w-[220px] bg-background"
                       />
                     </div>
                   </div>

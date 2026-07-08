@@ -1,5 +1,7 @@
-const BASE_URL = import.meta.env.VITE_INVESTMENT_API_BASE_URL || "http://localhost:8000/api";
-const ERSTE_BASE_URL = import.meta.env.VITE_ERSTE_API_BASE_URL || "http://localhost:8000/ersteapi";
+import { getApiBaseUrl } from "./apiBaseUrl";
+
+const BASE_URL = import.meta.env.VITE_INVESTMENT_API_BASE_URL || getApiBaseUrl("/api");
+const ERSTE_BASE_URL = import.meta.env.VITE_ERSTE_API_BASE_URL || getApiBaseUrl("/ersteapi");
 const CALC_CACHE_TTL_MS = 30 * 60 * 1000;
 const ERSTE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 

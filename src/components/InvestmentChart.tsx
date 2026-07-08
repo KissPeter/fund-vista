@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Brush, Line, LineChart, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from "recharts";
+import { Brush, CartesianGrid, Line, LineChart, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from "recharts";
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { InvestModal } from "@/components/InvestModal";
@@ -175,6 +175,7 @@ export const InvestmentChart = ({
         <ChartContainer config={chartConfig} className="h-[320px] w-full !aspect-auto">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={zoomedChartData}>
+              <CartesianGrid vertical={false} strokeDasharray="3 3" />
               <XAxis 
                 dataKey="date" 
                 tick={{ fontSize: 12 }}
@@ -216,6 +217,7 @@ export const InvestmentChart = ({
           <ChartContainer config={chartConfig} className="h-[260px] w-full !aspect-auto">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
+                <CartesianGrid vertical={false} strokeDasharray="3 3" />
                 <XAxis
                   dataKey="date"
                   tick={{ fontSize: 12 }}

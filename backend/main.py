@@ -20,11 +20,14 @@ UPSTREAMS: Dict[str, str] = {
 CACHEABLE_METHODS = {"GET", "POST"}
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CACHE_PREFIX = "fund-vista-proxy"
+CORS_ALLOW_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8080").split(",") if origin.strip()]
+CORS_ALLOW_ORIGIN_REGEX = os.getenv("CORS_ALLOW_ORIGIN_REGEX", r"https?://[^/]+:8080")
 
 app = FastAPI(title="Fund Vista Proxy")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8080").split(","),
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_origin_regex=CORS_ALLOW_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -94,7 +97,7 @@ async def proxy(prefix: str, path: str, request: Request) -> Response:
             return Response(
                 content=content,
                 status_code=payload["status"],
-                headers=payload["headers"] | {"x-cache": "HIT"},
+                headers={**payload["headers"], "x-cache": "HIT"},
             )
 
     forward_headers = {

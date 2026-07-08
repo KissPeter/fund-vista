@@ -1,4 +1,6 @@
-const FX_BASE_URL = import.meta.env.VITE_FX_API_BASE_URL || "http://localhost:8000/fxapi";
+import { getApiBaseUrl } from "./apiBaseUrl";
+
+const FX_BASE_URL = import.meta.env.VITE_FX_API_BASE_URL || getApiBaseUrl("/fxapi");
 const FX_LATEST_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 interface FxResponse {

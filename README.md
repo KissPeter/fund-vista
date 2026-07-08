@@ -74,7 +74,7 @@ Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-trick
 
 ## Local proxy backend (FastAPI + Redis)
 
-The app now expects a local FastAPI proxy at `http://localhost:8000` for KH/Erste/FX requests.
+The app now expects a FastAPI proxy on the same host as the app, on port `8001`, for KH/Erste/FX requests.
 
 1. Start Redis:
 ```sh
@@ -91,6 +91,7 @@ pip install -r backend/requirements.txt
 cp .env.example .env
 cp backend/.env.example backend/.env
 ```
+The proxy allows the Vite dev server on `http://localhost:8080` and any other host on port `8080` by default; override `CORS_ALLOW_ORIGINS` or `CORS_ALLOW_ORIGIN_REGEX` if you need a tighter or broader policy.
 4. Start FastAPI proxy:
 ```sh
 npm run dev:api

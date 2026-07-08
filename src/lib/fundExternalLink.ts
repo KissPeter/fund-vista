@@ -9,7 +9,7 @@ export const getFundExternalLink = (fund?: Fund | null) => {
     return `https://www.bamosz.hu/alapoldal?isin=${fundNo}`;
   }
 
-  if (fundNo.startsWith("BE") && (currency === "EUR" || currency === "USD")) {
+  if (fundNo.startsWith("BE") && (currency === "EUR" || currency === "USD" || currency === "HUF")) {
     return `https://markets.ft.com/data/funds/tearsheet/summary?s=${fundNo}:${currency}`;
   }
 
