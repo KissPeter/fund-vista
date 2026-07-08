@@ -1,104 +1,47 @@
-# Welcome to your Lovable project
+# Fund Vista
 
-## Project info
+Fund Vista tracks K&H and Erste funds, shows return analysis, and stores investment notes in the browser.
 
-**URL**: https://lovable.dev/projects/768e1988-0c53-483d-9a60-435b1932f39c
-
-## How can I edit this code?
-
-There are several ways of editing your application.
-
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/768e1988-0c53-483d-9a60-435b1932f39c) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
-```
-
-**Edit a file directly in GitHub**
-
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
-
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with:
+## Stack
 
 - Vite
+- React 18
 - TypeScript
-- React
-- shadcn-ui
 - Tailwind CSS
+- shadcn/ui
 
-## How can I deploy this project?
+## Setup
 
-Simply open [Lovable](https://lovable.dev/projects/768e1988-0c53-483d-9a60-435b1932f39c) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
-
-## Local proxy backend (FastAPI + Redis)
-
-The app now expects a FastAPI proxy on the same host as the app, on port `8001`, for KH/Erste/FX requests.
-
-1. Start Redis:
 ```sh
-docker run --name fund-vista-redis -p 6379:6379 redis:7-alpine
-```
-2. Install backend deps:
-```sh
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-```
-3. Configure env files:
-```sh
+npm install
 cp .env.example .env
 cp backend/.env.example backend/.env
 ```
-The proxy allows the Vite dev server on `http://localhost:8080` and any other host on port `8080` by default; override `CORS_ALLOW_ORIGINS` or `CORS_ALLOW_ORIGIN_REGEX` if you need a tighter or broader policy.
-4. Start FastAPI proxy:
-```sh
-npm run dev:api
-```
-5. Start frontend:
+
+## Run locally
+
+Frontend:
+
 ```sh
 npm run dev
 ```
 
-Proxy responses are cached in Redis until end of day (server local time).
+Backend proxy:
+
+```sh
+npm run dev:api
+```
+
+## Scripts
+
+- `npm run dev` - start the frontend
+- `npm run dev:api` - start the FastAPI proxy
+- `npm run build` - build the frontend
+- `npm run lint` - lint the frontend
+
+## Backend
+
+The frontend reads its API base URL from `VITE_BACKEND_BASE_URL`.
+By default it points to `https://fund-vista.fastapicloud.dev`.
+
+Redis is optional on the proxy: if it is unavailable, requests still work and caching is skipped.

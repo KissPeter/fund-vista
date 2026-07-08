@@ -32,6 +32,12 @@ export const InvestmentChart = ({
   selectedRangeMonths = 12,
   onRangeChange,
 }: InvestmentChartProps) => {
+  type ChartPoint = {
+    date: string;
+    [key: `series${number}`]: number | string;
+    [key: `series${number}Pct`]: number | string;
+  };
+
   const [rebaseStartIndex, setRebaseStartIndex] = useState(0);
   const [committedBrushRange, setCommittedBrushRange] = useState<{ startIndex: number; endIndex: number }>({
     startIndex: 0,
@@ -99,7 +105,7 @@ export const InvestmentChart = ({
     if (!data?.diagram?.series?.[0]?.values) return [];
     
     return data.diagram['scale-x'].labels.map((label, index) => {
-      const item: any = { date: label };
+      const item: ChartPoint = { date: label };
       data.diagram.series.forEach((series, seriesIndex) => {
         const values = series.values;
         const currentValue = values[index] || 0;
@@ -119,13 +125,13 @@ export const InvestmentChart = ({
   const chartData = transformChartData();
   const externalLink = getFundExternalLink(selectedFund);
 
-  const chartConfig = data.diagram.series.reduce((config, series, index) => {
+  const chartConfig = data.diagram.series.reduce<Record<string, { label: string; color: string }>>((config, series, index) => {
     config[`series${index}`] = {
       label: series.text,
       color: series['line-color'],
     };
     return config;
-  }, {} as any);
+  }, {});
 
   const zoomedChartData = chartData.slice(
     committedBrushRange.startIndex,
