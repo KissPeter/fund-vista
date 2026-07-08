@@ -1,11 +1,5 @@
-const API_PORT = "8001";
+const BACKEND_ORIGIN = import.meta.env.VITE_BACKEND_BASE_URL || "https://fund-vista.fastapicloud.dev";
 
 export const getApiBaseUrl = (path: string) => {
-  if (typeof window === "undefined") {
-    return `http://localhost:${API_PORT}${path}`;
-  }
-
-  const url = new URL(window.location.origin);
-  url.port = API_PORT;
-  return `${url.origin}${path}`;
+  return `${BACKEND_ORIGIN.replace(/\/$/, "")}${path}`;
 };

@@ -22,7 +22,10 @@ CACHEABLE_METHODS = {"GET", "POST"}
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CACHE_PREFIX = "fund-vista-proxy"
 CORS_ALLOW_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8080").split(",") if origin.strip()]
-CORS_ALLOW_ORIGIN_REGEX = os.getenv("CORS_ALLOW_ORIGIN_REGEX", r"https?://[^/]+:8080")
+CORS_ALLOW_ORIGIN_REGEX = os.getenv(
+    "CORS_ALLOW_ORIGIN_REGEX",
+    r"(https?://[^/]+:8080|https://[^/]+\.github\.io)",
+)
 
 app = FastAPI(title="Fund Vista Proxy")
 app.add_middleware(
@@ -62,8 +65,12 @@ def _response_headers(headers: httpx.Headers, cache_hit: bool = False) -> Dict[s
 @app.on_event("startup")
 async def _startup() -> None:
     global redis_client
-    redis_client = Redis.from_url(REDIS_URL, decode_responses=False)
-    await redis_client.ping()
+    try:
+        redis_client = Redis.from_url(REDIS_URL, decode_responses=False)
+        await redis_client.ping()
+    except Exception as exc:
+        redis_client = None
+        print(f"Redis unavailable, continuing without cache: {exc}")
 
 
 @app.on_event("shutdown")
@@ -80,6 +87,7 @@ async def health() -> Dict[str, str]:
 
 @app.api_route("/{prefix}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy(prefix: str, path: str, request: Request) -> Response:
+    global redis_client
     upstream = UPSTREAMS.get(prefix)
     if upstream is None:
         raise HTTPException(status_code=404, detail="Unknown upstream prefix")
@@ -91,15 +99,19 @@ async def proxy(prefix: str, path: str, request: Request) -> Response:
 
     cache_key = _cache_key(prefix, path, query, method, body)
     if redis_client and method in CACHEABLE_METHODS:
-        cached = await redis_client.get(cache_key)
-        if cached:
-            payload = json.loads(cached)
-            content = base64.b64decode(payload["body"])
-            return Response(
-                content=content,
-                status_code=payload["status"],
-                headers={**payload["headers"], "x-cache": "HIT"},
-            )
+        try:
+            cached = await redis_client.get(cache_key)
+            if cached:
+                payload = json.loads(cached)
+                content = base64.b64decode(payload["body"])
+                return Response(
+                    content=content,
+                    status_code=payload["status"],
+                    headers={**payload["headers"], "x-cache": "HIT"},
+                )
+        except RedisError as exc:
+            print(f"Redis cache read failed for {cache_key}: {exc}")
+            redis_client = None
 
     forward_headers = {
         key: value
