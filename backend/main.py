@@ -17,6 +17,7 @@ UPSTREAMS: Dict[str, str] = {
     "fxapi": "https://api.frankfurter.app",
 }
 
+
 CACHEABLE_METHODS = {"GET", "POST"}
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CACHE_PREFIX = "fund-vista-proxy"
