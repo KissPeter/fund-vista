@@ -14,7 +14,7 @@ from redis.exceptions import RedisError
 UPSTREAMS: Dict[str, str] = {
     "api": "https://www.kh.hu",
     "ersteapi": "https://www.erstemarket.hu",
-    "fxapi": "https://api.frankfurter.app",
+    "fxapi": "https://api.frankfurter.dev/v1",
 }
 
 
