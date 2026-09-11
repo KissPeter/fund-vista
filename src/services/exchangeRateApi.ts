@@ -68,11 +68,11 @@ export const exchangeRateApi = {
         const probe = new Date(requested);
         probe.setDate(requested.getDate() - i);
         const probeDate = toIsoDate(probe);
-        rate = await fetchRate(`${FX_BASE_URL}/${probeDate}?from=${normalized}&to=HUF`);
+        rate = await fetchRate(`${FX_BASE_URL}/${probeDate}?base=${normalized}&symbols=HUF`);
         if (rate !== null) break;
       }
     } else {
-      rate = await fetchRate(`${FX_BASE_URL}/latest?from=${normalized}&to=HUF`);
+      rate = await fetchRate(`${FX_BASE_URL}/latest?base=${normalized}&symbols=HUF`);
     }
 
     if (rate === null) {

@@ -20,7 +20,7 @@ UPSTREAMS: Dict[str, str] = {
 
 CACHEABLE_METHODS = {"GET", "POST"}
 REDIS_URL = os.getenv("REDIS_CLOUD_URL", "redis://localhost:6379/0")
-CACHE_PREFIX = "fund-vista-proxy"
+CACHE_PREFIX = "fund-vista-proxy:v2"
 CORS_ALLOW_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8080").split(",") if origin.strip()]
 CORS_ALLOW_ORIGIN_REGEX = os.getenv(
     "CORS_ALLOW_ORIGIN_REGEX",
@@ -116,7 +116,8 @@ async def proxy(prefix: str, path: str, request: Request) -> Response:
     forward_headers = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in {"host", "content-length", "connection"}
+        if key.lower()
+        not in {"host", "content-length", "connection", "accept-encoding"}
     }
 
     try:
