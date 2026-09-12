@@ -113,6 +113,19 @@ class ConvertParams(BaseModel):
         default=False,
         description="Flatten uneven paper background before thresholding.",
     )
+    strip_hatch_px: int = Field(
+        default=0, ge=0, le=50,
+        description=(
+            "Erase ink strokes thinner than this many pixels (source "
+            "resolution) via morphological opening on the ink mask, applied "
+            "after thresholding and before line generation. Removes "
+            "hatch/cross-hatch texture — decorative or baked into the "
+            "source image's own shading — while leaving bolder strokes "
+            "(outlines, solid fills) intact; unlike remove_background this "
+            "is texture-width-based, not a background/foreground guess. "
+            "0 disables."
+        ),
+    )
     hatch_pitch_mm: float = Field(default=1.2, gt=0.0, le=10.0)
     hatch_angle_deg: float = Field(
         default=45.0, ge=0.0, lt=180.0,

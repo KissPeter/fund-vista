@@ -120,6 +120,14 @@ def run_convert(
             gray = imaging.adjust_contrast(gray, params.contrast)
             gray = imaging.adjust_brightness(gray, params.brightness)
             mask = imaging.threshold_mask(gray, params.threshold)
+            if params.strip_hatch_px > 0:
+                # Morphological opening on the ink mask: erases anything
+                # thinner than strip_hatch_px (hatch/cross-hatch strokes)
+                # while regenerating thicker strokes (outlines, solid fills)
+                # at full width. Deliberately grouped into the "preprocess"
+                # timing bucket below, same as blur/contrast/threshold.
+                mask = imaging.strip_hatch(mask, params.strip_hatch_px)
+                warnings.append("hatch_stripped")
             _timed("preprocess", image_id, method_label, t0)
             t0 = time.perf_counter()
             # Hatch pitch is authored in mm; convert to px with the same scale

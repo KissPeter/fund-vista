@@ -188,6 +188,33 @@ def threshold_mask(gray: np.ndarray, threshold: int) -> np.ndarray:
     return gray < np.uint8(threshold)
 
 
+def strip_hatch(mask: np.ndarray, kernel_px: int) -> np.ndarray:
+    """Erase ink strokes thinner than ``kernel_px`` via morphological opening.
+
+    Crosshatch/hatch fill is made of thin, closely-spaced parallel strokes;
+    real linework (outlines, bold glyphs, solid fills) is thicker. Opening
+    (erode then dilate) with an isotropic kernel removes any connected ink
+    region thinner than the kernel in every direction and regenerates the
+    rest at full width — so hatch strokes vanish, whether they sit in
+    decorative background or inside a shape's own shading, while thicker
+    strokes survive intact.
+
+    This is deliberately texture-agnostic: unlike ``remove_background`` (a
+    flat-field/vignette corrector for uneven paper tone), it never asks
+    whether a region is "background" or "foreground" — only stroke width
+    decides. Pick ``kernel_px`` just above the hatch line width and below
+    the thinnest stroke you want to keep; 0 disables (identity).
+    """
+    kernel_px = max(0, int(kernel_px))
+    if kernel_px <= 0:
+        return mask
+    k = max(3, kernel_px | 1)  # odd, >= 3 for a valid structuring element
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    ink = (mask.astype(np.uint8)) * 255
+    opened = cv2.morphologyEx(ink, cv2.MORPH_OPEN, kernel)
+    return opened > 0
+
+
 def a4_dpi(width_px: int, a4_width_mm: float = 210.0) -> float:
     return width_px / (a4_width_mm / 25.4)
 

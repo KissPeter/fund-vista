@@ -53,6 +53,7 @@
     <label>contrast <input type="range" id="contrast" min="0" max="3" step="0.1" value="{{ defaults.contrast }}"><output id="contrast_val">{{ defaults.contrast }}</output></label>
     <label>brightness <input type="range" id="brightness" min="-100" max="100" step="1" value="{{ defaults.brightness }}"><output id="brightness_val">{{ defaults.brightness }}</output></label>
     <label>remove_background <input type="checkbox" id="remove_background"{% if defaults.remove_background %} checked{% endif %}></label>
+    <label>strip_hatch_px <input type="range" id="strip_hatch_px" min="0" max="20" step="1" value="{{ defaults.strip_hatch_px }}"><output id="strip_hatch_px_val">{{ defaults.strip_hatch_px }}</output></label>
     <label>hatch_pitch_mm <input type="range" id="hatch_pitch_mm" min="0.2" max="5" step="0.1" value="{{ defaults.hatch_pitch_mm }}"><output id="hatch_pitch_mm_val">{{ defaults.hatch_pitch_mm }}</output></label>
     <label>hatch_angle_deg <input type="range" id="hatch_angle_deg" min="0" max="175" step="5" value="{{ defaults.hatch_angle_deg }}"><output id="hatch_angle_deg_val">{{ defaults.hatch_angle_deg }}</output></label>
     <label>contour_simplify <input type="range" id="contour_simplify" min="0" max="20" step="0.5" value="{{ defaults.contour_simplify }}"><output id="contour_simplify_val">{{ defaults.contour_simplify }}</output></label>
@@ -161,6 +162,7 @@ function readParams() {
     contrast: num("contrast"),
     brightness: num("brightness"),
     remove_background: $("remove_background").checked,
+    strip_hatch_px: parseInt($("strip_hatch_px").value, 10),
     hatch_pitch_mm: num("hatch_pitch_mm"),
     hatch_angle_deg: num("hatch_angle_deg"),
     contour_simplify: num("contour_simplify"),

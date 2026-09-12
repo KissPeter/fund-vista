@@ -44,6 +44,7 @@ def test_ui_page_serves_html(http_client):
     assert 'id="contrast"' in html
     assert 'id="brightness"' in html
     assert 'id="remove_background"' in html
+    assert 'id="strip_hatch_px"' in html
     assert 'id="label_border_radius_mm"' in html
     # Label fieldset: toggle + text + align + height + font + border.
     for marker in ('id="label_enabled"', 'id="label_text"', 'id="label_align"',

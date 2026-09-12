@@ -3,6 +3,8 @@ ingestion contract (4-tuple result + warnings wiring, D.3.3, C.2.5)."""
 
 from __future__ import annotations
 
+import cv2
+import numpy as np
 import pytest
 from PIL import Image as PILImage
 
@@ -84,3 +86,32 @@ def test_pathological_nesting_rejected():
         imaging.parse_svg_vectors(deep)
     assert ei.value.status == 400
     assert ei.value.code == "bad_image"
+
+
+def _hatched_and_block_mask(h: int = 120, w: int = 120) -> np.ndarray:
+    """Synthetic ink mask: a uniform thin 45° hatch everywhere, plus one
+    thick (8px) solid rectangle ring standing in for real linework."""
+    gray = np.full((h, w), 255, dtype=np.uint8)
+    for offset in range(-h, w, 3):
+        cv2.line(gray, (offset, 0), (offset + h, h), color=0, thickness=1)
+    cv2.rectangle(gray, (30, 30), (90, 90), color=0, thickness=8)
+    return gray < 128
+
+
+def test_strip_hatch_zero_is_identity():
+    mask = _hatched_and_block_mask()
+    assert (imaging.strip_hatch(mask, 0) == mask).all()
+
+
+def test_strip_hatch_erases_thin_lines_keeps_thick_strokes():
+    mask = _hatched_and_block_mask()
+    stripped = imaging.strip_hatch(mask, 5)
+
+    # A pure-hatch corner (far from the thick block) is fully erased.
+    assert stripped[0:20, 0:20].sum() == 0
+    # The thick block's ring mostly survives (opening only trims corners).
+    top_edge = stripped[30:38, 30:90]
+    assert top_edge.mean() > 0.5
+    # Overall ink drops sharply once the (much more numerous) hatch pixels
+    # are gone, even though the block itself is preserved.
+    assert int(stripped.sum()) < int(mask.sum()) * 0.5
