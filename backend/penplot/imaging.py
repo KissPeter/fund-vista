@@ -17,12 +17,34 @@ import xml.etree.ElementTree as ET
 
 import cv2
 import numpy as np
+from defusedxml import ElementTree as DefusedET
+from defusedxml import DefusedXmlException
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+from PIL.Image import DecompressionBombError
 
 from backend.penplot.config import ALLOWED_RASTER_EXTS
-from backend.penplot.errors import PenPlotError, ErrorCode
+from backend.penplot.errors import PenPlotError, ErrorCode, image_too_large
 
 log = logging.getLogger(__name__)
+
+# Explicit decompression limit (review D.3.2). Pillow errors out past this
+# pixel count BEFORE touching the pixel buffer, so a ≤10 MB file can never
+# allocate gigabytes. The value is deliberately generous (a 40+ MP DSLR photo
+# must still load so the pipeline can downscale it) — the real guard is the
+# explicit error path below, not a tight cap.
+Image.MAX_IMAGE_PIXELS = 100_000_000
+
+# SVG structural guards (review D.3.3): defusedxml blocks entity-expansion /
+# external-reference bombs; these caps bound tree size and nesting depth so a
+# few-KB hostile file can't grow unbounded CPU/RAM or hit the 1000-frame Python
+# recursion limit inside _walk_children.
+_MAX_SVG_ELEMENTS = 200_000
+_MAX_SVG_DEPTH = 256
+
+# Warning surfaced when an SVG embeds raster <image> content that is skipped
+# (review C.2.5) — makes the §B.4 "never silently wrong" claim hold for the
+# mixed-vector/raster case, not just the all-dropped case.
+WARNING_EMBEDDED_RASTERS_IGNORED = "embedded_rasters_ignored"
 
 EXT_TO_PILLOW_FORMAT = {
     "png": "PNG",
@@ -47,6 +69,8 @@ def sniff_extension(data: bytes, filename: str | None) -> str | None:
     try:
         with Image.open(io.BytesIO(data)) as img:
             fmt = (img.format or "").lower()
+    except DecompressionBombError as exc:
+        raise image_too_large(f"Image decompresses to too many pixels ({Image.MAX_IMAGE_PIXELS // 1_000_000} MP limit).") from exc
     except UnidentifiedImageError:
         return None
     # Pillow reports "JPEG" for .jpg; normalize both ways.
@@ -61,7 +85,7 @@ def sniff_extension(data: bytes, filename: str | None) -> str | None:
 
 
 def load_raster(data: bytes) -> tuple[np.ndarray, int, int, str]:
-    """Return (gray HxW uint8, width, height, format). Raises PenPlotError(400)."""
+    """Return (gray HxW uint8, width, height, format). Raises PenPlotError(400/413)."""
     try:
         with Image.open(io.BytesIO(data)) as img:
             fmt = (img.format or "PNG").lower()
@@ -69,6 +93,11 @@ def load_raster(data: bytes) -> tuple[np.ndarray, int, int, str]:
             gray_img = img.convert("L")
             w, h = gray_img.size
             gray = np.asarray(gray_img, dtype=np.uint8)
+    except DecompressionBombError as exc:
+        # Review D.3.2: Pillow's bomb error subclasses bare Exception, so a
+        # naive `except Exception` here must not swallow it into a blank 500 —
+        # surface it as a clean 413 envelope instead.
+        raise image_too_large(f"Image decompresses to too many pixels ({Image.MAX_IMAGE_PIXELS // 1_000_000} MP limit).") from exc
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise PenPlotError(
             status=400, code=ErrorCode.BAD_IMAGE,
@@ -122,8 +151,9 @@ def a4_dpi(width_px: int, a4_width_mm: float = 210.0) -> float:
 # <text> (outlined via Pillow raster + contour tracing), nested transform=
 # attributes, viewBox + preserveAspectRatio viewport mapping, CSS length
 # units, display/visibility filtering, and <use> references.
-# Known non-goals (documented, not silent): embedded <image> rasters,
-# paint servers (gradients/patterns — outlines only) and external refs.
+# Known non-goals (all surfaced, not silent): embedded <image> rasters raise
+# the `embedded_rasters_ignored` warning, paint servers (gradients/patterns —
+# outlines only) and external refs (blocked by defusedxml) are dropped.
 
 _NUMBER_RE = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 
@@ -296,9 +326,11 @@ def _viewbox_ctm(
 _XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
 
 # Structural/metadata elements: never rendered directly (only via <use>).
+# Embedded <image> rasters are handled explicitly (with a warning) in
+# _walk_children, so they are deliberately NOT in this set.
 _SKIP_TAGS = frozenset({
     "defs", "symbol", "clippath", "mask", "pattern", "style",
-    "metadata", "title", "desc", "script", "image",
+    "metadata", "title", "desc", "script",
 })
 
 
@@ -409,16 +441,24 @@ def _walk_children(
     parent: ET.Element, ctm: Matrix,
     out: list[list[tuple[float, float]]],
     id_map: dict[str, ET.Element], use_stack: tuple[str, ...],
+    warnings: list[str],
 ) -> None:
     for el in parent:
         if not isinstance(el.tag, str):
             continue
         t = _local_tag(el)
-        if _element_hidden(el) or t in _SKIP_TAGS:
+        if _element_hidden(el):
+            continue
+        # Embedded rasters are skipped by design (no raster embedding in a
+        # plot file) but must NOT be silent — review C.2.5 (§B.4 claim).
+        if t == "image":
+            warnings.append(WARNING_EMBEDDED_RASTERS_IGNORED)
+            continue
+        if t in _SKIP_TAGS:
             continue
         local = _mmul(ctm, _parse_transform(el.attrib.get("transform")))
         if t in ("g", "a", "switch", "symbol"):
-            _walk_children(el, local, out, id_map, use_stack)
+            _walk_children(el, local, out, id_map, use_stack, warnings)
         elif t == "svg":  # nested svg: x/y shift + optional own viewport
             nx = _parse_length(el.attrib.get("x"), 0.0)
             ny = _parse_length(el.attrib.get("y"), 0.0)
@@ -431,7 +471,7 @@ def _walk_children(
                     sub,
                     _viewbox_ctm(*nvb, nw, nh, el.attrib.get("preserveAspectRatio")),
                 )
-            _walk_children(el, sub, out, id_map, use_stack)
+            _walk_children(el, sub, out, id_map, use_stack, warnings)
         elif t == "use":
             ref = el.attrib.get("href") or el.attrib.get(_XLINK_HREF) or ""
             m = re.match(r"\s*#(.+?)\s*$", ref)
@@ -445,34 +485,56 @@ def _walk_children(
                     _walk_children(
                         target,
                         _mmul(sub, _parse_transform(target.attrib.get("transform"))),
-                        out, id_map, use_stack + (m.group(1),),
+                        out, id_map, use_stack + (m.group(1),), warnings,
                     )
+                elif tt == "image":
+                    warnings.append(WARNING_EMBEDDED_RASTERS_IGNORED)
                 elif tt not in _SKIP_TAGS and not _element_hidden(target):
                     _render_shape(target, tt, sub, out)
         else:
             _render_shape(el, t, local, out)
 
 
-def parse_svg_vectors(data: bytes) -> tuple[list[list[tuple[float, float]]], float, float]:
+def parse_svg_vectors(data: bytes) -> tuple[list[list[tuple[float, float]]], float, float, list[str]]:
     """Extract plottable polylines from an SVG (viewport-px space).
 
-    Raises PenPlotError(400) when the XML is malformed or nothing convertible
+    Returns ``(polylines, width_px, height_px, warnings)``. Raises
+    PenPlotError(400) when the XML is malformed, contains forbidden entity /
+    external references, exceeds the structural caps, or nothing convertible
     is found, so the router reports bad_image instead of a 500.
     """
     try:
-        root = ET.fromstring(data)
-    except ET.ParseError as exc:
+        # defusedxml (review D.3.3): raises on DOCTYPE entity/external-ref
+        # bombs that the stdlib parser would expand (billion-laughs).
+        root = DefusedET.fromstring(data)
+    except (ET.ParseError, ValueError, DefusedXmlException) as exc:
         raise PenPlotError(
             status=400, code=ErrorCode.BAD_IMAGE,
             message="Uploaded SVG is not well-formed XML.",
         ) from exc
 
+    # Bounded scan: build the id map while enforcing element-count and
+    # nesting-depth caps before any recursive walk (review D.3.3).
     id_map: dict[str, ET.Element] = {}
-    for el in root.iter():
+    count = 0
+    max_depth = 0
+    stack: list[tuple[ET.Element, int]] = [(root, 1)]
+    while stack:
+        el, depth = stack.pop()
+        count += 1
+        if depth > max_depth:
+            max_depth = depth
+        if count > _MAX_SVG_ELEMENTS or max_depth > _MAX_SVG_DEPTH:
+            raise PenPlotError(
+                status=400, code=ErrorCode.BAD_IMAGE,
+                message="SVG is too complex (element count or nesting depth).",
+            )
         if isinstance(el.tag, str):
             eid = el.attrib.get("id")
             if eid and eid not in id_map:
                 id_map[eid] = el
+        for child in el:
+            stack.append((child, depth + 1))
 
     vb = _parse_viewbox(root.attrib.get("viewBox") or root.attrib.get("viewbox"))
     vp_w = _parse_length(root.attrib.get("width"), vb[2] if vb else 210.0,
@@ -487,14 +549,15 @@ def parse_svg_vectors(data: bytes) -> tuple[list[list[tuple[float, float]]], flo
                             root.attrib.get("preserveAspectRatio")) if vb else _IDENTITY
 
     polylines: list[list[tuple[float, float]]] = []
-    _walk_children(root, base_ctm, polylines, id_map, ())
+    warnings: list[str] = []
+    _walk_children(root, base_ctm, polylines, id_map, (), warnings)
 
     if not polylines:
         raise PenPlotError(
             status=400, code=ErrorCode.BAD_IMAGE,
             message="SVG contains no convertible paths/shapes/text.",
         )
-    return polylines, vp_w, vp_h
+    return polylines, vp_w, vp_h, list(dict.fromkeys(warnings))
 
 
 # -- path data: full command set -----------------------------------------------

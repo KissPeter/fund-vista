@@ -2,15 +2,16 @@ import base64
 import hashlib
 import json
 import logging
-import os
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Annotated, Dict, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
@@ -21,8 +22,43 @@ from backend.penplot.router import (
     router as penplot_router,
     validation_error_handler,
 )
+from backend.penplot.ui import ui_router as penplot_ui_router
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+
+class Settings(BaseSettings):
+    """Fund Vista proxy app settings, built from unprefixed env vars.
+
+    `cors_allow_origins` accepts a comma-separated list from
+    `CORS_ALLOW_ORIGINS`; invalid values fail fast at import. An
+    explicitly-empty env var counts as unset.
+    """
+
+    model_config = SettingsConfigDict(
+        env_ignore_empty=True,
+        frozen=True,
+    )
+
+    log_level: str = "INFO"
+    # Field named after its env var on purpose: unprefixed settings read env by
+    # field name (REDIS_CLOUD_URL), which tests set to a dead port for hermetic
+    # Redis-absent runs.
+    redis_cloud_url: str = "redis://localhost:6379/0"
+    # NoDecode: skip source-side JSON decode so the raw comma-separated list
+    # reaches the split validator (a list is a "complex" env type).
+    cors_allow_origins: Annotated[list[str], NoDecode] = ["http://localhost:8080"]
+    cors_allow_origin_regex: str = r"(https?://[^/]+:8080|https://[^/]+\.github\.io)"
+
+    @field_validator("cors_allow_origins", mode="before")
+    @classmethod
+    def _split_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+
+settings = Settings()
+
+logging.basicConfig(level=settings.log_level)
 
 UPSTREAMS: Dict[str, str] = {
     "api": "https://www.kh.hu",
@@ -32,19 +68,13 @@ UPSTREAMS: Dict[str, str] = {
 
 
 CACHEABLE_METHODS = {"GET", "POST"}
-REDIS_URL = os.getenv("REDIS_CLOUD_URL", "redis://localhost:6379/0")
 CACHE_PREFIX = "fund-vista-proxy:v2"
-CORS_ALLOW_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8080").split(",") if origin.strip()]
-CORS_ALLOW_ORIGIN_REGEX = os.getenv(
-    "CORS_ALLOW_ORIGIN_REGEX",
-    r"(https?://[^/]+:8080|https://[^/]+\.github\.io)",
-)
 
 app = FastAPI(title="Fund Vista Proxy")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ALLOW_ORIGINS,
-    allow_origin_regex=CORS_ALLOW_ORIGIN_REGEX,
+    allow_origins=settings.cors_allow_origins,
+    allow_origin_regex=settings.cors_allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,8 +90,10 @@ async def _request_id_middleware(request: Request, call_next):  # type: ignore[n
 
 
 # v1 pen-plot API first: specific routes must win over the catch-all proxy
-# below (Starlette matches in registration order).
+# below (Starlette matches in registration order). The /penplot demo page
+# rides along here for the same reason.
 app.include_router(penplot_router)
+app.include_router(penplot_ui_router)
 app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
 
@@ -94,7 +126,7 @@ def _response_headers(headers: httpx.Headers, cache_hit: bool = False) -> Dict[s
 async def _startup() -> None:
     global redis_client
     try:
-        redis_client = Redis.from_url(REDIS_URL, decode_responses=False)
+        redis_client = Redis.from_url(settings.redis_cloud_url, decode_responses=False)
         await redis_client.ping()
         configure_redis(redis_client)
     except Exception as exc:

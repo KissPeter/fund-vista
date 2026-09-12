@@ -11,6 +11,9 @@ Port of the affilio project's ``CheapLensThrottlingMiddleware`` scheme
   Redis).
 * The window key is an epoch bucket (``now // window_s``) instead of a
   clock-formatted string; same semantics, no parsing.
+* All penplot endpoints (the two POSTs and both GETs) share one per-IP bucket,
+  and ``X-Rate-Limit-*`` headers only appear on 429 — both documented
+  v1 simplifications (review D.1.5), not tuning knobs.
 """
 
 from __future__ import annotations
@@ -64,11 +67,18 @@ class RateLimiter:
         if redis is not None and not _degraded:
             try:
                 key = self._redis_key(client_ip, window_idx)
+                # Atomic create (review D.1.4): SET NX EX stamps the TTL at
+                # birth, so there is no crash window between INCR and EXPIRE
+                # that leaks a permanent key. INCR can still race a key that
+                # expired between SET and INCR back into existence with no
+                # TTL, so re-assert expiry when ttl == -1.
+                await redis.set(key, 1, nx=True, ex=self._window_s)
                 count = await redis.incr(key)
-                if count == 1:
+                ttl = await redis.ttl(key)
+                if ttl == -1:
                     await redis.expire(key, self._window_s)
+                    ttl = self._window_s
                 if count > self._limit:
-                    ttl = await redis.ttl(key)
                     return False, max(int(ttl), 1)
                 return True, None
             except RedisError as exc:
@@ -79,6 +89,15 @@ class RateLimiter:
                 log.warning(
                     "Rate limiter degraded to in-process window (Redis error): %s", exc
                 )
+        # In-process fallback: one entry per (IP, active window). Stale
+        # windows are pruned on every consume so the dict stays bounded by the
+        # number of currently-active IPs (review D.1.1).
+        if self._memory:
+            self._memory = {
+                key: count
+                for key, count in self._memory.items()
+                if key[1] >= window_idx
+            }
         bucket = self._memory.get((client_ip, window_idx))
         if bucket is None:
             self._memory[(client_ip, window_idx)] = 1

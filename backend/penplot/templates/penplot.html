@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pen Plot — image to plotter SVG</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  .layout { display: grid; grid-template-columns: 340px 1fr; gap: 1.5rem; align-items: start; }
+  @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
+  fieldset { border: 1px solid #8884; border-radius: 8px; margin-bottom: 1rem; }
+  label { display: flex; justify-content: space-between; gap: .5rem; margin: .3rem 0; font-size: .9rem; }
+  input[type=number], select { width: 7rem; }
+  input[type=file] { max-width: 100%; }
+  #preview { width: 100%; border: 1px solid #8884; border-radius: 8px; background: #fff; min-height: 200px; }
+  table { border-collapse: collapse; font-size: .9rem; }
+  td, th { border: 1px solid #8884; padding: .2rem .6rem; text-align: right; }
+  th { text-align: left; }
+  code { font-size: .8rem; word-break: break-all; }
+  #status { min-height: 1.5em; font-size: .9rem; }
+  .warn { color: #a60; }
+  .error { color: #c00; }
+  .meta { font-size: .85rem; color: #666; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>Pen Plot — image to plotter SVG <span class="meta">(v1 API demo)</span></h1>
+
+<div class="layout">
+<div>
+  <fieldset>
+    <legend>1. Image</legend>
+    <input type="file" id="file" accept="image/*,.svg">
+    <p class="meta" id="meta">No image uploaded yet.</p>
+  </fieldset>
+
+  <form id="params" action="javascript:void(0)">
+  <fieldset>
+    <legend>2. Method</legend>
+    <label>method
+      <select id="method">
+      {% for m in methods %}
+        <option value="{{ m }}"{% if defaults.method == m %} selected{% endif %}>{{ m }}</option>
+      {% endfor %}
+      </select>
+    </label>
+    <label>threshold <input type="number" id="threshold" min="0" max="255" step="1" value="{{ defaults.threshold }}"></label>
+    <label>blur_radius <input type="number" id="blur_radius" min="0" max="10" step="0.1" value="{{ defaults.blur_radius }}"></label>
+    <label>hatch_pitch_mm <input type="number" id="hatch_pitch_mm" min="0.01" max="10" step="0.1" value="{{ defaults.hatch_pitch_mm }}"></label>
+    <label>contour_simplify <input type="number" id="contour_simplify" min="0" max="20" step="0.5" value="{{ defaults.contour_simplify }}"></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. Cleanup (vpype chain)</legend>
+    <label>linemerge_tolerance_mm <input type="number" id="linemerge_tolerance_mm" min="0" max="5" step="0.1" value="{{ defaults.linemerge_tolerance_mm }}"></label>
+    <label>linesimplify_tolerance_mm <input type="number" id="linesimplify_tolerance_mm" min="0" max="2" step="0.05" value="{{ defaults.linesimplify_tolerance_mm }}"></label>
+    <label>linesort <input type="checkbox" id="linesort"{% if defaults.linesort %} checked{% endif %}></label>
+    <label>reloop_tolerance_mm <input type="number" id="reloop_tolerance_mm" min="0" max="2" step="0.05" value="{{ defaults.reloop_tolerance_mm }}"></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>4. Page &amp; pen</legend>
+    <label>page size
+      <select id="page_size">
+      {% for s in page_sizes %}
+        <option value="{{ s }}"{% if defaults.page.size|upper == s %} selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+      </select>
+    </label>
+    <label>orientation
+      <select id="page_orientation">
+      {% for o in orientations %}
+        <option value="{{ o }}"{% if defaults.page.orientation == o %} selected{% endif %}>{{ o }}</option>
+      {% endfor %}
+      </select>
+    </label>
+    <label>margin_mm <input type="number" id="page_margin_mm" min="0" max="50" step="1" value="{{ defaults.page.margin_mm }}"></label>
+    <label>draw_speed_mm_s <input type="number" id="draw_speed_mm_s" min="0.1" max="500" step="1" value="{{ defaults.pen.draw_speed_mm_s }}"></label>
+    <label>travel_speed_mm_s <input type="number" id="travel_speed_mm_s" min="0.1" max="1000" step="1" value="{{ defaults.pen.travel_speed_mm_s }}"></label>
+    <label>pen_lift_s <input type="number" id="pen_lift_s" min="0" max="10" step="0.1" value="{{ defaults.pen.pen_lift_s }}"></label>
+  </fieldset>
+  </form>
+</div>
+
+<div>
+  <p id="status" role="status"></p>
+  <img id="preview" alt="Converted plot preview">
+  <h2>Stats</h2>
+  <table id="stats" hidden>
+    <tr><th>strokes</th><td id="st_strokes"></td></tr>
+    <tr><th>points before → after</th><td id="st_points"></td></tr>
+    <tr><th>segments before → after</th><td id="st_segments"></td></tr>
+    <tr><th>pen down (mm)</th><td id="st_down"></td></tr>
+    <tr><th>pen up (mm)</th><td id="st_up"></td></tr>
+    <tr><th>estimated time (s)</th><td id="st_time"></td></tr>
+  </table>
+  <h2>Warnings</h2>
+  <ul id="warnings"></ul>
+  <h2>vpype recipe</h2>
+  <code id="vpype"></code>
+  <p><a id="download" href="#" download="plot_optimized.svg">download SVG</a></p>
+</div>
+</div>
+
+<script>
+"use strict";
+let imageId = null;      // sha256 from POST /v1/images (spec §1)
+let currentFile = null;  // retained for the §4.3 silent re-upload retry
+let timer = null;
+
+const $ = (id) => document.getElementById(id);
+const statusEl = $("status");
+const setStatus = (msg, cls) => { statusEl.textContent = msg; statusEl.className = cls || ""; };
+
+function readParams() {
+  const num = (id) => parseFloat($(id).value);
+  return {
+    method: $("method").value,
+    threshold: parseInt($("threshold").value, 10),
+    blur_radius: num("blur_radius"),
+    hatch_pitch_mm: num("hatch_pitch_mm"),
+    contour_simplify: num("contour_simplify"),
+    linemerge_tolerance_mm: num("linemerge_tolerance_mm"),
+    linesimplify_tolerance_mm: num("linesimplify_tolerance_mm"),
+    linesort: $("linesort").checked,
+    reloop_tolerance_mm: num("reloop_tolerance_mm"),
+    page: {
+      size: $("page_size").value,
+      orientation: $("page_orientation").value,
+      margin_mm: num("page_margin_mm"),
+    },
+    pen: {
+      draw_speed_mm_s: num("draw_speed_mm_s"),
+      travel_speed_mm_s: num("travel_speed_mm_s"),
+      pen_lift_s: num("pen_lift_s"),
+    },
+  };
+}
+
+async function upload(file) {
+  const form = new FormData();
+  form.append("file", file);
+  const resp = await fetch("/v1/images", { method: "POST", body: form });
+  const body = await resp.json();
+  if (!resp.ok) throw new Error(body.error ? body.error.code + ": " + body.error.message : "upload failed");
+  imageId = body.image_id;
+  $("meta").textContent =
+    body.image_id.slice(0, 12) + "… " + body.format + " " +
+    body.width + "×" + body.height + (body.is_vector ? " (vector)" : "") +
+    (body.warnings.length ? " ⚠ " + body.warnings.join(", ") : "");
+  return body;
+}
+
+async function convert(retried) {
+  if (!imageId) { setStatus("Upload an image first."); return; }
+  setStatus("Converting…");
+  const resp = await fetch("/v1/convert", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image_id: imageId, params: readParams() }),
+  });
+  const body = await resp.json();
+  if (resp.ok) { render(body); return; }
+  const code = body.error ? body.error.code : "";
+  // Spec §4.3: expired cache → silent re-upload with the retained file, retry once.
+  if (resp.status === 404 && code === "image_not_found" && currentFile && !retried) {
+    setStatus("Cache expired, re-uploading…");
+    await upload(currentFile);
+    return convert(true);
+  }
+  if (resp.status === 429) {
+    setStatus("Rate limited — retry in a few seconds.", "error");
+    return;
+  }
+  setStatus("Convert failed (" + code + "): " + (body.error ? body.error.message : ""), "error");
+}
+
+function render(body) {
+  setStatus("Done.");
+  $("preview").src = body.svg_url;
+  $("download").href = body.svg_url;
+  const s = body.stats;
+  $("st_strokes").textContent = s.strokes;
+  $("st_points").textContent = s.points.before + " → " + s.points.after;
+  $("st_segments").textContent = s.segments.before + " → " + s.segments.after;
+  $("st_down").textContent = s.pen_down_mm;
+  $("st_up").textContent = s.pen_up_mm;
+  $("st_time").textContent = s.estimated_time_s;
+  $("stats").hidden = false;
+  $("vpype").textContent = body.vpype_command;
+  const ul = $("warnings");
+  ul.innerHTML = "";
+  for (const w of body.warnings || []) {
+    const li = document.createElement("li");
+    li.textContent = w;
+    li.className = "warn";
+    ul.appendChild(li);
+  }
+}
+
+function scheduleConvert() {
+  clearTimeout(timer);
+  timer = setTimeout(() => convert(false).catch((e) => setStatus(String(e), "error")), 400);
+}
+
+$("file").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  currentFile = f;
+  setStatus("Uploading…");
+  try {
+    await upload(f);
+    await convert(false);
+  } catch (err) { setStatus(String(err), "error"); }
+});
+
+$("params").addEventListener("input", scheduleConvert); // spec §4.2: debounce, convert only
+</script>
+</body>
+</html>

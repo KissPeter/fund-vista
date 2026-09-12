@@ -21,6 +21,7 @@ class ErrorCode:
     PAYLOAD_TOO_LARGE = "payload_too_large"
     UNSUPPORTED_MEDIA_TYPE = "unsupported_media_type"
     BAD_IMAGE = "bad_image"
+    IMAGE_TOO_LARGE = "image_too_large"
     RATE_LIMITED = "rate_limited"
 
 
@@ -62,6 +63,12 @@ def invalid_params(message: str) -> PenPlotError:
 def processing_failed(message: str = "Image processing failed.") -> PenPlotError:
     return PenPlotError(
         status=500, code=ErrorCode.PROCESSING_FAILED, message=message
+    )
+
+
+def image_too_large(message: str) -> PenPlotError:
+    return PenPlotError(
+        status=413, code=ErrorCode.IMAGE_TOO_LARGE, message=message
     )
 
 

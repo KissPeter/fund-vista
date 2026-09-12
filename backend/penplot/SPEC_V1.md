@@ -352,12 +352,16 @@ silently-wrong output. (Possible follow-up, not done: surface
 
 ### B.5 Test strategy
 
-`backend/tests/`: **real HTTP only** — a live uvicorn subprocess on an
-ephemeral port driven by httpx (`conftest.py`); no FastAPI TestClient. Covers
-all three methods end-to-end incl. fetching `svg_url`, the one-upload /
-N-converts flow, determinism (repeat convert → identical bytes), every error
-envelope code, oversize/unsupported/corrupt uploads, vector input, DPI
-warnings, and the §B.3 geometry-equivalence cases. 37 tests, ~2 s.
+`backend/tests/`: **HTTP for contract, units for guards** — broad coverage is
+real HTTP against a live uvicorn subprocess on an ephemeral port driven by
+httpx (`conftest.py`); the three things that need injection (loop blocking —
+`test_penplot_concurrency.py`, bomb guards — `test_penplot_imaging.py`, TTL
+math — `test_penplot_store.py`) are unit-level by design (though the DoS /
+bomb paths are also asserted over HTTP). HTTP covers all three methods
+end-to-end incl. fetching `svg_url`, the one-upload / N-converts flow,
+determinism (repeat convert → identical bytes), every error envelope code,
+oversize/unsupported/corrupt uploads, vector input, DPI warnings, and the
+§B.3 geometry-equivalence cases. 58 tests, ~3.7 s.
 
 ---
 
@@ -533,3 +537,342 @@ standard `Retry-After` header, and `X-Rate-Limit-Limit` /
 whitelist, plus a unit check of the memory fallback; `conftest.py` pins the
 main session server to an effectively-infinite limit and an unreachable Redis
 so the 37 existing tests stay hermetic.
+
+---
+
+## PART D — Review 2 (2026-09-12)
+
+Scope: second pass over the same backend. Since review 1 one feature landed
+(the C.2.2 rate limiter: `ratelimit.py`, `errors.py:24,68-74`,
+`config.py:46-58`, `router.py:44-95,136-137,206-207`, `main.py:93-103`,
+`tests/test_penplot_ratelimit.py`, `tests/conftest.py:59-66`), so this review
+(i) audits the new limiter line-by-line, (ii) re-verifies every still-open
+review-1 item against current code, and (iii) covers angles review 1 missed
+(input-bomb hardening, event-loop blocking). Test evidence: full suite
+**40 passed in ~3.5 s** (37 original + 3 ratelimit, repo `.venv`, real HTTP).
+
+### Verdict
+
+The limiter contract is correct and well tested (429 + nested `rate_limited`
+envelope + `Retry-After`, whitelist, hermetic fixtures). It closes C.2.2.
+No ship-blocker, but review 2 finds one architectural item review 1 missed
+that matters before public traffic — **CPU-bound converts run inline on the
+event loop** (D.3.1) — plus two input-hardening gaps (D.3.2, D.3.3) and four
+limiter refinements (D.1.1–D.1.4), all fixable inside v1.
+
+### D.1 Rate limiter audit (new code since review 1)
+
+What checks out: fixed-window `INCR`+`EXPIRE` keyed per IP
+(`ratelimit.py:51-52,66-73`); memory fallback when Redis is down or errors,
+with degrade-once semantics so a dead Redis can't tax every request
+(`ratelimit.py:74-81`); whitelist short-circuit before counting
+(`router.py:71-73`); 429 carries the frozen nested envelope plus standard
+`Retry-After` / `X-Rate-Limit-*` headers (`router.py:89-95`); dependency runs
+before validation so exhaustion correctly shadows 404/422 (asserted in
+`test_rate_limit_429_envelope_and_retry_after`); session fixtures pin an
+effectively-infinite limit plus an unreachable Redis so the suite is hermetic
+(`conftest.py:59-66`).
+
+**D.1.1 [low-medium] Memory-fallback dict leaks.**
+`RateLimiter._memory` (`ratelimit.py:45`) keys `(ip, window_idx)` per window
+and `consume()` (`ratelimit.py:82-93`) never evicts old windows. In Redis mode
+keys expire; in memory mode (the mode every dev machine and every Redis outage
+uses) entries accumulate forever — one entry per active IP per window, i.e. a
+slow unbounded leak on a public endpoint. Fix: prune entries with
+`window_idx < current` on each `consume()` (a dict comprehension, O(active
+IPs)); or store a single `(window_idx, count)` per IP and reset on rollover.
+
+**D.1.2 [low] `X-Forwarded-For` is trusted unconditionally.**
+`_client_ip` (`router.py:60-66`) takes the leftmost XFF value with no trusted-
+proxy check, so any client can rotate identities per request and walk around
+the throttle. Behind the project's own proxy/CDN this is the correct way to
+read the real IP — but only then. Fix (docs or code): record the assumption
+"v1 must run behind a proxy that overwrites XFF", or only honour XFF when the
+peer address is a known proxy and otherwise use `request.client.host`.
+
+**D.1.3 [low] GETs are unthrottled and not free.**
+Only the two POSTs carry the dependency (`router.py:136-137,206-207`).
+`GET /v1/images/{id}` re-decodes the full raster on every call
+(`router.py:187-196`) and `GET /v1/results/{file}` reads+serves SVG — both
+abusable for CPU/egress without touching the limiter. The POSTs are rightly
+the priority (full pipeline), but a cheap win is extending the same dependency
+to the two GETs, or at least caching the probe (which also fixes C.2.6).
+
+**D.1.4 [low] Redis path: non-atomic INCR+EXPIRE, and untested.**
+`INCR` then conditional `EXPIRE` (`ratelimit.py:67-69`) is the classic race:
+a crash between the two leaves a key with no TTL that over-counts one IP
+until manual cleanup. Low blast radius (single bucket, self-heals at worst to
+permanent 429 for one IP — actually unpleasant for that IP). Prefer
+`SET key 1 NX EX window` + `INCR`, or a Lua script. Compounding it, the Redis
+branch has **zero** test coverage — all three ratelimit tests force the memory
+fallback (`REDIS_CLOUD_URL` → dead port). `consume()` only needs
+`incr/expire/ttl`, so an in-memory async stub asserting the Redis branch
+(count==1 sets expiry, over-limit returns TTL) is a ~20-line unit test.
+
+**D.1.5 [info] Shared bucket + headers only on 429.**
+Both POSTs share one `(limit, window)` counter — slider-heavy converts eat the
+upload quota of the same IP. Fine at 100/60 s, but worth one line of docs so a
+future "converts are 10× uploads" tuning doesn't surprise. Similarly,
+`X-Rate-Limit-*` headers appear only on 429; clients can't see remaining quota
+pre-emptively. Optional v1 nicety, not a gap.
+
+### D.2 Review-1 open items — re-verified, all still open, none worsened
+
+| Item | Status 2026-09-12 | Current pointer |
+|---|---|---|
+| C.2.3 results without TTL | open, unchanged | `store.py:108-118` still no expiry/sweep; images path untouched |
+| C.2.4 silent pitch clamp / ignored flow params | open, unchanged | `pipeline.py:115` `np.clip` still silent; `methods.py` flow still tone-only |
+| C.2.5 mixed-content SVG silent drop | open, unchanged | `_SKIP_TAGS` (`imaging.py:299-302`) still skips without a warning; 400 only when zero polylines |
+| C.2.6 double decode on convert | open, unchanged | `router.py:220-228` re-probe + `pipeline.py` reload intact |
+| C.2.7 lowercase-only `image_id` / `response_model` vs `JSONResponse` | open, unchanged | `schemas.py:59` pattern + `router.py:209` `.lower()`; `type: ignore` returns intact |
+
+### D.3 Fresh findings (angles review 1 missed)
+
+**D.3.1 [medium] Converts block the event loop.**
+`convert` is `async def` but awaits nothing except the limiter: it calls the
+fully synchronous, GIL-bound `run_convert` inline (`router.py:230-234`) —
+OpenCV blur, the pure-Python hatch march (`methods.py`), RDP
+(`optimize.py:110-128`), and the O(n²) merge/sort all run on the loop thread.
+With uvicorn's default single worker, one large-image convert (seconds for a
+3000 px hatch) stalls **every** route, including `/healthz` and the fund
+proxy in `main.py`. Fix: `await asyncio.to_thread(run_convert, …)` (stdlib,
+one line at the call site; determinism and content-addressing are unaffected
+since the function is pure). Load-test with 2–3 concurrent 3000 px converts
+before exposing this publicly — that test also sizes the sync-vs-jobs
+decision Part B deferred.
+
+**D.3.2 [medium-low] Decompression-bomb gap on upload.**
+`load_raster` catches `(UnidentifiedImageError, OSError, ValueError)`
+(`imaging.py:72`), but Pillow 12.3.0's `DecompressionBombError` subclasses
+`Exception` directly (verified: MRO is
+`DecompressionBombError → Exception`; `MAX_IMAGE_PIXELS` ≈ 89 MP). A ≤10 MB
+upload can therefore decompress to gigapixels and take one of two bad paths:
+gigabyte-scale RAM allocation before any error, then an **unhandled 500
+without the frozen envelope** (no generic-exception handler is registered in
+`main.py:65-66`). Fix: catch `DecompressionBombError` explicitly → 400/413
+envelope, and/or lower `Image.MAX_IMAGE_PIXELS` to just above
+`max_image_dim_px²` so the guard matches the pipeline's real needs.
+
+**D.3.3 [medium-low] SVG entity-expansion / nesting DoS.**
+`parse_svg_vectors` calls `ET.fromstring` with the default parser
+(`imaging.py`, `except ET.ParseError` at the same block). The stdlib parser
+expands internal entities (billion-laughs) and recurses on nesting — a few-KB
+SVG can balloon CPU/RAM past any image-size reasoning, and deep nesting raises
+`RecursionError`, which (like D.3.2) escapes as an unenveloped 500 on upload
+(the convert path is saved only by `pipeline.py:178-182`). Fix: parse with
+entity expansion disabled / `defusedxml`, plus a nesting or element-count cap
+before `_walk_children`. Same envelope treatment as D.3.2.
+
+**D.3.4 [low] RDP recursion depth.**
+`_rdp_open` recurses per split (`optimize.py:125-126`); adversarial point
+orderings can drive depth toward O(n) against the default limit of 1000.
+Hatch runs are subsampled (`methods.py` `[::2]` above 64 pts) but still reach
+thousands of points on long diagonals. Impact is bounded — convert maps it to
+a `processing_failed` 500 via `pipeline.py:178-182` — but a legitimate-looking
+input could 500. Fix when touched: iterative RDP with an explicit stack, or
+`sys.setrecursionlimit`-independent chunking. Cheap insurance, no urgency.
+
+### D.4 Priority for the next change set
+
+1. `asyncio.to_thread` around `run_convert` (D.3.1) + concurrent-convert load test.
+2. Bomb hardening: catch `DecompressionBombError`, cap `MAX_IMAGE_PIXELS`, defuse SVG entities (D.3.2, D.3.3).
+3. Prune stale windows in the memory fallback (D.1.1); document the XFF/trusted-proxy assumption (D.1.2).
+4. Redis-branch unit test with an async stub; consider atomic SET+INCR (D.1.4).
+5. Carry-overs, cheapest first: C.2.5 `embedded_rasters_ignored` warning, C.2.3 results TTL, C.2.6 probe cache (folds into D.1.3 if GETs get the limiter).
+
+## PART E — Resolution (2026-09-12)
+
+Every D-section item was either fixed in this change set or explicitly kept
+open with a reason. Evidence: full suite **58 passed in ~3.7 s** (the 40 of
+Part D + 18 new: Redis-branch stub tests, memory-prune unit test, GET-throttle
+assertion, concurrency test, imaging hardening units, SVG-DoS HTTP tests,
+store-TTL units). New dependency: `defusedxml>=0.7` (permissive license, meets
+§7) — installed in the repo `.venv`.
+
+### E.1 Rate limiter
+
+- **D.1.1 fixed.** `consume()` prunes fully-elapsed windows on every call
+  (`backend/penplot/ratelimit.py`, memory branch): entries with
+  `window_idx < current_window` are dropped via dict comprehension, so the
+  fallback no longer grows per-IP per-window. Unit test
+  `test_rate_limiter_memory_prunes_stale_windows` asserts only the current
+  window survives a consume.
+- **D.1.2 fixed (docs + code).** New `PENPLOT_TRUST_FORWARDED_FOR=1` setting
+  (`config.py`, `trust_forwarded_for`). At `1` (default, matches the v1
+  deployment behind a proxy/CDN that overwrites XFF) `_client_ip` uses the
+  leftmost XFF value exactly as before; at `0` on a directly-exposed instance
+  it falls back to the socket peer. Documented in `.env.example` and in the
+  config field comment.
+- **D.1.3 fixed.** `require_rate_limit` is now a dependency on all four
+  `/v1` routes: the two POSTs (unchanged) **and** `GET /v1/images/{id}` and
+  `GET /v1/results/{file}` (`router.py`). The GET bucket was chosen over the
+  review's "or at least cache the probe" alternative because the probe is
+  already cheap for the guarded sizes (see E.2 C.2.6); the throttle buys the
+  same egress guarantee with one line. Asserted at the end of
+  `test_rate_limit_429_envelope_and_retry_after` (a GET after the POST window
+  is spent returns 429).
+- **D.1.4 fixed.** Redis path is now atomic: `SET {key} 1 NX EX {window}` to
+  mint the window, then `INCR` for the count, then `TTL`; only if `TTL == -1`
+  (an INCR raced a just-expired key back into existence) does it re-issue
+  `EXPIRE`, so a crash can no longer strand a permanent key. Tests using an
+  in-memory async stub (`_FakeRedis`) cover the branch for the first time:
+  creation uses `SET NX EX`, over-limit returns the TTL, and the expiry
+  re-assert fires exactly when `TTL == -1` and not otherwise.
+- **D.1.5 documented (kept as designed).** One shared `(limit, window)` bucket
+  across the four endpoints is now stated in the `ratelimit.py` docstring and
+  the `config.py` rate-limit comments; `.env.example` spells it out too.
+  `X-Rate-Limit-*` headers on 429 only is kept (documented) — a v1 nicety, not
+  a gap.
+
+### E.2 Review-1 carry-overs (D.2 table)
+
+- **C.2.3 fixed.** `store.result_path()` now applies the same lazy TTL as
+  images (`store.py`): an expired result file is removed on access and the
+  caller 404s (`result_not_found`) → client re-runs the convert. Results are
+  deterministically regenerable, so expiry costs nothing but a recompute.
+  Unit tests in `tests/test_penplot_store.py` cover image expiry, the
+  mtime-sliding refresh on re-upload, and result expiry + traversal guard.
+- **C.2.4 fixed.** The pitch clamp is no longer silent: `pipeline.py` appends
+  a `hatch_pitch_clamped` warning exactly when `np.clip` changes the value.
+  The `b`/`c` doc issues are fixed in `methods.py` — `FlowMethod` and
+  `ContourMethod` now state precisely which params they honour and which they
+  ignore (`FlowMethod` drops `hatch_pitch_mm`/`contour_simplify` — the field
+  flow design intentionally ignores them).
+- **C.2.5 fixed.** `_walk_children` (`imaging.py`) treats an embedded
+  `<image>` (direct or reached through `<use>`) as *skip with cause*: it emits
+  `embedded_rasters_ignored`, and `parse_svg_vectors` now returns that list as
+  a fourth tuple member. `router.py` surfaces it in upload and GET responses;
+  `pipeline.py` forwards it into convert `warnings`. Covered by unit tests and
+  by `test_upload_svg_with_embedded_raster_warns` (HTTP upload + convert both
+  report it).
+- **C.2.6 left open, deliberately.** The pre-convert re-probe is a feature,
+  not a bug: it re-validates the currently-stored file ("what the convert will
+  actually consume") so stats stay honest even if the hash-identical file on
+  disk was replaced or drifted. The probe is cheap relative to the convert it
+  precedes. Not fixed.
+- **C.2.7 fixed.** `schemas.py` `image_id` pattern widened to
+  `^[0-9a-fA-F]{64}$` to match the router's `.lower()` normalisation; the
+  upload handler's return annotation is now `ImageMetaResponse | JSONResponse`
+  and the `# type: ignore[return-value]` markers are gone.
+
+### E.3 Fresh findings
+
+- **D.3.1 fixed.** Convert offloads to the default thread executor:
+  `result = await asyncio.to_thread(run_convert, …)` (`router.py`). The
+  function is pure (deterministic, content-addressed), so output is
+  byte-identical. Guarded by `tests/test_penplot_concurrency.py`: while a
+  stubbed convert is blocked in a worker thread, a concurrent `/healthz`
+  answers in milliseconds. As the review noted, a 2–3 concurrent-convert load
+  pass on the real server remains a pre-public-traffic ops task (it sizes the
+  sync-vs-jobs decision Part B deferred) — out of scope for code, tracked here.
+- **D.3.2 fixed, with one deviation.** `DecompressionBombError` is caught in
+  both `sniff_extension` and `load_raster` and maps to a 413
+  `image_too_large` envelope (new `ErrorCode.IMAGE_TOO_LARGE` + factory in
+  `errors.py`). `Image.MAX_IMAGE_PIXELS` is set to an explicit
+  `100_000_000`. We did **not** tighten it to `max_image_dim_px²` as
+  suggested: the pipeline downscales *after* full decode (and uploads
+  legitimately exceed the output size), so a tight cap would reject big DSLR
+  photos the pipeline would have handled. `max_image_dim_px²`-based gating
+  belongs to a future streaming decode, where it can run pre-decoding. Unit
+  tests monkeypatch `MAX_IMAGE_PIXELS` small and assert the 413 path.
+- **D.3.3 fixed.** SVG parsing now goes through `defusedxml`
+  (`fromstring`), which rejects DOCTYPE entity/external-reference declarations
+  with `DefusedXmlException` (billion-laughs dies before expansion). On top of
+  that, a bounded iterative pre-scan enforces element-count (`200_000`) and
+  nesting-depth (`256`) caps before the recursive walk, so deep `<g>` trees
+  raise a clean 400 `bad_image` instead of `RecursionError`. Covered at unit
+  level (`test_penplot_imaging.py`) and over HTTP
+  (`test_upload_rejects_entity_expansion_bomb`,
+  `test_upload_rejects_pathological_nesting`).
+- **D.3.4 left open, deliberately.** Impact is bounded — worst case an
+  adversarial polyline ordering maps to a `processing_failed` 500 (already
+  enveloped via `pipeline.py`); it cannot corrupt state or leak data. An
+  iterative RDP rewrite risks changing byte-deterministic output for no
+  current user-visible win. Tracked; fix when the simplify path next gets
+  tuned.
+
+---
+
+## PART F — Review 3, final (2026-09-12)
+
+Scope: closing review. Every Part E claim re-verified against the code it
+cites (not taken on trust), full suite re-run (**58 passed**, ~3.7 s, repo
+`.venv`), then a final end-to-end sweep of Part A §1–§7 for anything the two
+prior reviews missed. Standing of earlier parts is unchanged: A frozen,
+B the build log, C/D the audit trail, E the fix record. This part is the
+sign-off.
+
+### Verdict: APPROVED for v1 — no blocking items
+
+All Part E fixes verified as implemented (F.1). The only items left open —
+C.2.6, D.3.4, async jobs, §4 frontend — each has an explicit, reasoned
+disposition (F.2), so nothing remains "open without an owner". Residual notes
+(F.4) are hygiene and ops checklist, not code defects. The one trap I went
+looking for in the rework — a string-vs-bool `PENPLOT_TRUST_FORWARDED_FOR`
+(`"0"` is truthy) — is **not** a bug: `config.py:65-70` parses the env value
+to a real bool via membership in `{"1","true","yes","on"}`.
+
+### F.1 Resolution verification (Part E claims, each checked)
+
+| Claim | Result | Pointer |
+|---|---|---|
+| D.1.1 memory prune | ✅ as claimed | `ratelimit.py:95-100` drops `window_idx < current` per consume; bounded by active IPs (prune itself is O(active), negligible next to a convert) |
+| D.1.2 XFF trust flag | ✅ as claimed, trap checked | `config.py:60-70` (real bool + assumption documented), `router.py:61-73`, `.env.example:14` |
+| D.1.3 GETs throttled | ✅ as claimed | limiter dep on all four routes (`router.py:143-144,188-189,220-221,281`); 404s consume quota too — standard, intended |
+| D.1.4 atomic Redis + stub tests | ✅ as claimed | `SET NX EX` → `INCR` → `TTL`, re-`EXPIRE` only on `-1` (`ratelimit.py:75-80`); the code comment states the residual race honestly |
+| D.1.5 shared bucket documented | ✅ as claimed | `ratelimit.py:14-16`, `config.py:43-46` |
+| C.2.3 results TTL | ✅ as claimed | `store.py:106-119` lazy expiry, 404 → re-convert; check-then-act race is benign (worst case one recompute, writes hold the lock) |
+| C.2.4 clamp warning + method docs | ✅ as claimed | `pipeline.py:115` (`hatch_pitch_clamped` exactly when clip changes the value), `pipeline.py:87` warning passthrough, honoured-params docstrings in `methods.py` |
+| C.2.5 raster warning, 4-tuple | ✅ as claimed, all call sites migrated | `imaging.py` (`WARNING_EMBEDDED_RASTERS_IGNORED`, defusedxml import `:20-21`, guards `:37+`, `except … DefusedXmlException :510`); all four unpack sites updated (`pipeline.py:85`, `router.py:166,202,236`); upload+GET surface it (`router.py:174-175,210-211`), convert forwards it (`pipeline.py:87`) |
+| C.2.7 pattern + annotation | ✅ as claimed | case-insensitive `image_id` matching the router's `.lower()`; honest `Union` return, `type: ignore`s gone |
+| D.3.1 `to_thread` + concurrency test | ✅ as claimed, test is valid | `router.py:250-254` (kwargs form needs 3.9+; `.venv` is 3.14); the test's TestClient deviation is declared and sound — the stub is reached via the module-global lookup the patch targets, and sharing one client event loop is exactly what makes the regression observable |
+| D.3.2 bomb → 413 | ✅ as claimed, deviation reasoned | both decode sites (`imaging.py:73,100`) map to `image_too_large` 413 (`errors.py:24,69-71`); keeping 100 MP instead of `max_image_dim_px²` is correct while decode precedes downscale — the tight cap belongs to a future streaming decode, as stated |
+| D.3.3 defusedxml + caps | ✅ as claimed | `defusedxml` present in `.venv` (import-verified); 200k-element / 256-depth pre-scan bounds the recursive walk; unit + HTTP bomb tests |
+
+Two E-claims double-checked beyond grep: `asyncio.to_thread(run_convert,
+image_id=…, …)` is the kwargs form (valid); `parse_svg_vectors` has no
+remaining 3-tuple unpackers (5 references, all 4-tuple).
+
+### F.2 Deliberate opens — accepted, each dispositioned
+
+- **C.2.6 re-probe:** accepted as a feature (re-validates the bytes the
+  convert will consume). Cheap relative to the convert; leave alone.
+- **D.3.4 iterative RDP:** accepted deferral — bounded to an enveloped 500,
+  rewrite risks determinism churn. Revisit only with the simplify path.
+- **Async jobs (§2.3 optional):** still correctly deferred; the D.3.1
+  offload plus the tracked concurrent-convert load pass are the proportionate
+  v1 answer.
+- **§4 frontend:** still no client code in repo; backend contract (hash
+  recompute, 404 re-upload flow, dual DPI hints) supports it. Out of scope.
+
+### F.3 Final spec sweep (§1–§7) — sign-off
+
+§1 one-upload/N-converts ✅ (determinism + cache tests); §2.1/2.2/2.3 shapes,
+codes (413/422/400/404/429/500), and the nested envelope ✅ (additive codes
+`rate_limited`, `image_too_large` and warnings `hatch_pitch_clamped`,
+`embedded_rasters_ignored` extend but never break the frozen contract);
+§3.1–3.4 pipeline, substitutions, stats ✅ (documented in B); §5
+store/TTL/size+rate limits ✅ (results TTL closed the last hole); §6 `/v1/`
+versioning ✅; §7 permissive licences ✅ (`defusedxml` is permissive, verified
+compatible). Third review found **no new defect**.
+
+### F.4 Residual notes (hygiene + ops, non-blocking)
+
+- **Test warnings are noise.** Full-suite warnings are upstream
+  `asyncio.iscoroutinefunction` deprecations inside FastAPI/Starlette on
+  Python 3.14 plus unclosed-pipe `ResourceWarning`s from the uvicorn
+  subprocess harness — none originate in penplot code.
+- **B.5 strategy note is stale by one line.** Three new files
+  (`test_penplot_imaging/store/concurrency.py`) are unit-level, not real-HTTP
+  — rightly so (bomb guards, TTL math, loop-blocking need injection), but B.5
+  still says "real HTTP only". Amend to "HTTP for contract, units for guards".
+- **`Image.MAX_IMAGE_PIXELS` is process-global** (`imaging.py:35`). Correct
+  value, but any future in-process Pillow user inherits it — one-line comment
+  already nearby; just don't move image handling out of this module blindly.
+- **v1 scales vertically.** Filesystem store, in-process fallback, default
+  executor, single shared bucket all assume one instance — consistent and
+  documented, but horizontal scaling must revisit all four together.
+- **Pre-public-traffic ops checklist** (from D/E, restated once): concurrent-
+  convert load pass (sizes the jobs decision), confirm deployment overwrites
+  XFF (or ship `PENPLOT_TRUST_FORWARDED_FOR=0`), Redis wired so the limiter
+  isn't on memory fallback.

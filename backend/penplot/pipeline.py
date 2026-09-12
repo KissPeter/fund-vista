@@ -82,8 +82,9 @@ def run_convert(
     warnings: list[str] = []
     try:
         if is_vector:
-            raw_px, vw, vh = imaging.parse_svg_vectors(image_bytes)
+            raw_px, vw, vh, svg_warnings = imaging.parse_svg_vectors(image_bytes)
             src_w, src_h = vw, vh
+            warnings.extend(svg_warnings)
             _timed("parse-svg", image_id, method, t0)
             gray = None
             mask = None
@@ -107,12 +108,17 @@ def run_convert(
                 params.page.size, params.page.orientation, params.page.margin_mm,
             )
             pitch_px = params.hatch_pitch_mm / max(scale, 1e-9)
+            pitch_px_clamped = float(np.clip(pitch_px, 2.0, 200.0))
+            if pitch_px != pitch_px_clamped:
+                # Extreme page/image combos can request a sub-satisfiable pitch;
+                # surface the silent clamp instead of just doing it (C.2.4a).
+                warnings.append("hatch_pitch_clamped")
             ctx = MethodContext(
                 threshold=params.threshold,
                 blur_radius=params.blur_radius,
                 hatch_pitch_mm=params.hatch_pitch_mm,
                 contour_simplify=params.contour_simplify,
-                hatch_pitch_px=float(np.clip(pitch_px, 2.0, 200.0)),
+                hatch_pitch_px=pitch_px_clamped,
             )
             generator = METHOD_REGISTRY[method]
             raw_px = generator.generate(mask, gray, ctx)

@@ -164,3 +164,47 @@ def test_css_units_and_rounded_rect(http_client):
     )
     assert body["stats"]["pen_down_mm"] > 0
     assert "<path" in _fetch_svg(http_client, body)
+
+
+def test_upload_rejects_entity_expansion_bomb(http_client):
+    """Review D.3.3: an internal-entity DTD must 400, never expand (billion-laughs)."""
+    bomb = (
+        b'<?xml version="1.0"?>'
+        b'<!DOCTYPE svg [<!ENTITY a "AAAAAAAAAAAAAAAAAAAA">]>'
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="210" height="297">'
+        b'<rect x="0" y="0" width="100" height="100" fill="&a;"/></svg>'
+    )
+    resp = upload(http_client, bomb, "bomb.svg")
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "bad_image"
+
+
+def test_upload_rejects_pathological_nesting(http_client):
+    """Review D.3.3: a nesting-depth cap must 400; deep <g> trees cannot recurse."""
+    deep = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">'
+        + "<g>" * 300 + '<rect x="0" y="0" width="1" height="1"/>' + "</g>" * 300
+        + "</svg>"
+    )
+    resp = upload(http_client, deep.encode(), "deep.svg")
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "bad_image"
+
+
+def test_upload_svg_with_embedded_raster_warns(http_client):
+    """Review C.2.5: `<image>` is not plot geometry — ignore it, but say so."""
+    inner = (
+        '<rect x="0" y="0" width="100" height="100"/>'
+        '<image href="data:image/png;base64,x" x="0" y="0" width="10" height="10"/>'
+    )
+    resp = upload(http_client, _svg_bytes(inner), "mixed.svg")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["warnings"] == ["embedded_rasters_ignored"]
+    assert resp.json()["is_vector"] is True
+    # The same warning survives a convert round-trip.
+    image_id = resp.json()["image_id"]
+    resp = http_client.post(
+        "/v1/convert", json={"image_id": image_id, "params": default_params("hatch")}
+    )
+    assert resp.status_code == 200, resp.text
+    assert "embedded_rasters_ignored" in resp.json()["warnings"]

@@ -7,6 +7,7 @@ the ``{"error": {"code", "message"}}`` envelope so clients can switch on
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
@@ -58,11 +59,17 @@ def get_settings() -> Settings:
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        head = forwarded.split(",")[0].strip()
-        if head:
-            return head
+    # Review D.1.2: the X-Forwarded-For first hop is trusted unconditionally by
+    # default. That is correct only behind a proxy that OVERWRITES the header;
+    # when PENPLOT_TRUST_FORWARDED_FOR=0 the limiter keys off the socket peer
+    # instead, so a directly-exposed instance can't be walked around by
+    # rotating XFF values.
+    if _settings.trust_forwarded_for:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            head = forwarded.split(",")[0].strip()
+            if head:
+                return head
     return request.client.host if request.client else "unknown"
 
 
@@ -135,10 +142,10 @@ def _warnings_for(width: int, height: int, is_vector: bool) -> list[str]:
 
 @router.post("/images", response_model=ImageMetaResponse,
              dependencies=[Depends(require_rate_limit)])
-async def upload_image(file: UploadFile = File(...)) -> ImageMetaResponse:
+async def upload_image(file: UploadFile = File(...)) -> ImageMetaResponse | JSONResponse:
     data = await file.read()
     if len(data) > _settings.max_upload_bytes:
-        return _error_response(  # type: ignore[return-value]
+        return _error_response(
             HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             ErrorCode.PAYLOAD_TOO_LARGE,
             f"File exceeds {_settings.max_upload_bytes // (1024 * 1024)} MB limit.",
@@ -146,7 +153,7 @@ async def upload_image(file: UploadFile = File(...)) -> ImageMetaResponse:
     ext = imaging.sniff_extension(data, file.filename)
     if ext is None:
         allowed = sorted(set(ALLOWED_RASTER_EXTS) | {"svg"})
-        return _error_response(  # type: ignore[return-value]
+        return _error_response(
             HTTP_422_UNPROCESSABLE_ENTITY,
             ErrorCode.UNSUPPORTED_MEDIA_TYPE,
             f"Unsupported format. Allowed: {allowed}.",
@@ -156,15 +163,18 @@ async def upload_image(file: UploadFile = File(...)) -> ImageMetaResponse:
     assert path is not None
     try:
         if ext == "svg":
-            _, w, h = imaging.parse_svg_vectors(data)
+            _, w, h, svg_warnings = imaging.parse_svg_vectors(data)
             width, height = int(round(w)), int(round(h))
             is_vector = True
         else:
             w, h, _fmt = imaging.probe_raster(data)
             width, height, is_vector = w, h, False
     except PenPlotError as exc:
-        return _error_response(exc.status, exc.code, exc.message)  # type: ignore[return-value]
-    warnings = _warnings_for(width, height, is_vector)
+        return _error_response(exc.status, exc.code, exc.message)
+    if ext == "svg" and svg_warnings:
+        warnings = list(svg_warnings)
+    else:
+        warnings = _warnings_for(width, height, is_vector)
     log.info(
         "images.upload id=%s fmt=%s %dx%d warnings=%s",
         image_id[:12], ext, width, height, warnings,
@@ -175,7 +185,8 @@ async def upload_image(file: UploadFile = File(...)) -> ImageMetaResponse:
     )
 
 
-@router.get("/images/{image_id}", response_model=ImageMetaResponse)
+@router.get("/images/{image_id}", response_model=ImageMetaResponse,
+            dependencies=[Depends(require_rate_limit)])
 async def get_image(image_id: str) -> ImageMetaResponse | JSONResponse:
     if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id.lower()):
         return _error_response(404, ErrorCode.IMAGE_NOT_FOUND, "Unknown image id.")
@@ -188,7 +199,7 @@ async def get_image(image_id: str) -> ImageMetaResponse | JSONResponse:
         with open(path, "rb") as fh:
             data = fh.read()
         if ext == "svg":
-            _, w, h = imaging.parse_svg_vectors(data)
+            _, w, h, svg_warnings = imaging.parse_svg_vectors(data)
             width, height = int(round(w)), int(round(h))
             is_vector = True
         else:
@@ -196,10 +207,13 @@ async def get_image(image_id: str) -> ImageMetaResponse | JSONResponse:
             width, height, is_vector = w, h, False
     except PenPlotError as exc:
         return _error_response(exc.status, exc.code, exc.message)
+    if ext == "svg" and svg_warnings:
+        warnings = list(svg_warnings)
+    else:
+        warnings = _warnings_for(width, height, is_vector)
     return _image_meta(
         image_id=image_id.lower(), ext=ext, width=width, height=height,
-        is_vector=is_vector, warnings=_warnings_for(width, height, is_vector),
-        path=path,
+        is_vector=is_vector, warnings=warnings, path=path,
     )
 
 
@@ -219,7 +233,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
     # cached file was replaced between upload and convert).
     try:
         if is_vector:
-            _, vw, vh = imaging.parse_svg_vectors(data)
+            _, vw, vh, _svg_warnings = imaging.parse_svg_vectors(data)
             src_w, src_h = float(vw), float(vh)
         else:
             w, h, _fmt = imaging.probe_raster(data)
@@ -228,7 +242,13 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
         return _error_response(exc.status, exc.code, exc.message)
 
     try:
-        result = run_convert(
+        # Review D.3.1: run_convert is fully synchronous and GIL-bound (OpenCV,
+        # the hatch march, RDP/merge O(n²)); running it inline would stall every
+        # route — /healthz, the fund proxy — for the whole convert. Offload to
+        # the default thread executor; the function is pure (deterministic,
+        # content-addressed), so results are unaffected.
+        result = await asyncio.to_thread(
+            run_convert,
             image_id=image_id, image_bytes=data, is_vector=is_vector,
             src_w=src_w, src_h=src_h, params=body.params, settings=_settings,
         )
@@ -258,12 +278,12 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
     )
 
 
-@router.get("/results/{filename}")
+@router.get("/results/{filename}", dependencies=[Depends(require_rate_limit)])
 async def get_result(filename: str) -> Response:
     # Filenames are server-generated ({sha}_{hash}_optimized.svg); anything
     # else is a 404, never a path traversal.
     if not filename.endswith("_optimized.svg") or "/" in filename or "\\" in filename:
-        return _error_response(  # type: ignore[return-value]
+        return _error_response(
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
         )
     path = store.result_path(filename)

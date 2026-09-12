@@ -1,74 +1,78 @@
-"""Central configuration for the pen-plot v1 API.
+"""Central configuration for the pen-plot v1 API, built by pydantic-settings.
 
-All values are overridable via environment variables so tests can point the
-store at a tmp dir without touching production paths.
+All values are overridable via `PENPLOT_*` environment variables so tests can
+point the store at a tmp dir without touching production paths. Typed and
+validated at import time: an invalid env value now FAILS FAST instead of being
+silently swallowed by a try/except default (the old `_env_int`/_`_env_float`
+behaviour). An explicitly-empty env var is treated as unset.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from typing import Annotated
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except ValueError:
-        return default
+class Settings(BaseSettings):
+    """Runtime-tunable limits. Frozen so handlers can't mutate them by accident.
 
+    Model fields map 1:1 to ``PENPLOT_<FIELD>`` env vars (case-insensitive),
+    e.g. ``max_upload_bytes`` <- ``PENPLOT_MAX_UPLOAD_BYTES``.
+    """
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except ValueError:
-        return default
-
-
-@dataclass(frozen=True)
-class Settings:
-    """Runtime-tunable limits. Frozen so handlers can't mutate them by accident."""
-
-    max_upload_bytes: int = field(
-        default_factory=lambda: _env_int("PENPLOT_MAX_UPLOAD_BYTES", 10 * 1024 * 1024)
+    model_config = SettingsConfigDict(
+        env_prefix="PENPLOT_",
+        env_ignore_empty=True,
+        frozen=True,
     )
-    image_ttl_hours: int = field(
-        default_factory=lambda: _env_int("PENPLOT_IMAGE_TTL_HOURS", 48)
-    )
-    data_dir: str = field(
-        default_factory=lambda: os.getenv(
-            "PENPLOT_DATA_DIR",
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), ".data"),
-        )
+
+    max_upload_bytes: int = 10 * 1024 * 1024
+    image_ttl_hours: int = 48
+    data_dir: str = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), ".data"
     )
     # Per-IP fixed-window throttle for the CPU-exposed POST endpoints
-    # (spec §5 rate limit, review C.2.2). Redis INCR + EXPIRE, with an
+    # (spec §5 rate limit, review C.2.2). Redis SET NX EX + INCR, with an
     # in-process fallback window when Redis is down (single-instance v1).
-    rate_limit_requests: int = field(
-        default_factory=lambda: _env_int("PENPLOT_RATE_LIMIT", 100)
+    # The bucket is SHARED across all four /v1 endpoints (review D.1.5).
+    # Aliases pin the legacy env names (field-by-name would read
+    # PENPLOT_RATE_LIMIT_REQUESTS).
+    rate_limit_requests: int = Field(
+        default=100, validation_alias="PENPLOT_RATE_LIMIT"
     )
-    rate_limit_window_s: int = field(
-        default_factory=lambda: _env_int("PENPLOT_RATE_LIMIT_WINDOW_S", 60)
-    )
-    rate_limit_whitelist: frozenset[str] = field(
-        default_factory=lambda: frozenset(
-            ip.strip()
-            for ip in os.getenv("PENPLOT_RATE_LIMIT_WHITELIST", "").split(",")
-            if ip.strip()
-        )
-    )
-    max_image_dim_px: int = field(
-        default_factory=lambda: _env_int("PENPLOT_MAX_IMAGE_DIM_PX", 3000)
-    )
-    low_res_dpi_threshold: float = field(
-        default_factory=lambda: _env_float("PENPLOT_LOW_RES_DPI", 100.0)
+    rate_limit_window_s: int = 60
+    # NoDecode: source-side JSON decode is skipped so the raw "a, b, c" string
+    # reaches the split validator below (a frozenset is a "complex" env type).
+    rate_limit_whitelist: Annotated[frozenset[str], NoDecode] = frozenset()
+    # Review D.1.2: the limiter reads the client IP from X-Forwarded-For with
+    # no peer verification. That is correct only behind a proxy/CDN that
+    # OVERWRITES the header (it otherwise lets clients rotate IPs past the
+    # throttle). v1 is documented to run behind such a proxy; set this False
+    # to disable XFF reading on a directly-exposed instance.
+    trust_forwarded_for: bool = True
+    max_image_dim_px: int = 3000
+    # Env name is PENPLOT_LOW_RES_DPI (legacy), hence the alias.
+    low_res_dpi_threshold: float = Field(
+        default=100.0, validation_alias="PENPLOT_LOW_RES_DPI"
     )
     # A4 width in mm — the reference for the DPI pre-check (spec §4.1).
     a4_width_mm: float = 210.0
-
     # Mirrors `read --quantization` in the vpype chain (spec §3.3): every
     # coordinate is snapped to this grid (mm) right after layout, so the
     # vpype_command string in convert responses describes what really ran.
     quantization_mm: float = 0.02
+
+    @field_validator("rate_limit_whitelist", mode="before")
+    @classmethod
+    def _split_whitelist(cls, value: object) -> object:
+        # Env arrives as "ip1, ip2, ip3" — split to a list so pydantic can build
+        # the frozenset. A plain str would otherwise be iterated char-by-char.
+        if isinstance(value, str):
+            return [ip.strip() for ip in value.split(",") if ip.strip()]
+        return value
 
     @property
     def images_dir(self) -> str:

@@ -9,6 +9,9 @@ dependencies = [
     "httpx==0.27.2",
     "brotli==1.1.0",
     "redis==5.1.1",
+    # pydantic-settings replaces hand-rolled os.getenv/_env_int/_env_float config
+    # parsing (validated, typed, fail-fast). Permissive (MIT) — meets spec §7.
+    "pydantic-settings>=2.0",
     # Pen-plot v1 pipeline (all permissive licenses: HPND / BSD / Apache-2.0).
     # NOTE: Potrace (GPL-2.0) and vpype-flow-imager (GPL-3.0) are deliberately
     # NOT dependencies — see backend/penplot/methods.py.
@@ -16,6 +19,13 @@ dependencies = [
     "numpy>=1.26",
     "opencv-python-headless>=4.8",
     "python-multipart>=0.0.9",
+    # SVG entity-expansion / external-reference protection for ET.fromstring
+    # (review D.3.3). DefusedXML is permissive-licensed (Python/PSF), so §7's
+    # permissive-only rule is unaffected.
+    "defusedxml>=0.7",
+    # Server-rendered UI for the pen-plot endpoints (Jinja2 templates).
+    # BSD-3-Clause — permissive, meets spec §7.
+    "jinja2>=3.1",
 ]
 
 [dependency-groups]

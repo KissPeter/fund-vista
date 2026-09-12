@@ -52,6 +52,10 @@ class ContourMethod:
 
     ``contour_simplify`` is the approxPolyDP epsilon in pixels: 0 keeps every
     contour point, larger values straighten curves.
+    Honoured params (C.2.4): ``threshold``/``blur_radius`` via the mask,
+    ``contour_simplify`` as the RDP epsilon. ``hatch_pitch_mm`` is IGNORED —
+    a contour tracer has no line spacing. Speck contours under 4 px² are
+    dropped as sensor noise (documented, C.2.4c).
     """
 
     name = "contour"
@@ -150,6 +154,10 @@ class HatchMethod:
 class FlowMethod:
     """Deterministic organic streamlines modulated by image tone.
 
+    Honoured params (C.2.4): only ``threshold``/``blur_radius``
+    (via the mask the pipeline builds) and the image itself are used.
+    ``hatch_pitch_mm`` and ``contour_simplify`` are IGNORED by design — the
+    field is a fixed-coarse deterministic advection, not line spacing.
     Particles seed on a coarse grid and advect through a cheap analytic field
     (layered sin/cos — no RNG at runtime beyond a fixed seed ordering), dying
     in bright areas. Darker pixels let lines grow longer, so tone emerges from

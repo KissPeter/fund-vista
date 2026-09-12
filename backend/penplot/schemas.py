@@ -56,7 +56,10 @@ class ConvertParams(BaseModel):
 class ConvertRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    image_id: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    # Hex sha256 from GET /v1/images + POST /v1/images responses. Uppercase is
+    # accepted (C.2.7) and normalized to lowercase by the router, so the
+    # normalisation there is functional, not dead code.
+    image_id: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$")
     params: ConvertParams = Field(default_factory=ConvertParams)
 
 

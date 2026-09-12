@@ -4,8 +4,11 @@
 - ``results/{sha256}_{paramhash}_optimized.svg`` — convert outputs, content
   addressed so repeating the same convert is a cache hit (no recompute).
 - TTL is enforced lazily on read (mtime + TTL); expired files are removed.
-  This keeps v1 dependency-free (no S3/Redis needed) while the class boundary
-  lets a future S3 store slot in without touching the router or pipeline.
+  Results share the same lazy TTL (review C.2.3) — they are deterministically
+  regenerable, so expiring them on access bounds disk growth without costing
+  correctness. This keeps v1 dependency-free (no S3/Redis needed) while the
+  class boundary lets a future S3 store slot in without touching the router
+  or pipeline.
 """
 
 from __future__ import annotations
@@ -103,7 +106,17 @@ class ImageStore:
     def result_path(self, filename: str) -> str:
         # Guard against path traversal: only allow the basename we generated.
         safe = os.path.basename(filename)
-        return os.path.join(self.results_dir, safe)
+        path = os.path.join(self.results_dir, safe)
+        # Lazy TTL, same as images (review C.2.3): results are deterministically
+        # regenerable, so an expired result is simply dropped — the caller sees
+        # a missing file (404 result_not_found -> client re-runs the convert).
+        if self._is_expired(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            log.debug("result %s expired", os.path.basename(path))
+        return path
 
     def put_result(self, filename: str, svg_text: str) -> str:
         path = self.result_path(filename)

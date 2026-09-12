@@ -11,6 +11,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import time
 
 import httpx
 import pytest
@@ -78,6 +79,10 @@ def test_rate_limit_429_envelope_and_retry_after(limited_server):
         assert blocked.headers["X-Rate-Limit-Requests-Left"] == "0"
         # Later requests in the same window stay blocked.
         assert responses[3].status_code == 429 and responses[4].status_code == 429
+        # Review D.1.3: the GETs share the same per-IP bucket — once the POST
+        # window is spent, reads throttle too instead of serving unlimited.
+        get = client.get("/v1/images/" + "0" * 64)
+        assert get.status_code == 429
 
 
 def test_rate_limit_whitelisted_ip_not_throttled(tmp_path_factory):
@@ -128,3 +133,88 @@ def test_rate_limiter_memory_fallback_blocks():
     assert allowed is False and 1 <= retry_after <= 60
     # Different IPs share the limit, not the bucket.
     assert asyncio.run(_probe("9.9.9.9")) == (True, None)
+
+
+def test_rate_limiter_memory_prunes_stale_windows():
+    # Review D.1.1: the in-process fallback must not grow forever — entries in
+    # fully-elapsed windows are dropped on every consume.
+    limiter = RateLimiter(limit=10, window_s=60)
+    current = int(time.time() // 60)
+    limiter._memory[("stale-a", current - 5)] = 99
+    limiter._memory[("stale-b", current - 1)] = 3
+
+    async def _probe(ip: str):
+        return await limiter.consume(ip)
+
+    assert asyncio.run(_probe("current")) == (True, None)
+    assert set(limiter._memory) == {("current", current)}
+
+
+class _FakeRedis:
+    """Recorded async stub of the redis.asyncio surface the limiter touches."""
+
+    def __init__(self, ttl_results: list[int] | None = None) -> None:
+        self.calls: list[tuple[str, tuple, dict]] = []
+        self._ttl_results = list(ttl_results or [])
+        self._count = 0
+
+    async def set(self, *args, **kwargs):
+        self.calls.append(("set", args, kwargs))
+        return True
+
+    async def incr(self, *args, **kwargs):
+        self.calls.append(("incr", args, kwargs))
+        self._count += 1
+        return self._count
+
+    async def ttl(self, *args, **kwargs):
+        self.calls.append(("ttl", args, kwargs))
+        return self._ttl_results.pop(0) if self._ttl_results else 60
+
+    async def expire(self, *args, **kwargs):
+        self.calls.append(("expire", args, kwargs))
+
+
+def test_rate_limiter_redis_path_atomic_set_nx_ex():
+    # Review D.1.4: creation must stamp the TTL atomically (SET NX EX), not via
+    # a separate EXPIRE that a crash can skip. Over-limit returns the TTL.
+    fake = _FakeRedis()
+    configure_redis(fake)  # type: ignore[arg-type]
+    try:
+        limiter = RateLimiter(limit=2, window_s=60)
+
+        async def _probe(ip: str):
+            return await limiter.consume(ip)
+
+        assert asyncio.run(_probe("1.2.3.4")) == (True, None)
+        assert asyncio.run(_probe("1.2.3.4")) == (True, None)
+        allowed, retry_after = asyncio.run(_probe("1.2.3.4"))
+        assert allowed is False and retry_after >= 1  # ttl result 59
+
+        set_calls = [c for c in fake.calls if c[0] == "set"]
+        assert set_calls, "SET must be used for atomic window creation"
+        assert all(c[2].get("nx") is True and c[2].get("ex") == 60 for c in set_calls)
+        # No stray expire when every key already carries a TTL.
+        assert [c for c in fake.calls if c[0] == "expire"] == []
+    finally:
+        configure_redis(None)
+
+
+def test_rate_limiter_redis_reasserts_expiry_when_ttl_missing():
+    # INCR can race a just-expired key back into existence without a TTL; the
+    # limiter must re-assert expiry instead of leaving a permanent key.
+    fake = _FakeRedis(ttl_results=[60, -1])
+    configure_redis(fake)  # type: ignore[arg-type]
+    try:
+        limiter = RateLimiter(limit=2, window_s=60)
+
+        async def _probe(ip: str):
+            return await limiter.consume(ip)
+
+        assert asyncio.run(_probe("x")) == (True, None)  # ttl 60
+        assert asyncio.run(_probe("x")) == (True, None)  # ttl -1 -> expire
+        expires = [c for c in fake.calls if c[0] == "expire"]
+        assert len(expires) == 1
+        assert expires[0][2] == {"ex": 60} or expires[0][1][1] == 60
+    finally:
+        configure_redis(None)
