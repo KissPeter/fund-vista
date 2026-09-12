@@ -16,6 +16,7 @@ import time
 import numpy as np
 
 from backend.penplot import imaging
+from backend.penplot import labels
 from backend.penplot.config import Settings
 from backend.penplot.errors import PenPlotError, processing_failed
 from backend.penplot.methods import METHOD_REGISTRY, MethodContext
@@ -77,7 +78,8 @@ def run_convert(
     params: ConvertParams,
     settings: Settings,
 ) -> ConvertResult:
-    method = params.method
+    methods = list(params.methods or ["hatch"])
+    method_label = "+".join(methods)
     t0 = time.perf_counter()
     warnings: list[str] = []
     try:
@@ -85,21 +87,22 @@ def run_convert(
             raw_px, vw, vh, svg_warnings = imaging.parse_svg_vectors(image_bytes)
             src_w, src_h = vw, vh
             warnings.extend(svg_warnings)
-            _timed("parse-svg", image_id, method, t0)
+            _timed("parse-svg", image_id, method_label, t0)
             gray = None
             mask = None
         else:
             gray, w, h, _fmt = imaging.load_raster(image_bytes)
             src_w, src_h = float(w), float(h)
-            _timed("load", image_id, method, t0)
+            _timed("load", image_id, method_label, t0)
             t0 = time.perf_counter()
             gray, scaled = imaging.maybe_downscale(gray, settings.max_image_dim_px)
             if scaled:
                 warnings.append("image_downscaled_for_performance")
                 src_w, src_h = float(gray.shape[1]), float(gray.shape[0])
             gray = imaging.blur(gray, params.blur_radius)
+            gray = imaging.adjust_contrast(gray, params.contrast)
             mask = imaging.threshold_mask(gray, params.threshold)
-            _timed("preprocess", image_id, method, t0)
+            _timed("preprocess", image_id, method_label, t0)
             t0 = time.perf_counter()
             # Hatch pitch is authored in mm; convert to px with the same scale
             # layout() will later use, so WYSIWYG holds on the page.
@@ -118,11 +121,18 @@ def run_convert(
                 blur_radius=params.blur_radius,
                 hatch_pitch_mm=params.hatch_pitch_mm,
                 contour_simplify=params.contour_simplify,
+                hatch_angle_deg=params.hatch_angle_deg,
                 hatch_pitch_px=pitch_px_clamped,
             )
-            generator = METHOD_REGISTRY[method]
-            raw_px = generator.generate(mask, gray, ctx)
-            _timed(f"method-{method}", image_id, method, t0)
+            # Every selected generator runs on the same (mask, gray) in the
+            # requested order; outputs concatenate before the shared optimize
+            # chain below. Listed order is preserved here (e.g. shading first,
+            # outlines last) — linesort later only reorders for travel.
+            raw_px = []
+            for method in methods:
+                generator = METHOD_REGISTRY[method]
+                raw_px.extend(generator.generate(mask, gray, ctx))
+                _timed(f"method-{method}", image_id, method_label, t0)
 
         points_before = count_points(raw_px)
         segments_before = len(raw_px)
@@ -136,18 +146,35 @@ def run_convert(
             orientation=params.page.orientation,
             margin_mm=params.page.margin_mm,
         )
-        _timed("layout", image_id, method, t0)
+        _timed("layout", image_id, method_label, t0)
+        if params.label.enabled and params.label.text.strip():
+            # Title-block label (mm space already): joins quantize and the
+            # whole cleanup chain so it plots and counts like any stroke.
+            lab_lines, lab_warnings = labels.render_label(
+                params.label.text,
+                height_mm=params.label.height_mm,
+                align=params.label.align,
+                page_w=page_w, page_h=page_h,
+                margin_mm=params.page.margin_mm,
+                font=params.label.font,
+                border=params.label.border,
+                pad_left_mm=params.label.pad_left_mm,
+                pad_right_mm=params.label.pad_right_mm,
+            )
+            warnings.extend(lab_warnings)
+            laid.extend(lab_lines)
+            _timed("label", image_id, method_label, t0)
         t0 = time.perf_counter()
         merged = linemerge(quantize(laid, settings.quantization_mm), params.linemerge_tolerance_mm)
-        _timed("linemerge", image_id, method, t0)
+        _timed("linemerge", image_id, method_label, t0)
         t0 = time.perf_counter()
         simplified = linesimplify(merged, params.linesimplify_tolerance_mm)
-        _timed("linesimplify", image_id, method, t0)
+        _timed("linesimplify", image_id, method_label, t0)
         t0 = time.perf_counter()
         ordered = linesort(simplified) if params.linesort else simplified
-        _timed("linesort", image_id, method, t0)
+        _timed("linesort", image_id, method_label, t0)
         final = reloop(ordered, params.reloop_tolerance_mm)
-        _timed("reloop", image_id, method, t0)
+        _timed("reloop", image_id, method_label, t0)
 
         pen_down = sum(polyline_length(pl) for pl in final)
         pen_up = sum(
@@ -184,5 +211,5 @@ def run_convert(
     except PenPlotError:
         raise
     except Exception as exc:
-        log.exception("pipeline.convert failed image=%s method=%s", image_id[:12], method)
+        log.exception("pipeline.convert failed image=%s method=%s", image_id[:12], method_label)
         raise processing_failed() from exc

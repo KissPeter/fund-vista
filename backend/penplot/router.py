@@ -261,7 +261,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
     svg_url = f"{base}/v1/results/{result.filename}"
     log.info(
         "convert.ok id=%s method=%s strokes=%d pen_down=%.1fmm",
-        image_id[:12], body.params.method,
+        image_id[:12], "+".join(body.params.methods or ["hatch"]),
         result.stats.strokes, result.stats.pen_down_mm,
     )
     # Spec §4.3: surface low-res hint on convert too so client/server agree.

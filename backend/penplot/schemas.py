@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MethodName = Literal["contour", "hatch", "flow"]
 PageSizeName = Literal["A4", "A3", "A5", "Letter", "a4", "a3", "a5", "letter"]
@@ -27,6 +27,37 @@ class PageParams(BaseModel):
     margin_mm: float = Field(default=10.0, ge=0.0, le=50.0)
 
 
+LabelAlign = Literal["left", "right", "fill"]
+LabelFont = Literal["futural", "futuram", "simplex"]
+
+
+class LabelParams(BaseModel):
+    """Blueprint title-block label (single-stroke Hershey, bottom strip).
+
+    Faces mirror Drawscape's hershey-text select (futural default, futuram,
+    simplex). futural/futuram cover ASCII 33-126 incl. lowercase; simplex
+    covers A-Z 0-9 space + 18 marks. Anything else is skipped with a
+    `label_unsupported_characters` warning.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    text: str = Field(default="", max_length=120)
+    align: LabelAlign = "right"
+    height_mm: float = Field(default=5.0, gt=0.0, le=25.0)
+    font: LabelFont = "futural"
+    border: bool = True
+    pad_left_mm: float = Field(
+        default=0.0, ge=0.0, le=20.0,
+        description="Text inset from the left frame vertical.",
+    )
+    pad_right_mm: float = Field(
+        default=0.0, ge=0.0, le=20.0,
+        description="Text inset from the right frame vertical.",
+    )
+
+
 class PenParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -36,14 +67,37 @@ class PenParams(BaseModel):
 
 
 class ConvertParams(BaseModel):
-    """Slider state. Defaults match the spec §2.3 example."""
+    """Slider state. Defaults match the spec §2.3 example.
+
+    Line generation is multi-select: ``methods`` lists every generator to run
+    (in order — hatch shading first, contour outlines last is the classic
+    combination). Outputs are concatenated before the shared optimize chain.
+    The singular ``method`` is a deprecated alias kept for old clients: it
+    maps to a one-element ``methods`` and is cleared afterwards so the
+    canonical form (and the result cache key) is always ``methods``-only.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    method: MethodName = "hatch"
+    method: MethodName | None = Field(
+        default=None,
+        description="Deprecated alias for methods=[method].",
+    )
+    methods: list[MethodName] | None = Field(
+        default=None, min_length=1,
+        description="Generators to run, in order. Defaults to ['hatch'].",
+    )
     threshold: int = Field(default=128, ge=0, le=255)
     blur_radius: float = Field(default=1.0, ge=0.0, le=10.0)
+    contrast: float = Field(
+        default=1.0, ge=0.0, le=4.0,
+        description="Linear contrast stretch before thresholding; 1.0 is neutral.",
+    )
     hatch_pitch_mm: float = Field(default=1.2, gt=0.0, le=10.0)
+    hatch_angle_deg: float = Field(
+        default=45.0, ge=0.0, lt=180.0,
+        description="Hatch line direction in degrees; cross pass runs at +90°.",
+    )
     contour_simplify: float = Field(default=2.0, ge=0.0, le=20.0)
     linemerge_tolerance_mm: float = Field(default=0.5, ge=0.0, le=5.0)
     linesimplify_tolerance_mm: float = Field(default=0.1, ge=0.0, le=2.0)
@@ -51,6 +105,22 @@ class ConvertParams(BaseModel):
     reloop_tolerance_mm: float = Field(default=0.05, ge=0.0, le=2.0)
     page: PageParams = Field(default_factory=PageParams)
     pen: PenParams = Field(default_factory=PenParams)
+    label: LabelParams = Field(default_factory=LabelParams)
+
+    @model_validator(mode="after")
+    def _resolve_methods(self) -> ConvertParams:
+        """Canonicalize to ``methods``-only (deduped, order-preserving)."""
+        if self.methods is None:
+            self.methods = [self.method] if self.method is not None else ["hatch"]
+        elif self.method is not None:
+            raise ValueError("Use either 'methods' or legacy 'method', not both.")
+        seen: list[str] = []
+        for m in self.methods:
+            if m not in seen:
+                seen.append(m)
+        self.methods = seen  # type: ignore[assignment]
+        self.method = None  # alias consumed; keeps model_dump (cache key) canonical
+        return self
 
 
 class ConvertRequest(BaseModel):

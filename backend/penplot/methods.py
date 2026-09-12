@@ -34,6 +34,7 @@ class MethodContext:
     blur_radius: float
     hatch_pitch_mm: float
     contour_simplify: float
+    hatch_angle_deg: float = 45.0
     # Hatch pitch already converted to pixels by the pipeline (page-aware).
     hatch_pitch_px: float = 8.0
 
@@ -52,7 +53,7 @@ class ContourMethod:
 
     ``contour_simplify`` is the approxPolyDP epsilon in pixels: 0 keeps every
     contour point, larger values straighten curves.
-    Honoured params (C.2.4): ``threshold``/``blur_radius`` via the mask,
+    Honoured params (C.2.4): ``threshold``/``blur_radius``/``contrast`` via the mask,
     ``contour_simplify`` as the RDP epsilon. ``hatch_pitch_mm`` is IGNORED —
     a contour tracer has no line spacing. Speck contours under 4 px² are
     dropped as sensor noise (documented, C.2.4c).
@@ -89,28 +90,28 @@ class ContourMethod:
 
 
 class HatchMethod:
-    """Single-angle (45°) tonal hatching clipped to the ink mask.
+    """Tonal hatching at ``hatch_angle_deg`` clipped to the ink mask.
 
     For each hatch line offset by ``hatch_pitch_px`` along the line normal, the
     intersections with dark runs are emitted as segments. Very dark regions
-    get a second cross pass (135°) for tone depth — classic pen-plot shading.
+    get a second cross pass at +90° for tone depth — classic pen-plot shading.
     """
 
     name = "hatch"
-    angle_rad = math.radians(45.0)
-    cross_angle_rad = math.radians(135.0)
 
     def generate(
         self, mask: np.ndarray, gray: np.ndarray, ctx: MethodContext
     ) -> list[Polyline]:
         h, w = mask.shape[:2]
         pitch = max(2.0, float(ctx.hatch_pitch_px))
-        main = self._hatch_at_angle(mask, w, h, pitch, self.angle_rad)
+        angle = math.radians(float(ctx.hatch_angle_deg) % 180.0)
+        cross_angle = angle + math.radians(90.0)
+        main = self._hatch_at_angle(mask, w, h, pitch, angle)
         # Cross-hatch only the darkest quartile for depth; cheap and effective.
         dark = gray < max(0, ctx.threshold - 64)
         cross: list[Polyline] = []
         if bool(np.any(dark)):
-            cross = self._hatch_at_angle(dark, w, h, pitch * 2.0, self.cross_angle_rad)
+            cross = self._hatch_at_angle(dark, w, h, pitch * 2.0, cross_angle)
         log.debug("hatch: %d + %d cross segments", len(main), len(cross))
         return main + cross
 
@@ -154,7 +155,7 @@ class HatchMethod:
 class FlowMethod:
     """Deterministic organic streamlines modulated by image tone.
 
-    Honoured params (C.2.4): only ``threshold``/``blur_radius``
+    Honoured params (C.2.4): only ``threshold``/``blur_radius``/``contrast``
     (via the mask the pipeline builds) and the image itself are used.
     ``hatch_pitch_mm`` and ``contour_simplify`` are IGNORED by design — the
     field is a fixed-coarse deterministic advection, not line spacing.

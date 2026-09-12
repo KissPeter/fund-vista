@@ -19,7 +19,10 @@ def test_ui_page_serves_html(http_client):
     for marker in (
         'id="file"',
         'id="params"',
-        'id="method"',
+        'id="m_contour"',
+        'id="m_hatch"',
+        'id="m_flow"',
+        'id="hatch_angle_deg"',
         'id="threshold"',
         'id="hatch_pitch_mm"',
         'id="linesort"',
@@ -34,6 +37,20 @@ def test_ui_page_serves_html(http_client):
     assert "/v1/images" in html
     assert "/v1/convert" in html
     assert "image_not_found" in html
+    # Sliders + reset button.
+    assert 'type="range"' in html
+    assert 'id="reset"' in html
+    assert 'id="threshold_val"' in html
+    assert 'id="contrast"' in html
+    # Label fieldset: toggle + text + align + height + font + border.
+    for marker in ('id="label_enabled"', 'id="label_text"', 'id="label_align"',
+                   'id="label_height_mm"', 'id="label_font"',
+                   'id="label_border"', 'id="label_pad_left_mm"',
+                   'id="label_pad_right_mm"', 'value="fill"', 'value="futural"',
+                   'value="futuram"', 'value="simplex"'):
+        assert marker in html, marker
+    # Busy lock: controls disable mid-flight, coalesced follow-up after.
+    assert "setBusy" in html and "pending" in html
     # All three methods are offered.
     for method in ("contour", "hatch", "flow"):
         assert f'value="{method}"' in html, method

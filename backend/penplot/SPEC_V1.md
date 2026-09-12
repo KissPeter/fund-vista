@@ -897,3 +897,68 @@ call it makes is already rate-limited. Tests:
 `backend/tests/test_penplot_ui.py` (page serves as `text/html` with all
 control/endpoint markers; rendered defaults equal the schema). Full suite at
 landing: **60 passed**.
+
+---
+
+## PART H — Multi-method converts (post-v1 addition, 2026-09-12)
+
+`POST /v1/convert` takes `params.methods`: a non-empty array of
+`"contour" | "hatch" | "flow"` run in order on the same mask, concatenated
+before the shared optimize chain (shading first, outlines last is the classic
+combo). The old singular `params.method` still works — it maps to a
+one-element array and canonicalizes, so both spellings share one cache entry;
+sending both is `422 invalid_params`. Duplicates dedupe order-preservingly.
+Hatch direction is `params.hatch_angle_deg` (default 45°, range [0, 180) —
+the cross pass follows at +90°). Tone rescue is `params.contrast` (default
+1.0, range [0, 4]): linear stretch around mid-gray after blur, before
+thresholding, so low-contrast detail separates from its background for all
+raster methods. Additive and backward compatible; UI exposes
+methods as tick boxes, angle/contrast sliders. Overdraw note:
+hatch segments cross contour lines (double-ink at crossings) — accepted for
+now, filter later if blobs show. Tests:
+`backend/tests/test_penplot_methods_array.py` (merge, cache-sharing,
+dedupe, three 422s). Full suite at landing: **66 passed**.
+
+---
+
+## PART I — Title-block labels (post-v1 addition, 2026-09-12)
+
+`params.label = { enabled, text (≤120), align: left|right|fill, height_mm }`
+stamps one line of **single-stroke Hershey** plotter text (cap height =
+`height_mm`) on the bottom strip just inside the margins — Drawscape-style,
+each stem drawn exactly once, never outlined. Glyphs are a vendored simplex
+subset (`backend/penplot/hershey_font.py`: A-Z 0-9 space + . , : ; ! ? ' " /
+( ) | - + = * # %, ASCII-art proofed from scruss/python-hershey's
+comp.sources.unix Hershey set; acknowledgement in the module docstring per
+the Usenet Font Consortium distribution terms, §7-safe). Unsupported chars skip with a
+`label_unsupported_characters` warning; blank text is a no-op.
+
+Geometry (`backend/penplot/labels.py`): bearings-driven advance, bbox-based
+anchoring (right ends exactly at the margin; descender-safe bottom sit),
+over-wide lines scaled to fit, `fill` x-stretches to the inner width. Label
+polylines join the chain pre-quantize, so grid, travel sort and stats apply.
+UI: fieldset 5 (toggle + text + align + height). Tests:
+`backend/tests/test_penplot_label.py` (5 geometry units + 4 HTTP). Full suite
+at landing: **80 passed**.
+
+---
+
+## PART J — Label fonts + border (post-v1 addition, 2026-09-12)
+
+`params.label` gains `{ font: futural|futuram|simplex (default futural),
+border: bool (default true) }` — additive, backward compatible. Faces mirror
+Drawscape's hershey-text select (`backend/penplot/hershey_fonts.py` supersedes
+the Part-I `hershey_font.py` subset): futural (EMSL Futura-light, Drawscape
+default) and futuram (Futura-medium, doubled strokes) cover ASCII 33-126 incl.
+lowercase; simplex stays caps/digits/punct. Advance follows the reference
+renderer (`o * 1.68`, space `10 * 1.68`); vendor parser fixed to keep implicit-
+lineto spaces (stripping them merged `4,22 5,12` into `4,225` — caught by
+ASCII-art QA before wiring). Border is a blueprint title-block strip (page
+frame rect at the margin inset + one horizontal divider across the full inner
+width above the text, joining the frame verticals and separating image from
+label), same pre-quantize chain, so +2 strokes in stats. Blank text stays a
+no-op (no strip). UI: fieldset 5 adds font select + border toggle; `readParams`
+forwards both. Tests: `test_penplot_label.py` (strip divider/frame geometry,
+futural-lowercase vs simplex-warns, face stroke counts, border ±2 and 3-face
+URLs + invalid-font 422 over HTTP) + `test_penplot_ui.py` (font/border
+markers). Full suite at landing: **86 passed**.

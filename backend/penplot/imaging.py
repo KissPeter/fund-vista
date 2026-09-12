@@ -135,6 +135,20 @@ def blur(gray: np.ndarray, radius: float) -> np.ndarray:
     return cv2.GaussianBlur(gray, (k, k), sigmaX=radius)
 
 
+def adjust_contrast(gray: np.ndarray, amount: float) -> np.ndarray:
+    """Linear contrast stretch around mid-gray: 1.0 is identity.
+
+    amount > 1 pushes darks darker and lights lighter (low-contrast detail
+    separates from its background before thresholding); 0 flattens everything
+    to mid-gray. Runs after blur, before the threshold mask, so all raster
+    methods (contour/hatch/flow) benefit equally.
+    """
+    if amount == 1.0:
+        return gray
+    stretched = (gray.astype(np.float32) - 128.0) * float(amount) + 128.0
+    return np.clip(stretched, 0.0, 255.0).astype(np.uint8)
+
+
 def threshold_mask(gray: np.ndarray, threshold: int) -> np.ndarray:
     """Binary ink mask: True where pixel is darker than threshold."""
     return gray < np.uint8(threshold)

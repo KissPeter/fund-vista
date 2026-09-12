@@ -44,5 +44,6 @@ async def penplot_ui(request: Request) -> HTMLResponse:
             "methods": ["contour", "hatch", "flow"],
             "page_sizes": sorted(PAGE_SIZES_MM),
             "orientations": ["portrait", "landscape"],
+            "fonts": ["futural", "futuram", "simplex"],
         },
     )
