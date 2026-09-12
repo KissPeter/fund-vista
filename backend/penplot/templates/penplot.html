@@ -10,8 +10,8 @@
   h1 { font-size: 1.4rem; }
   .layout { display: grid; grid-template-columns: 340px 1fr; gap: 1.5rem; align-items: start; }
   @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
-  fieldset { border: 1px solid #8884; border-radius: 8px; margin-bottom: 1rem; }
-  label { display: flex; justify-content: space-between; gap: .5rem; margin: .3rem 0; font-size: .9rem; }
+  fieldset { border: 1px solid #8884; border-radius: 8px; margin-bottom: 1rem; min-width: 0; }
+  label { display: flex; justify-content: space-between; gap: .5rem; margin: .3rem 0; font-size: .9rem; overflow-wrap: anywhere; }
   input[type=range] { flex: 1; min-width: 0; }
   input[type=text] { flex: 1; min-width: 0; }
   output { min-width: 3.4rem; text-align: right; font-variant-numeric: tabular-nums; }
@@ -249,12 +249,15 @@ function setBusy(on) {
 }
 
 function drain() {
-  // End of an in-flight op: re-enable, then run the single follow-up convert
-  // if sliders moved mid-flight (coalesced, never overlapping).
+  // End of an in-flight op: re-enable, then re-arm the SAME debounce timer
+  // (not an immediate convert) if a slider moved mid-flight. The user may
+  // still be mid-drag exactly when the prior request resolves, so firing
+  // right away would convert on a half-adjusted value; scheduleConvert()
+  // gives them a fresh debounce window instead.
   setBusy(false);
   if (pending && imageId) {
     pending = false;
-    convert(false).catch((e) => setStatus(String(e), "error"));
+    scheduleConvert();
   } else {
     pending = false;
   }
@@ -290,7 +293,7 @@ function scheduleConvert() {
     // follow-up drained when the in-flight op finishes.
     if (busy) { pending = true; return; }
     convert(false).catch((e) => setStatus(String(e), "error"));
-  }, 400);
+  }, 500); // spec §4.2: "~300-500ms debounce" — upper end of the stated range
 }
 
 $("file").addEventListener("change", async (e) => {
