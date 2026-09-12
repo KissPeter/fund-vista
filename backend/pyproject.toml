@@ -7,7 +7,7 @@ dependencies = [
     "fastapi[standard]==0.115.0",
     "uvicorn[standard]==0.30.6",
     "httpx==0.27.2",
-    "brotli==1.1.0",
+    "brotli==1.2.0",
     "redis==5.1.1",
     # pydantic-settings replaces hand-rolled os.getenv/_env_int/_env_float config
     # parsing (validated, typed, fail-fast). Permissive (MIT) — meets spec §7.
