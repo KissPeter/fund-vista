@@ -1,15 +1,28 @@
 import base64
 import hashlib
 import json
+import logging
 import os
+import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+
+from backend.penplot.errors import PenPlotError
+from backend.penplot.ratelimit import configure_redis
+from backend.penplot.router import (
+    penplot_error_handler,
+    router as penplot_router,
+    validation_error_handler,
+)
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 UPSTREAMS: Dict[str, str] = {
     "api": "https://www.kh.hu",
@@ -36,6 +49,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _request_id_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    response = await call_next(request)
+    response.headers["x-request-id"] = request_id
+    return response
+
+
+# v1 pen-plot API first: specific routes must win over the catch-all proxy
+# below (Starlette matches in registration order).
+app.include_router(penplot_router)
+app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
 
 http_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
 redis_client: Optional[Redis] = None
@@ -68,8 +96,10 @@ async def _startup() -> None:
     try:
         redis_client = Redis.from_url(REDIS_URL, decode_responses=False)
         await redis_client.ping()
+        configure_redis(redis_client)
     except Exception as exc:
         redis_client = None
+        configure_redis(None)
         print(f"Redis unavailable, continuing without cache: {exc}")
 
 

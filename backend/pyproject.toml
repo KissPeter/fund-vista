@@ -9,6 +9,19 @@ dependencies = [
     "httpx==0.27.2",
     "brotli==1.1.0",
     "redis==5.1.1",
+    # Pen-plot v1 pipeline (all permissive licenses: HPND / BSD / Apache-2.0).
+    # NOTE: Potrace (GPL-2.0) and vpype-flow-imager (GPL-3.0) are deliberately
+    # NOT dependencies — see backend/penplot/methods.py.
+    "pillow>=10.0",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.8",
+    "python-multipart>=0.0.9",
+]
+
+[dependency-groups]
+test = [
+    "pytest>=8.0",
+    "httpx>=0.27",
 ]
 
 [tool.poetry.dependencies]
