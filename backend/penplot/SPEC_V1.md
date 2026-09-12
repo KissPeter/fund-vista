@@ -876,3 +876,24 @@ compatible). Third review found **no new defect**.
   convert load pass (sizes the jobs decision), confirm deployment overwrites
   XFF (or ship `PENPLOT_TRUST_FORWARDED_FOR=0`), Redis wired so the limiter
   isn't on memory fallback.
+
+---
+
+## PART G — Demo UI (post-v1 addition, 2026-09-12)
+
+Thin server-rendered page over the frozen JSON API — no new endpoints, no
+contract change. `GET /penplot` (`backend/penplot/ui.py`, templates in
+`backend/penplot/templates/penplot.html`, registered in `backend/main.py`
+ahead of the catch-all proxy): file picker → `POST /v1/images`, slider form
+→ debounced (400 ms, spec §4.2) `POST /v1/convert` with the §4.3 silent
+re-upload retry on `404 image_not_found`, then live SVG preview (`svg_url`),
+stats, warnings and the `vpype_command` recipe.
+
+Jinja's job is keeping the form honest: method list, page sizes and every
+default are injected from `ConvertParams`/`PAGE_SIZES_MM`, so the UI can never
+drift from the schema. New dep `jinja2>=3.1` (BSD, meets §7). The page itself
+is static render (no CPU work) and intentionally unthrottled; every expensive
+call it makes is already rate-limited. Tests:
+`backend/tests/test_penplot_ui.py` (page serves as `text/html` with all
+control/endpoint markers; rendered defaults equal the schema). Full suite at
+landing: **60 passed**.
