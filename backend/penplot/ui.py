@@ -23,6 +23,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from backend.penplot.config import PAGE_SIZES_MM
+from backend.penplot.labels import LABEL_FONTS
 from backend.penplot.schemas import ConvertParams
 
 ui_router = APIRouter(tags=["penplot-ui"])
@@ -44,6 +45,6 @@ async def penplot_ui(request: Request) -> HTMLResponse:
             "methods": ["contour", "hatch", "flow"],
             "page_sizes": sorted(PAGE_SIZES_MM),
             "orientations": ["portrait", "landscape"],
-            "fonts": ["futural", "futuram", "simplex"],
+            "fonts": list(LABEL_FONTS),
         },
     )

@@ -36,15 +36,21 @@ class PageParams(BaseModel):
 
 
 LabelAlign = Literal["left", "right", "fill"]
-LabelFont = Literal["futural", "futuram", "simplex"]
+LabelFont = Literal[
+    "futural", "futuram", "simplex",
+    "excalifont", "comic-shanns", "nunito",
+]
 
 
 class LabelParams(BaseModel):
-    """Blueprint title-block label (single-stroke Hershey, bottom strip).
+    """Blueprint title-block label (bottom strip).
 
     Faces mirror Drawscape's hershey-text select (futural default, futuram,
-    simplex). futural/futuram cover ASCII 33-126 incl. lowercase; simplex
-    covers A-Z 0-9 space + 18 marks. Anything else is skipped with a
+    simplex, all single-stroke) plus three hybrid outline faces (excalifont,
+    comic-shanns, nunito: TTF outlines traced to polylines, so the pen draws
+    each stem twice). futural/futuram cover ASCII 33-126 incl. lowercase;
+    simplex covers A-Z 0-9 space + 18 marks; outline faces cover Latin text
+    incl. accents. Anything else is skipped with a
     `label_unsupported_characters` warning.
     """
 

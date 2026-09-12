@@ -53,8 +53,12 @@ def test_ui_page_serves_html(http_client):
                    'id="label_pad_right_mm"',
                    'id="label_border_radius_mm"',
                    'value="fill"', 'value="futural"',
-                   'value="futuram"', 'value="simplex"'):
+                   'value="futuram"', 'value="simplex"',
+                   'value="excalifont"', 'value="comic-shanns"',
+                   'value="nunito"'):
         assert marker in html, marker
+    # Hybrid outline badge: the pen draws each stem twice.
+    assert "twice" in html
     # Page frame controls.
     for marker in ('id="page_frame"', 'id="page_frame_radius_mm"'):
         assert marker in html, marker

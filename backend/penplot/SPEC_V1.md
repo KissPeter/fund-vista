@@ -1018,3 +1018,23 @@ false) + `page.frame_radius_mm` (default 2.0): whole-page margin frame with
 configurable radius, independent of the label; skipped when the label border
 already draws the same rect (byte-identical output, never double-inked).
 UI: frame controls in fieldset 4. Full suite at landing: **112 passed**.
+
+---
+
+## PART N — Hybrid outline label faces (2026-09-12)
+
+`params.label.font` gains `excalifont | comic-shanns | nunito` (additive;
+Hershey default unchanged). These are TTF outlines (vendored under
+`backend/penplot/fonts/`: Excalifont OFL-1.1 ASCII subset via Excalidraw,
+Comic Shanns v2 MIT, Nunito OFL-1.1 weight-500 Latin subset) rasterized with
+Pillow at 200 px em and traced with the imaging.py contour convention
+(`anchor="ls"` baseline mapping, `RETR_LIST`, area filter 2.0 — no new deps),
+then flowing through the same layout/strip/border/reserve/cleanup code with
+cap height calibrated off the H contours. The pen draws every stem twice;
+the UI picker carries that badge verbatim. Empty-raster glyphs warn like
+Hershey; a TTF `.notdef` tofu is non-empty so truly-missing glyphs plot as
+tofu (documented in `labels.py`, same as any text renderer). Vendor note:
+subset woff2→TTF conversion used a one-off fonttools install (not a project
+dependency — committed files are plain TTF). Tests: lowercase/accent drawing
+per face, outline-ink point counts, nunito reserve↔divider consistency, all-6
+faces distinct over HTTP. Full suite at landing: **115 passed**.

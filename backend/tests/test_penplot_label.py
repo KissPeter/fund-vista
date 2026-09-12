@@ -270,12 +270,13 @@ def test_label_border_adds_stroke_over_http(http_client):
 def test_label_fonts_differ_over_http(http_client):
     image_id = upload(http_client, png_bytes()).json()["image_id"]
     urls = set()
-    for font in ("futural", "futuram", "simplex"):
+    for font in ("futural", "futuram", "simplex",
+                 "excalifont", "comic-shanns", "nunito"):
         body = _convert(
             http_client, image_id, _labeled(default_params("hatch"), font=font)
         ).json()
         urls.add(body["svg_url"])
-    assert len(urls) == 3
+    assert len(urls) == 6
 
 
 def test_label_invalid_font_422(http_client):
@@ -284,6 +285,51 @@ def test_label_invalid_font_422(http_client):
     resp = _convert(http_client, image_id, params)
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "invalid_params"
+
+
+def test_outline_faces_draw_lowercase_and_accents():
+    # Hybrid promise: what simplex warns on, outlines draw clean.
+    for font in ("excalifont", "comic-shanns", "nunito"):
+        lines, warnings = labels.render_label(
+            "Agé", height_mm=5.0, align="left",
+            page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+            font=font, border=False,
+        )
+        assert len(lines) > 0, font
+        assert warnings == [], (font, warnings)
+
+
+def test_outline_faces_draw_more_ink_than_simplex():
+    # Outlines trace both sides of every stem as curves: fewer loops than
+    # Hershey strokes, but strictly more plotted points.
+    def _points(lines):
+        return sum(len(pl) for pl in lines)
+    sim, _ = labels.render_label(
+        "AG", height_mm=5.0, align="left",
+        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+        font="simplex", border=False,
+    )
+    for font in ("excalifont", "comic-shanns", "nunito"):
+        out, warnings = labels.render_label(
+            "AG", height_mm=5.0, align="left",
+            page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+            font=font, border=False,
+        )
+        assert warnings == [], (font, warnings)
+        assert _points(out) > _points(sim), (font, _points(out), _points(sim))
+
+
+def test_outline_reserve_matches_divider():
+    lines, _ = labels.render_label(
+        "Ag", height_mm=5.0, align="right",
+        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+        font="nunito", border=True, border_radius_mm=0.0,
+    )
+    divider = lines[-2]
+    reserve = labels.label_reserve_mm(
+        "Ag", height_mm=5.0, font="nunito", border=True)
+    assert reserve > 0.0
+    assert abs(divider[0][1] - (PAGE_H - MARGIN - reserve)) < 1e-6
 
 
 def test_label_padding_differ_over_http(http_client):

@@ -28,9 +28,24 @@ drawn: a page frame rect at the margin inset (corner radius
 across the full inner width above the text, joining the left/right frame
 verticals and separating the image from the label. Two more pen-down
 strokes, same chain as the text.
+
+Outline faces (``excalifont``, ``comic-shanns``, ``nunito``) are TTF outlines
+traced to polylines — the pen draws every stem twice (once per outline side),
+unlike the single-stroke Hershey faces. They flow through the same layout,
+strip, border and cleanup code; only the glyph source differs. Glyphs that
+rasterize empty are skipped with the same ``label_unsupported_characters``
+warning (note: a TTF ``.notdef`` tofu box is non-empty, so truly-missing
+glyphs in these large-coverage faces plot as tofu rather than warning —
+same as any text renderer).
 """
 
 from __future__ import annotations
+
+import os
+
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from backend.penplot.hershey_fonts import FACES
 from backend.penplot.methods import Polyline
@@ -38,6 +53,28 @@ from backend.penplot.methods import Polyline
 WARNING_UNSUPPORTED = "label_unsupported_characters"
 
 DEFAULT_FONT = "futural"
+#: Select order for the UI font picker (Hershey single-stroke first).
+LABEL_FONTS = (
+    "futural", "futuram", "simplex",
+    "excalifont", "comic-shanns", "nunito",
+)
+#: Hybrid outline faces: TTF file per label font name (OFL/MIT, see below).
+_OUTLINE_FILES = {
+    "excalifont": "Excalifont-Regular.ttf",
+    "comic-shanns": "ComicShanns-Regular.ttf",
+    "nunito": "Nunito-Regular.ttf",
+}
+#: Raster em size for outline tracing; contours scale down to mm on layout.
+OUTLINE_RENDER_PX = 200
+
+ATTRIBUTION_OUTLINE = (
+    "Excalifont (c) Excalidraw / Jan Filipek (DizajnDesign), SIL OFL 1.1; "
+    "Comic Shanns (c) Shannon Miwa, MIT; "
+    "Nunito (c) Vernon Adams, SIL OFL 1.1 (weight-500 Latin subset, "
+    "Excalidraw build). TTFs vendored under backend/penplot/fonts/."
+)
+
+_outline_cache: dict[str, dict] = {}
 DEFAULT_BORDER_RADIUS_MM = 2.0
 BORDER_PAD_RATIO = 0.3
 BORDER_PAD_MIN_MM = 1.0
@@ -47,13 +84,111 @@ CORNER_SEGMENTS = 8
 LABEL_ARTWORK_GAP_MM = 1.0
 
 
+def _outline_face(name: str) -> dict:
+    """Cached TTF entry: PIL font, ascent/descent, cap height, space advance."""
+    entry = _outline_cache.get(name)
+    if entry is None:
+        path = os.path.join(
+            os.path.dirname(__file__), "fonts", _OUTLINE_FILES[name])
+        font = ImageFont.truetype(path, OUTLINE_RENDER_PX)
+        try:
+            ascent, descent = font.getmetrics()
+        except Exception:
+            ascent, descent = int(OUTLINE_RENDER_PX * 0.8), int(OUTLINE_RENDER_PX * 0.2)
+        entry = {
+            "font": font, "ascent": ascent, "descent": descent,
+            "cap": _outline_cap_px(font, ascent, descent),
+            "space": font.getlength(" "),
+        }
+        _outline_cache[name] = entry
+    return entry
+
+
+def _trace_mask(mask: np.ndarray) -> list[list[tuple[float, float]]]:
+    """Binary-white-on-black mask -> contour polylines (imaging.py convention)."""
+    _, bw = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(bw, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    out: list[list[tuple[float, float]]] = []
+    for cnt in contours:
+        if cv2.contourArea(cnt) < 2.0:
+            continue
+        seq = cnt.reshape(-1, 2)
+        if len(seq) < 2:
+            continue
+        out.append([(float(px), float(py)) for px, py in seq])
+    return out
+
+
+def _outline_cap_px(font, ascent: int, descent: int) -> float:
+    """Cap height in render px, measured off the H contours (fallback: ascent)."""
+    pad = 8
+    canvas_w = int(font.getlength("H")) + 2 * pad
+    canvas_h = ascent + descent + 2 * pad
+    img = Image.new("L", (max(canvas_w, 1), max(canvas_h, 1)), 0)
+    ImageDraw.Draw(img).text((pad, pad + ascent), "H", font=font,
+                             fill=255, anchor="ls")
+    lines = _trace_mask(np.asarray(img, dtype=np.uint8))
+    if not lines:
+        return float(ascent)
+    ys = [y for line in lines for _, y in line]
+    return max(ys) - min(ys)
+
+
+def _outline_glyph(entry: dict, ch: str) -> dict | None:
+    """One TTF glyph -> {"advance", "lines"} in render px, baseline y=0, y-down.
+
+    Returns None when the glyph rasterizes empty (caller warns, like Hershey).
+    """
+    font = entry["font"]
+    ascent, descent = entry["ascent"], entry["descent"]
+    adv = font.getlength(ch)
+    pad = 8
+    canvas_w = max(1, int(adv) + 2 * pad)
+    canvas_h = ascent + descent + 2 * pad
+    img = Image.new("L", (canvas_w, canvas_h), 0)
+    ImageDraw.Draw(img).text((pad, pad + ascent), ch, font=font,
+                             fill=255, anchor="ls")
+    lines = _trace_mask(np.asarray(img, dtype=np.uint8))
+    if not lines:
+        return None
+    ox, oy = float(pad), float(pad + ascent)
+    return {
+        "advance": float(adv),
+        "lines": [[(x - ox, y - oy) for x, y in line] for line in lines],
+    }
+
+
+def _resolve_face(
+    font: str, chars: list[str]
+) -> tuple[float, float, dict]:
+    """(cap_height, space_advance, drawables-only glyphs) in face units.
+
+    Hershey faces come from the vendored table; outline faces rasterize the
+    needed glyphs on demand (cached per process). Missing glyphs are absent
+    from the returned dict so callers warn uniformly.
+    """
+    if font not in FACES and font not in _OUTLINE_FILES:
+        font = DEFAULT_FONT
+    if font in FACES:
+        face = FACES[font]
+        return face["cap_height"], face["space_advance"], face["glyphs"]
+    entry = _outline_face(font)
+    glyphs: dict[str, dict] = {}
+    for ch in chars:
+        if ch == " " or ch in glyphs:
+            continue
+        g = _outline_glyph(entry, ch)
+        if g is not None:
+            glyphs[ch] = g
+    return entry["cap"], entry["space"], glyphs
+
+
 def _strip_metrics(
     text: str, *, height_mm: float, font: str
 ) -> tuple[float, float, float] | None:
     """(text height, pad, gap) in mm for drawable glyphs; None if nothing draws."""
-    face = FACES.get(font, FACES[DEFAULT_FONT])
-    s = max(height_mm, 1e-9) / face["cap_height"]
-    glyphs = face["glyphs"]
+    cap_height, _, glyphs = _resolve_face(font, list(text))
+    s = max(height_mm, 1e-9) / cap_height
     ys: list[float] = []
     for ch in text:
         if ch == " ":
@@ -131,12 +266,9 @@ def render_label(
     pad_right_mm: float = 0.0,
     border_radius_mm: float = DEFAULT_BORDER_RADIUS_MM,
 ) -> tuple[list[Polyline], list[str]]:
-    """Lay out one line of Hershey text in mm space. See module docstring."""
+    """Lay out one line of label text in mm space. See module docstring."""
     warnings: list[str] = []
-    face = FACES.get(font, FACES[DEFAULT_FONT])
-    cap_height = face["cap_height"]
-    space_advance = face["space_advance"]
-    glyphs = face["glyphs"]
+    cap_height, space_advance, glyphs = _resolve_face(font, list(text))
     s = max(height_mm, 1e-9) / cap_height
     lines: list[Polyline] = []
     missing: list[str] = []
