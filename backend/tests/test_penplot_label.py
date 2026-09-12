@@ -317,3 +317,95 @@ def test_label_border_radius_differ_over_http(http_client):
         ).json()
         urls.add(body["svg_url"])
     assert len(urls) == 2
+
+
+def test_label_reserve_matches_divider():
+    # Image area bottom (page_h - margin - reserve) must equal the divider so
+    # artwork bottoms out exactly on the strip separator.
+    for border in (False, True):
+        reserve = labels.label_reserve_mm(
+            "AB", height_mm=5.0, font="futural", border=border,
+        )
+        assert reserve > 0.0
+        lines, _ = labels.render_label(
+            "AB", height_mm=5.0, align="right",
+            page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+            border=border, border_radius_mm=0.0,
+        )
+        if border:
+            divider = lines[-2]
+            assert abs(divider[0][1] - (PAGE_H - MARGIN - reserve)) < 1e-6
+        else:
+            _, y_text_top, _, _ = _bbox(lines)
+            assert abs(y_text_top - (PAGE_H - MARGIN - reserve)) < 1e-6
+
+
+def test_label_reserve_zero_for_blank_and_unsupported():
+    assert labels.label_reserve_mm(
+        "   ", height_mm=5.0, font="futural", border=True) == 0.0
+    assert labels.label_reserve_mm(
+        "é€", height_mm=5.0, font="futural", border=True) == 0.0
+
+
+def test_layout_reserve_confines_wide_artwork():
+    from backend.penplot.optimize import layout
+
+    # Panorama source: without a reserve it would span the full inner height.
+    raw = [[(0.0, 0.0), (400.0, 60.0)], [(0.0, 60.0), (400.0, 0.0)]]
+    reserve = labels.label_reserve_mm(
+        "SCALE 1:50", height_mm=5.0, font="futural", border=True,
+    )
+    laid, page_w, page_h = layout(
+        raw, 400.0, 60.0, size="A4", orientation="portrait",
+        margin_mm=MARGIN,
+        reserve_bottom_mm=reserve + labels.LABEL_ARTWORK_GAP_MM,
+    )
+    floor = page_h - MARGIN - reserve - labels.LABEL_ARTWORK_GAP_MM
+    for pl in laid:
+        for _, y in pl:
+            assert y <= floor + 1e-6
+
+
+def test_panorama_with_label_converts_over_http(http_client):
+    image_id = upload(http_client, png_bytes(400, 60)).json()["image_id"]
+    body = _convert(
+        http_client, image_id,
+        _labeled(default_params("hatch"), text="SCALE 1:50"),
+    ).json()
+    svg = http_client.get(body["svg_url"])
+    assert svg.status_code == 200 and "<path" in svg.text
+
+
+def test_solid_panorama_stays_above_divider_over_http(http_client):
+    import io
+    import re
+
+    from PIL import Image as PILImage
+
+    # Worst case: ink everywhere — hatch fills the whole image area.
+    img = PILImage.new("RGB", (400, 60), "black")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    image_id = upload(http_client, buf.getvalue()).json()["image_id"]
+    label = {"enabled": True, "text": "SCALE 1:50", "align": "right",
+             "height_mm": 5.0, "font": "futural", "border": True,
+             "pad_left_mm": 0.0, "pad_right_mm": 0.0, "border_radius_mm": 0.0}
+    params = default_params("hatch")
+    params["label"] = label
+    body = http_client.post(
+        "/v1/convert", json={"image_id": image_id, "params": params}).json()
+    svg = http_client.get(body["svg_url"]).text
+    divider_y = 297.0 - 10.0 - labels.label_reserve_mm(
+        "SCALE 1:50", height_mm=5.0, font="futural", border=True)
+    paths = re.findall(r"<path d=\"([^\"]+)\"/>", svg)
+    assert paths
+    spanning = 0
+    for d in paths:
+        ys = [float(v) for v in re.findall(r"[ML]\s+(-?[\d.]+)\s+(-?[\d.]+)", d)
+              for v in [v[1]]]
+        # Spans across the divider: reaches into the image zone above AND the
+        # strip below. Label text lives wholly below; artwork wholly above.
+        if min(ys) < divider_y - 0.5 and max(ys) > divider_y + 0.5:
+            spanning += 1
+    # Only the page frame spans the divider; nothing overflows the strip.
+    assert spanning == 1

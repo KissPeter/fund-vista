@@ -82,6 +82,20 @@ def run_convert(
     method_label = "+".join(methods)
     t0 = time.perf_counter()
     warnings: list[str] = []
+    # Title strip first: reserve the label zone from the image area so
+    # artwork bottoms out on the divider instead of sliding under it.
+    # 0 when the label is off/blank/fully-unsupported (render no-ops).
+    reserve_bottom_mm = 0.0
+    if params.label.enabled and params.label.text.strip():
+        reserve_bottom_mm = labels.label_reserve_mm(
+            params.label.text,
+            height_mm=params.label.height_mm,
+            font=params.label.font,
+            border=params.label.border,
+        )
+        if reserve_bottom_mm > 0.0:
+            # +1 mm so image strokes can't linemerge into divider/frame.
+            reserve_bottom_mm += labels.LABEL_ARTWORK_GAP_MM
     try:
         if is_vector:
             raw_px, vw, vh, svg_warnings = imaging.parse_svg_vectors(image_bytes)
@@ -113,6 +127,7 @@ def run_convert(
             scale = layout_scale(
                 src_w, src_h,
                 params.page.size, params.page.orientation, params.page.margin_mm,
+                reserve_bottom_mm,
             )
             pitch_px = params.hatch_pitch_mm / max(scale, 1e-9)
             pitch_px_clamped = float(np.clip(pitch_px, 2.0, 200.0))
@@ -149,11 +164,12 @@ def run_convert(
             size=params.page.size,
             orientation=params.page.orientation,
             margin_mm=params.page.margin_mm,
+            reserve_bottom_mm=reserve_bottom_mm,
         )
         _timed("layout", image_id, method_label, t0)
         if params.label.enabled and params.label.text.strip():
             # Title-block label (mm space already): joins quantize and the
-            # whole cleanup chain so it plots and counts like any stroke.
+            # rest of the cleanup chain so it plots and counts like any stroke.
             lab_lines, lab_warnings = labels.render_label(
                 params.label.text,
                 height_mm=params.label.height_mm,
@@ -167,10 +183,27 @@ def run_convert(
                 border_radius_mm=params.label.border_radius_mm,
             )
             warnings.extend(lab_warnings)
-            laid.extend(lab_lines)
             _timed("label", image_id, method_label, t0)
+        else:
+            lab_lines = []
+        # Whole-page margin frame (independent of the label). Skipped when the
+        # label border already draws the same rect — never double-ink it.
+        frame_lines: list = []
+        if params.page.frame and not (lab_lines and params.label.border):
+            frame_lines = [labels.page_frame_rect(
+                page_w, page_h,
+                params.page.margin_mm, params.page.frame_radius_mm,
+            )]
         t0 = time.perf_counter()
-        merged = linemerge(quantize(laid, settings.quantization_mm), params.linemerge_tolerance_mm)
+        # Merge domains separately: a joint linemerge would fuse image strokes
+        # into divider/frame across the strip gap at high tolerances, dragging
+        # artwork out of the image area (or the frame into it).
+        q = settings.quantization_mm
+        tol = params.linemerge_tolerance_mm
+        merged = linemerge(quantize(laid, q), tol)
+        static_lines = lab_lines + frame_lines
+        if static_lines:
+            merged.extend(linemerge(quantize(static_lines, q), tol))
         _timed("linemerge", image_id, method_label, t0)
         t0 = time.perf_counter()
         simplified = linesimplify(merged, params.linesimplify_tolerance_mm)

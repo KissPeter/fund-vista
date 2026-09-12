@@ -25,6 +25,14 @@ class PageParams(BaseModel):
     size: PageSizeName = "A4"
     orientation: Orientation = "portrait"
     margin_mm: float = Field(default=10.0, ge=0.0, le=50.0)
+    frame: bool = Field(
+        default=False,
+        description="Draw the whole-page margin frame (rounded border).",
+    )
+    frame_radius_mm: float = Field(
+        default=2.0, ge=0.0, le=20.0,
+        description="Corner radius of the page frame; 0 is sharp.",
+    )
 
 
 LabelAlign = Literal["left", "right", "fill"]

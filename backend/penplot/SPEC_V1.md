@@ -984,3 +984,37 @@ background checkbox in fieldset 2, pad/radius sliders in fieldset 5. Tests:
 `test_penplot_tone.py` (brightness identity/direction/clip, vignette
 flattening, blank safety, 3 HTTP) + label radius/padding units and HTTP.
 Full suite at landing: **101 passed**.
+
+---
+
+## PART L — Label strip reservation (fix, 2026-09-12)
+
+Wide panoramas laid out into the full inner rect slid under the title strip,
+overflowing the label area. The pipeline now reserves the strip before layout
+(`labels.label_reserve_mm`: text height + pad + gap with border, text height
+alone without; 0 when blank/fully-unsupported, matching render's no-op) via a
+new `reserve_bottom_mm` on `layout()`/`layout_scale()` (the latter keeps hatch
+pitch WYSIWYG), plus a 1 mm `LABEL_ARTWORK_GAP_MM` so the cleanup chain can't
+linemerge image strokes into the divider/frame at default tolerances. Applies
+to raster and vector inputs. Tests: reserve↔divider consistency, zero-reserve
+cases, layout confinement, panorama HTTP smoke, solid-black panorama asserting
+only the frame spans the divider.
+
+---
+
+## PART M — Reset fix, merge-domain isolation, page frame (2026-09-12)
+
+Three fixes. (1) Reset was dead: `<button id="reset">` inside the form
+shadowed `form.reset()` (named controls override `HTMLFormElement`
+built-ins), so the handler threw and nothing reset. Renamed to `resetBtn`;
+regression test asserts no control id/name shadows form built-ins and the
+handler calls the real `form.reset()`. (2) Label lines were linemerged
+jointly with artwork, so high `linemerge_tolerance_mm` fused image strokes
+into the divider/frame across the strip gap. Image and label/frame domains
+now merge separately, then concat before simplify/sort/reloop (unchanged
+jointly) — proven by a solid-panorama + label test at the max 5 mm tolerance
+asserting only the frame spans the divider. (3) New `page.frame` (default
+false) + `page.frame_radius_mm` (default 2.0): whole-page margin frame with
+configurable radius, independent of the label; skipped when the label border
+already draws the same rect (byte-identical output, never double-inked).
+UI: frame controls in fieldset 4. Full suite at landing: **112 passed**.

@@ -42,10 +42,51 @@ DEFAULT_BORDER_RADIUS_MM = 2.0
 BORDER_PAD_RATIO = 0.3
 BORDER_PAD_MIN_MM = 1.0
 CORNER_SEGMENTS = 8
+# Breathing room between artwork and the strip so the cleanup chain
+# (linemerge, default 0.5 mm) can't fuse image strokes into divider/frame.
+LABEL_ARTWORK_GAP_MM = 1.0
 
 
-def _rounded_rect(
-    x0: float, y0: float, x1: float, y1: float, r: float
+def _strip_metrics(
+    text: str, *, height_mm: float, font: str
+) -> tuple[float, float, float] | None:
+    """(text height, pad, gap) in mm for drawable glyphs; None if nothing draws."""
+    face = FACES.get(font, FACES[DEFAULT_FONT])
+    s = max(height_mm, 1e-9) / face["cap_height"]
+    glyphs = face["glyphs"]
+    ys: list[float] = []
+    for ch in text:
+        if ch == " ":
+            continue
+        glyph = glyphs.get(ch)
+        if glyph is None:
+            continue
+        ys.extend(y * s for _, y in (pt for stroke in glyph["lines"] for pt in stroke))
+    if not ys:
+        return None
+    text_h = max(ys) - min(ys)
+    pad = max(height_mm * BORDER_PAD_RATIO, BORDER_PAD_MIN_MM)
+    gap = min(pad * 0.5, 2.0)
+    return text_h, pad, gap
+
+
+def label_reserve_mm(
+    text: str, *, height_mm: float, font: str = DEFAULT_FONT, border: bool = True
+) -> float:
+    """Vertical mm the title strip occupies above the bottom margin.
+
+    The pipeline reserves this from the image area so artwork bottoms out
+    exactly on the divider (border) or the text top (borderless). Blank or
+    fully-unsupported text reserves nothing — matching render_label's no-op.
+    """
+    m = _strip_metrics(text, height_mm=height_mm, font=font)
+    if m is None:
+        return 0.0
+    text_h, pad, gap = m
+    return text_h + (pad + gap if border else 0.0)
+
+
+def _rounded_rect(    x0: float, y0: float, x1: float, y1: float, r: float
 ) -> Polyline:
     """Closed rounded-rectangle polyline (arcs as short chords); r=0 is sharp."""
     r = max(0.0, min(r, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
@@ -65,6 +106,15 @@ def _rounded_rect(
             pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
     pts.append(pts[0])
     return pts
+
+
+def page_frame_rect(
+    page_w: float, page_h: float, margin_mm: float, radius_mm: float
+) -> Polyline:
+    """Whole-page margin frame (rounded), independent of any label."""
+    return _rounded_rect(
+        margin_mm, margin_mm, page_w - margin_mm, page_h - margin_mm, radius_mm
+    )
 
 
 def render_label(
@@ -155,9 +205,11 @@ def render_label(
     if border:
         # Blueprint title-block strip: lift the text off the frame bottom,
         # then span a divider across the full inner width so it lands exactly
-        # on the left/right frame verticals.
-        pad = max(height_mm * BORDER_PAD_RATIO, BORDER_PAD_MIN_MM)
-        gap = min(pad * 0.5, 2.0)
+        # on the left/right frame verticals. pad/gap come from _strip_metrics
+        # so label_reserve_mm (image-area reservation) always agrees.
+        m = _strip_metrics(text, height_mm=height_mm, font=font)
+        assert m is not None  # lines non-empty implies drawable glyphs
+        _, pad, gap = m
         lines = [[(x, y - gap) for x, y in pl] for pl in lines]
         xs = [x for pl in lines for x, _ in pl]
         ys = [y for pl in lines for _, y in pl]

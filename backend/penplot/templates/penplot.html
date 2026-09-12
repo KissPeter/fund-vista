@@ -83,6 +83,8 @@
       </select>
     </label>
     <label>margin_mm <input type="range" id="page_margin_mm" min="0" max="50" step="1" value="{{ defaults.page.margin_mm }}"><output id="page_margin_mm_val">{{ defaults.page.margin_mm }}</output></label>
+    <label>frame <input type="checkbox" id="page_frame"{% if defaults.page.frame %} checked{% endif %}></label>
+    <label>frame_radius_mm <input type="range" id="page_frame_radius_mm" min="0" max="20" step="0.5" value="{{ defaults.page.frame_radius_mm }}"><output id="page_frame_radius_mm_val">{{ defaults.page.frame_radius_mm }}</output></label>
     <label>draw_speed_mm_s <input type="range" id="draw_speed_mm_s" min="5" max="200" step="5" value="{{ defaults.pen.draw_speed_mm_s }}"><output id="draw_speed_mm_s_val">{{ defaults.pen.draw_speed_mm_s }}</output></label>
     <label>travel_speed_mm_s <input type="range" id="travel_speed_mm_s" min="10" max="500" step="10" value="{{ defaults.pen.travel_speed_mm_s }}"><output id="travel_speed_mm_s_val">{{ defaults.pen.travel_speed_mm_s }}</output></label>
     <label>pen_lift_s <input type="range" id="pen_lift_s" min="0" max="2" step="0.1" value="{{ defaults.pen.pen_lift_s }}"><output id="pen_lift_s_val">{{ defaults.pen.pen_lift_s }}</output></label>
@@ -113,7 +115,7 @@
     <label>border_radius_mm <input type="range" id="label_border_radius_mm" min="0" max="20" step="0.5" value="{{ defaults.label.border_radius_mm }}"><output id="label_border_radius_mm_val">{{ defaults.label.border_radius_mm }}</output></label>
     <p class="meta">Single-stroke plotter font (Drawscape-style, futural default). Futural/futuram: ASCII incl. lowercase; simplex: A–Z 0–9 + marks — bottom strip with border, inside margins.</p>
   </fieldset>
-  <button type="button" id="reset">Reset to defaults</button>
+  <button type="button" id="resetBtn">Reset to defaults</button>
   </form>
 </div>
 
@@ -170,6 +172,8 @@ function readParams() {
       size: $("page_size").value,
       orientation: $("page_orientation").value,
       margin_mm: num("page_margin_mm"),
+      frame: $("page_frame").checked,
+      frame_radius_mm: num("page_frame_radius_mm"),
     },
     pen: {
       draw_speed_mm_s: num("draw_speed_mm_s"),
@@ -311,7 +315,7 @@ function syncOutputs() {
 $("params").addEventListener("input", syncOutputs);
 syncOutputs();
 
-$("reset").addEventListener("click", () => {
+$("resetBtn").addEventListener("click", () => {
   $("params").reset(); // restores server-rendered defaults, checkboxes included
   syncOutputs();
   scheduleConvert();

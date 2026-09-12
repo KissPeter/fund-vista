@@ -37,9 +37,9 @@ def test_ui_page_serves_html(http_client):
     assert "/v1/images" in html
     assert "/v1/convert" in html
     assert "image_not_found" in html
-    # Sliders + reset button.
+    # Sliders + reset button (id must not shadow form.reset — see below).
     assert 'type="range"' in html
-    assert 'id="reset"' in html
+    assert 'id="resetBtn"' in html
     assert 'id="threshold_val"' in html
     assert 'id="contrast"' in html
     assert 'id="brightness"' in html
@@ -49,8 +49,13 @@ def test_ui_page_serves_html(http_client):
     for marker in ('id="label_enabled"', 'id="label_text"', 'id="label_align"',
                    'id="label_height_mm"', 'id="label_font"',
                    'id="label_border"', 'id="label_pad_left_mm"',
-                   'id="label_pad_right_mm"', 'value="fill"', 'value="futural"',
+                   'id="label_pad_right_mm"',
+                   'id="label_border_radius_mm"',
+                   'value="fill"', 'value="futural"',
                    'value="futuram"', 'value="simplex"'):
+        assert marker in html, marker
+    # Page frame controls.
+    for marker in ('id="page_frame"', 'id="page_frame_radius_mm"'):
         assert marker in html, marker
     # Busy lock: controls disable mid-flight, coalesced follow-up after.
     assert "setBusy" in html and "pending" in html
@@ -67,3 +72,23 @@ def test_ui_defaults_match_schema(http_client):
     assert f'value="{defaults["hatch_pitch_mm"]}"' in html
     assert f'value="{defaults["pen"]["draw_speed_mm_s"]}"' in html
     assert "A4" in html and "A3" in html
+
+
+def test_ui_no_control_shadows_form_builtins(http_client):
+    """No control inside #params may be id/name'd reset/submit/...: named
+    controls override HTMLFormElement built-ins, so e.g. id="reset" turns
+    form.reset() into the button element and silently kills Reset."""
+    import re
+
+    html = http_client.get("/penplot").text
+    form = re.search(r'<form id="params".*?</form>', html, re.DOTALL).group(0)
+    ids = set(re.findall(r'id="([^"]+)"', form))
+    names = set(re.findall(r'name="([^"]+)"', form))
+    shadowers = {
+        "reset", "submit", "action", "method", "elements", "length",
+        "name", "target", "encoding", "enctype",
+    }
+    assert not (ids & shadowers), ids & shadowers
+    assert not (names & shadowers), names & shadowers
+    # And the reset handler must call the real form.reset().
+    assert '$("params").reset()' in html

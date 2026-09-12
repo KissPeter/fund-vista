@@ -229,11 +229,17 @@ def layout(
     size: str,
     orientation: str,
     margin_mm: float,
+    reserve_bottom_mm: float = 0.0,
 ) -> tuple[list[Polyline], float, float]:
-    """Scale pixel polylines into the margined page rect (mm). Returns (lines, W, H)."""
+    """Scale pixel polylines into the margined page rect (mm). Returns (lines, W, H).
+
+    ``reserve_bottom_mm`` keeps a strip above the bottom margin free (the
+    title-block label zone) — artwork centers in the remaining area and
+    bottoms out exactly where the label divider will sit.
+    """
     page_w, page_h = page_dims_mm(size, orientation, margin_mm)
     draw_w = max(1e-6, page_w - 2 * margin_mm)
-    draw_h = max(1e-6, page_h - 2 * margin_mm)
+    draw_h = max(1e-6, page_h - 2 * margin_mm - max(reserve_bottom_mm, 0.0))
     scale = min(draw_w / max(src_w, 1e-6), draw_h / max(src_h, 1e-6))
     ox = margin_mm + (draw_w - src_w * scale) / 2.0
     oy = margin_mm + (draw_h - src_h * scale) / 2.0
@@ -244,11 +250,11 @@ def layout(
     return out, page_w, page_h
 
 
-def layout_scale(src_w: float, src_h: float, size: str, orientation: str, margin_mm: float) -> float:
+def layout_scale(src_w: float, src_h: float, size: str, orientation: str, margin_mm: float, reserve_bottom_mm: float = 0.0) -> float:
     page_w, page_h = page_dims_mm(size, orientation, margin_mm)
     return min(
         max(1e-6, page_w - 2 * margin_mm) / max(src_w, 1e-6),
-        max(1e-6, page_h - 2 * margin_mm) / max(src_h, 1e-6),
+        max(1e-6, page_h - 2 * margin_mm - max(reserve_bottom_mm, 0.0)) / max(src_h, 1e-6),
     )
 
 
