@@ -51,6 +51,8 @@
     <label>threshold <input type="range" id="threshold" min="0" max="255" step="1" value="{{ defaults.threshold }}"><output id="threshold_val">{{ defaults.threshold }}</output></label>
     <label>blur_radius <input type="range" id="blur_radius" min="0" max="10" step="0.1" value="{{ defaults.blur_radius }}"><output id="blur_radius_val">{{ defaults.blur_radius }}</output></label>
     <label>contrast <input type="range" id="contrast" min="0" max="3" step="0.1" value="{{ defaults.contrast }}"><output id="contrast_val">{{ defaults.contrast }}</output></label>
+    <label>brightness <input type="range" id="brightness" min="-100" max="100" step="1" value="{{ defaults.brightness }}"><output id="brightness_val">{{ defaults.brightness }}</output></label>
+    <label>remove_background <input type="checkbox" id="remove_background"{% if defaults.remove_background %} checked{% endif %}></label>
     <label>hatch_pitch_mm <input type="range" id="hatch_pitch_mm" min="0.2" max="5" step="0.1" value="{{ defaults.hatch_pitch_mm }}"><output id="hatch_pitch_mm_val">{{ defaults.hatch_pitch_mm }}</output></label>
     <label>hatch_angle_deg <input type="range" id="hatch_angle_deg" min="0" max="175" step="5" value="{{ defaults.hatch_angle_deg }}"><output id="hatch_angle_deg_val">{{ defaults.hatch_angle_deg }}</output></label>
     <label>contour_simplify <input type="range" id="contour_simplify" min="0" max="20" step="0.5" value="{{ defaults.contour_simplify }}"><output id="contour_simplify_val">{{ defaults.contour_simplify }}</output></label>
@@ -108,6 +110,7 @@
     <label>border <input type="checkbox" id="label_border"{% if defaults.label.border %} checked{% endif %}></label>
     <label>pad_left_mm <input type="range" id="label_pad_left_mm" min="0" max="20" step="0.5" value="{{ defaults.label.pad_left_mm }}"><output id="label_pad_left_mm_val">{{ defaults.label.pad_left_mm }}</output></label>
     <label>pad_right_mm <input type="range" id="label_pad_right_mm" min="0" max="20" step="0.5" value="{{ defaults.label.pad_right_mm }}"><output id="label_pad_right_mm_val">{{ defaults.label.pad_right_mm }}</output></label>
+    <label>border_radius_mm <input type="range" id="label_border_radius_mm" min="0" max="20" step="0.5" value="{{ defaults.label.border_radius_mm }}"><output id="label_border_radius_mm_val">{{ defaults.label.border_radius_mm }}</output></label>
     <p class="meta">Single-stroke plotter font (Drawscape-style, futural default). Futural/futuram: ASCII incl. lowercase; simplex: A–Z 0–9 + marks — bottom strip with border, inside margins.</p>
   </fieldset>
   <button type="button" id="reset">Reset to defaults</button>
@@ -154,6 +157,8 @@ function readParams() {
     threshold: parseInt($("threshold").value, 10),
     blur_radius: num("blur_radius"),
     contrast: num("contrast"),
+    brightness: num("brightness"),
+    remove_background: $("remove_background").checked,
     hatch_pitch_mm: num("hatch_pitch_mm"),
     hatch_angle_deg: num("hatch_angle_deg"),
     contour_simplify: num("contour_simplify"),
@@ -180,6 +185,7 @@ function readParams() {
       border: $("label_border").checked,
       pad_left_mm: num("label_pad_left_mm"),
       pad_right_mm: num("label_pad_right_mm"),
+      border_radius_mm: num("label_border_radius_mm"),
     },
   };
 }

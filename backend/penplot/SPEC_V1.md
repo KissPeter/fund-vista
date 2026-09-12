@@ -962,3 +962,25 @@ forwards both. Tests: `test_penplot_label.py` (strip divider/frame geometry,
 futural-lowercase vs simplex-warns, face stroke counts, border ±2 and 3-face
 URLs + invalid-font 422 over HTTP) + `test_penplot_ui.py` (font/border
 markers). Full suite at landing: **86 passed**.
+
+---
+
+## PART K — Label padding + rounded frame, brightness, background removal (2026-09-12)
+
+Additive, backward compatible. `params.label` gains `{ pad_left_mm,
+pad_right_mm (default 0, range [0, 20]) }`: text insets from the frame
+verticals while the frame/divider keep spanning the full inner width; `fill`
+stretches within the padded slot and over-wide lines scale to it. Oversized
+pads collapse to a tiny centered slot instead of inverting. Plus
+`border_radius_mm` (default 2.0, range [0, 20]): title-block frame corners
+drawn as 8-chord arcs, clamped to half the frame's smaller side, 0 staying
+sharp. Tone chain grows two preprocess steps: `brightness` (default 0, range
+[−255, 255], additive offset after contrast, UI slider ±100) and
+`remove_background` (default false): thumbnail-blur paper estimate,
+saturating subtract, MINMAX-normalize and invert back to dark-ink-on-white so
+blur/contrast/threshold semantics hold — uniform blanks map to all-white. The
+flag surfaces a `background_removed` warning. UI: brightness slider +
+background checkbox in fieldset 2, pad/radius sliders in fieldset 5. Tests:
+`test_penplot_tone.py` (brightness identity/direction/clip, vignette
+flattening, blank safety, 3 HTTP) + label radius/padding units and HTTP.
+Full suite at landing: **101 passed**.

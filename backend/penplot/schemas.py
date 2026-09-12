@@ -48,6 +48,10 @@ class LabelParams(BaseModel):
     height_mm: float = Field(default=5.0, gt=0.0, le=25.0)
     font: LabelFont = "futural"
     border: bool = True
+    border_radius_mm: float = Field(
+        default=2.0, ge=0.0, le=20.0,
+        description="Corner radius of the title-block frame; 0 is sharp.",
+    )
     pad_left_mm: float = Field(
         default=0.0, ge=0.0, le=20.0,
         description="Text inset from the left frame vertical.",
@@ -92,6 +96,14 @@ class ConvertParams(BaseModel):
     contrast: float = Field(
         default=1.0, ge=0.0, le=4.0,
         description="Linear contrast stretch before thresholding; 1.0 is neutral.",
+    )
+    brightness: float = Field(
+        default=0.0, ge=-255.0, le=255.0,
+        description="Additive brightness offset after contrast; 0 is neutral.",
+    )
+    remove_background: bool = Field(
+        default=False,
+        description="Flatten uneven paper background before thresholding.",
     )
     hatch_pitch_mm: float = Field(default=1.2, gt=0.0, le=10.0)
     hatch_angle_deg: float = Field(

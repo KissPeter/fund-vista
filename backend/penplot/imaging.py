@@ -149,6 +149,40 @@ def adjust_contrast(gray: np.ndarray, amount: float) -> np.ndarray:
     return np.clip(stretched, 0.0, 255.0).astype(np.uint8)
 
 
+def adjust_brightness(gray: np.ndarray, amount: float) -> np.ndarray:
+    """Additive brightness offset: 0 is identity, + brightens, − darkens.
+
+    Runs after contrast, before the threshold mask, so all raster methods
+    (contour/hatch/flow) benefit equally. Clipped to 8-bit range.
+    """
+    if amount == 0.0:
+        return gray
+    shifted = gray.astype(np.float32) + float(amount)
+    return np.clip(shifted, 0.0, 255.0).astype(np.uint8)
+
+
+def remove_background(gray: np.ndarray) -> np.ndarray:
+    """Flatten uneven paper background (vignette, shadows, gray paper).
+
+    Estimates the background with a heavy blur on a thumbnail (fast even on
+    3000 px uploads), subtracts it (paper → 0, ink stays positive), normalizes
+    to full range and inverts back to dark-ink-on-white semantics so the
+    downstream blur/contrast/threshold chain behaves exactly as before —
+    just with the paper gradient gone. Uniform blanks map to all-white.
+    """
+    h, w = gray.shape[:2]
+    longest = max(h, w)
+    thumb_long = 96
+    scale = thumb_long / float(max(longest, 1))
+    tw, th = max(1, int(w * scale)), max(1, int(h * scale))
+    small = cv2.resize(gray, (tw, th), interpolation=cv2.INTER_AREA)
+    bg_small = cv2.GaussianBlur(small, (0, 0), sigmaX=max(th, tw) / 8.0)
+    bg = cv2.resize(bg_small, (w, h), interpolation=cv2.INTER_LINEAR)
+    fg = cv2.subtract(bg, gray)  # saturating: paper ~0, ink positive
+    norm = cv2.normalize(fg, None, 0, 255, cv2.NORM_MINMAX)
+    return (255 - norm).astype(np.uint8)
+
+
 def threshold_mask(gray: np.ndarray, threshold: int) -> np.ndarray:
     """Binary ink mask: True where pixel is darker than threshold."""
     return gray < np.uint8(threshold)

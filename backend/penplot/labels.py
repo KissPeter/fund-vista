@@ -23,7 +23,8 @@ outside the face set are skipped and reported once via
 ``label_unsupported_characters``.
 
 Border: when ``border`` is true (default) a blueprint title-block strip is
-drawn: a page frame rect at the margin inset plus one horizontal divider
+drawn: a page frame rect at the margin inset (corner radius
+``border_radius_mm``, 0 is sharp) plus one horizontal divider
 across the full inner width above the text, joining the left/right frame
 verticals and separating the image from the label. Two more pen-down
 strokes, same chain as the text.
@@ -37,8 +38,33 @@ from backend.penplot.methods import Polyline
 WARNING_UNSUPPORTED = "label_unsupported_characters"
 
 DEFAULT_FONT = "futural"
+DEFAULT_BORDER_RADIUS_MM = 2.0
 BORDER_PAD_RATIO = 0.3
 BORDER_PAD_MIN_MM = 1.0
+CORNER_SEGMENTS = 8
+
+
+def _rounded_rect(
+    x0: float, y0: float, x1: float, y1: float, r: float
+) -> Polyline:
+    """Closed rounded-rectangle polyline (arcs as short chords); r=0 is sharp."""
+    r = max(0.0, min(r, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
+    if r <= 1e-9:
+        return [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
+    import math
+
+    pts: Polyline = [(x0 + r, y0), (x1 - r, y0)]
+    for cx, cy, a0 in (
+        (x1 - r, y0 + r, -90.0),
+        (x1 - r, y1 - r, 0.0),
+        (x0 + r, y1 - r, 90.0),
+        (x0 + r, y0 + r, 180.0),
+    ):
+        for i in range(1, CORNER_SEGMENTS + 1):
+            a = math.radians(a0 + 90.0 * i / CORNER_SEGMENTS)
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    pts.append(pts[0])
+    return pts
 
 
 def render_label(
@@ -53,6 +79,7 @@ def render_label(
     border: bool = True,
     pad_left_mm: float = 0.0,
     pad_right_mm: float = 0.0,
+    border_radius_mm: float = DEFAULT_BORDER_RADIUS_MM,
 ) -> tuple[list[Polyline], list[str]]:
     """Lay out one line of Hershey text in mm space. See module docstring."""
     warnings: list[str] = []
@@ -135,13 +162,10 @@ def render_label(
         xs = [x for pl in lines for x, _ in pl]
         ys = [y for pl in lines for _, y in pl]
         divider_y = max(min(ys) - pad, margin_mm)
-        frame = [
-            (inner_left, margin_mm),
-            (inner_right, margin_mm),
-            (inner_right, page_h - margin_mm),
-            (inner_left, page_h - margin_mm),
-            (inner_left, margin_mm),
-        ]
+        frame = _rounded_rect(
+            inner_left, margin_mm, inner_right, page_h - margin_mm,
+            border_radius_mm,
+        )
         divider = [(inner_left, divider_y), (inner_right, divider_y)]
         lines.append(divider)
         lines.append(frame)

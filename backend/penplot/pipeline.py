@@ -99,8 +99,12 @@ def run_convert(
             if scaled:
                 warnings.append("image_downscaled_for_performance")
                 src_w, src_h = float(gray.shape[1]), float(gray.shape[0])
+            if params.remove_background:
+                gray = imaging.remove_background(gray)
+                warnings.append("background_removed")
             gray = imaging.blur(gray, params.blur_radius)
             gray = imaging.adjust_contrast(gray, params.contrast)
+            gray = imaging.adjust_brightness(gray, params.brightness)
             mask = imaging.threshold_mask(gray, params.threshold)
             _timed("preprocess", image_id, method_label, t0)
             t0 = time.perf_counter()
@@ -160,6 +164,7 @@ def run_convert(
                 border=params.label.border,
                 pad_left_mm=params.label.pad_left_mm,
                 pad_right_mm=params.label.pad_right_mm,
+                border_radius_mm=params.label.border_radius_mm,
             )
             warnings.extend(lab_warnings)
             laid.extend(lab_lines)
