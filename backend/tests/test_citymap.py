@@ -187,17 +187,6 @@ def test_cache_key_deterministic_and_memory_roundtrip():
     asyncio.run(roundtrip())
 
 
-def test_penplot_page_pulls_in_citymap(http_client):
-    resp = http_client.get("/penplot")
-    assert resp.status_code == 200, resp.text
-    html = resp.text
-    assert 'id="city_name"' in html
-    assert 'id="cityBtn"' in html
-    assert "/v1/citymap/import" in html
-    for layer in ("highways", "roads", "ferry", "buildings"):
-        assert f'value="{layer}"' in html, layer
-
-
 def test_import_rejects_unknown_layer_422(http_client):
     resp = http_client.post(
         "/v1/citymap/import",

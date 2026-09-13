@@ -1,6 +1,6 @@
 # CR-001 — Split citymap out of `/penplot` into `/citymap`
 
-- Status: todo
+- Status: in progress
 - Created: 2026-09-13
 - Last updated: 2026-09-13
 - Type: change request

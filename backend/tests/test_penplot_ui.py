@@ -79,6 +79,24 @@ def test_ui_defaults_match_schema(http_client):
     assert "A4" in html and "A3" in html
 
 
+def test_penplot_has_no_citymap_section(http_client):
+    """CR-001 Phase 1: citymap loading was split out to /citymap — /penplot
+    is image-only and must not reference city loading at all."""
+    html = http_client.get("/penplot").text
+    for marker in (
+        'id="city_name"',
+        'id="cityBtn"',
+        'id="citySearchBtn"',
+        'id="city_candidate"',
+        'class="city_layer"',
+        "/v1/citymap/import",
+        "importCity",
+        "searchCity",
+        "cityBboxes",
+    ):
+        assert marker not in html, marker
+
+
 def test_ui_no_control_shadows_form_builtins(http_client):
     """No control inside #params may be id/name'd reset/submit/...: named
     controls override HTMLFormElement built-ins, so e.g. id="reset" turns
