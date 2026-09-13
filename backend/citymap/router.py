@@ -235,6 +235,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     svg_key = citymap_cache_key(
         "svg", bbox_str(bbox), ",".join(sorted(layers)),
         f"minlen={body.min_path_len_m}", f"width={body.width}",
+        f"rot={body.rotation_deg}",
     )
 
     # -- data (Redis first, Overpass on miss) -----------------------------
@@ -264,6 +265,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         svg, path_counts = render_svg(
             geoms, bbox, layers,
             width=body.width, min_path_len_m=body.min_path_len_m,
+            rotation_deg=body.rotation_deg,
         )
         return svg, path_counts, raw_counts
 
@@ -331,6 +333,7 @@ async def import_map(body: RenderRequest) -> ImportResponse | JSONResponse:
     svg_text, path_counts = render_svg(
         geoms, bbox, layers,
         width=body.width, min_path_len_m=body.min_path_len_m,
+        rotation_deg=body.rotation_deg,
     )
     if sum(path_counts.values()) == 0:
         return _error(

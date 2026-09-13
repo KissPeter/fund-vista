@@ -38,6 +38,7 @@ export interface CitymapRenderOptions {
   bbox?: CitymapBBox;
   layers: CitymapLayer[];
   minPathLenM?: number;
+  rotationDeg?: number;
   width?: number;
 }
 
@@ -107,6 +108,7 @@ export async function loadCityMap(opts: CitymapRenderOptions): Promise<CitymapRe
       bbox: opts.bbox,
       layers: opts.layers,
       min_path_len_m: opts.minPathLenM ?? 10,
+      rotation_deg: opts.rotationDeg ?? 0,
       width: opts.width ?? 1000,
     }),
   });

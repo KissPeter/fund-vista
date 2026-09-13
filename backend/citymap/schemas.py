@@ -61,6 +61,11 @@ class RenderRequest(BaseModel):
         description="Drop projected polylines shorter than this (meters). "
         "Pen-plotter fast path, like city-roads' minLength option.",
     )
+    rotation_deg: float = Field(
+        default=0.0, ge=-180.0, le=180.0,
+        description="Rotate the artwork clockwise around the area center "
+        "before fitting to the page (degrees).",
+    )
     width: int = Field(
         default=1000, ge=100, le=4000,
         description="SVG width in user units (plane meters scaled to fit).",

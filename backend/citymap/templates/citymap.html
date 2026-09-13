@@ -19,6 +19,7 @@
       <label><input type="checkbox" class="city_layer" value="{{ l.id }}"{% if l.id in ["highways", "roads"] %} checked{% endif %}> {{ l.label }}</label>
       {% endfor %}
     <label>min detail (m) <input type="range" id="city_minlen" min="0" max="50" step="1" value="10"><output id="city_minlen_val">10</output></label>
+    <label>rotate (°) <input type="range" id="city_rotate" min="-180" max="180" step="5" value="0"><output id="city_rotate_val">0</output></label>
     <button type="button" id="cityBtn">Load city map</button>
     <p class="meta" id="meta">Pulls street geometry via <code>/v1/citymap/import</code> for the visible area and plots it with the settings below (vector input: shading sliders don't apply; pen, page, label and display do). First load can take a minute; repeats are served from cache. Credit: © OpenStreetMap contributors (ODbL).</p>
   </fieldset>
@@ -147,6 +148,7 @@ async function importCity() {
         bbox,
         layers,
         min_path_len_m: parseFloat($("city_minlen").value),
+        rotation_deg: parseFloat($("city_rotate").value),
         width: 1000,
       }),
     });
