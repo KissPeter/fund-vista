@@ -7,7 +7,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 
 | ID | Type | Title | Status | Last updated |
 |----|------|-------|--------|--------------|
-| CR-001 | change request | Split citymap out of `/penplot` into `/citymap` | in progress | 2026-09-13 |
+| CR-001 | change request | Split citymap out of `/penplot` into `/citymap` | done | 2026-09-13 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 

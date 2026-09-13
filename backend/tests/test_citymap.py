@@ -187,6 +187,15 @@ def test_cache_key_deterministic_and_memory_roundtrip():
     asyncio.run(roundtrip())
 
 
+def test_geocode_search_rejects_limit_over_10(http_client):
+    """CR-001 Phase 3: limit bounds are validated before any Nominatim call
+    (hermetic — 422 comes from validation, no network)."""
+    resp = http_client.get("/v1/citymap/geocode/search?city=Budapest&limit=99")
+    assert resp.status_code == 422
+    resp = http_client.get("/v1/citymap/geocode/search?city=Budapest&limit=0")
+    assert resp.status_code == 422
+
+
 def test_citymap_page_renders_map_section(http_client):
     """CR-001 Phase 2: standalone /citymap page with searchable, pannable,
     zoomable preview plus the shared convert sections."""

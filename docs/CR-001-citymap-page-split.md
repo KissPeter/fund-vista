@@ -1,6 +1,6 @@
 # CR-001 — Split citymap out of `/penplot` into `/citymap`
 
-- Status: in progress
+- Status: done
 - Created: 2026-09-13
 - Last updated: 2026-09-13
 - Type: change request
@@ -30,12 +30,12 @@ source), `docs/drawscape-map-source-findings.md` (layer mapping).
 
 ### Phase 1 — Revert citymap on `/penplot` (DONE when)
 
-- [ ] `backend/penplot/templates/penplot.html`: delete fieldset "2. City
+- [x] `backend/penplot/templates/penplot.html`: delete fieldset "2. City
       map", `importCity` / `searchCity` / `cityBboxes` JS; renumber
       fieldsets 3–7 → 1–5.
-- [ ] `backend/penplot/ui.py`: drop `citymap_layers` context + `CITYMAP_*`
+- [x] `backend/penplot/ui.py`: drop `citymap_layers` context + `CITYMAP_*`
       imports.
-- [ ] Delete `test_penplot_page_pulls_in_citymap`; `/penplot` asserts NO
+- [x] Delete `test_penplot_page_pulls_in_citymap`; `/penplot` asserts NO
       `city_name` / `cityBtn` / `citymap/import` strings.
 
 Acceptance criteria → tests (Phase 1):
@@ -48,17 +48,17 @@ Acceptance criteria → tests (Phase 1):
 
 ### Phase 2 — New `GET /citymap` page (DONE when)
 
-- [ ] New `backend/citymap/ui.py` + `backend/citymap/templates/citymap.html`,
+- [x] New `backend/citymap/ui.py` + `backend/citymap/templates/citymap.html`,
       router registered in `backend/main.py` ahead of the catch-all proxy.
-- [ ] Shared Jinja includes (`_page_pen.html`, `_label.html`,
+- [x] Shared Jinja includes (`_page_pen.html`, `_label.html`,
       `_display.html`, `_convert.js`) used by BOTH pages for sections
       Page & pen / Label / Display / stats / warnings / vpype / download.
-- [ ] Map section: search box → `geocode/search` → candidate `<select>`
+- [x] Map section: search box → `geocode/search` → candidate `<select>`
       → MapLibre GL preview (pinned CDN version) on OpenFreeMap
       `planet/latest` tiles → layer checkboxes as style filters
       (`transportation.class` splits highways/roads/paths/rails/ferry;
       `water`, `waterway`, `building`, `aeroway` direct).
-- [ ] Load reads `map.getBounds()` → `POST /v1/citymap/import` with bbox +
+- [x] Load reads `map.getBounds()` → `POST /v1/citymap/import` with bbox +
       layers → title block auto-stamp → shared `convert()` flow.
 
 Acceptance criteria → tests (Phase 2):
@@ -81,11 +81,11 @@ Acceptance criteria → tests (Phase 3):
 
 ### Phase 3 — Tests, all hermetic (DONE when)
 
-- [ ] New page 200; contains map container, `geocode/search` hook, layer
+- [x] New page 200; contains map container, `geocode/search` hook, layer
       checkboxes, shared sections markup.
-- [ ] `/penplot` negative assertions (§Phase 1).
-- [ ] `geocode/search?limit=99` → 422 (no network).
-- [ ] Full suite green: `.venv/bin/python -m pytest backend/tests/ -q`.
+- [x] `/penplot` negative assertions (§Phase 1).
+- [x] `geocode/search?limit=99` → 422 (no network).
+- [x] Full suite green: `.venv/bin/python -m pytest backend/tests/ -q`.
 
 ## QA strategy (per affilio DoD test-type table, adapted)
 
@@ -97,13 +97,13 @@ Acceptance criteria → tests (Phase 3):
 
 ## NFR checklist (per affilio `NON_FUNCTIONAL_REQUIREMENTS.md` practice)
 
-- [ ] Performance: `/citymap` renders static template (no CPU work); tile
+- [x] Performance: `/citymap` renders static template (no CPU work); tile
       traffic stays client ↔ OpenFreeMap, never through our backend.
-- [ ] Rate limiting: Load path reuses `/v1/citymap/import` (already
+- [x] Rate limiting: Load path reuses `/v1/citymap/import` (already
       rate-limited); page itself unthrottled like `/penplot`.
-- [ ] Security: bbox/layers validated by existing Pydantic schemas
+- [x] Security: bbox/layers validated by existing Pydantic schemas
       (`extra="forbid"`); MapLibre pinned to a fixed CDN version.
-- [ ] Usability: layer toggles instant (style filters); candidate picker
+- [x] Usability: layer toggles instant (style filters); candidate picker
       for same-named places; title-block auto-stamp preserved.
 
 ## Schemathesis scope
@@ -114,18 +114,18 @@ shared middleware/auth, fall back to the full schema per affilio DoD.
 
 ## Definition of Done (adapted from affilio `docs/impl/DEFINITION_OF_DONE.md`)
 
-- [ ] Code: all listed files created/modified; env access only via
+- [x] Code: all listed files created/modified; env access only via
       `settings.*`; Pydantic v2 validators; new routes registered in
       `backend/main.py` ahead of the catch-all proxy.
-- [ ] TDD: failing test written before each phase's implementation
+- [x] TDD: failing test written before each phase's implementation
       (red → green → refactor); no new phase starts on red.
-- [ ] Test types: API/page integration via live-server fixtures (real
+- [x] Test types: API/page integration via live-server fixtures (real
       HTTP, never TestClient) as default; unit tests only for
       algorithms/calculations; markup-only assertions for CDN-dependent
       pages; negative/boundary coverage included.
-- [ ] Full suite passes (`N passed`, 0 failed/errors).
-- [ ] Docs: this file's phases marked DONE as completed; `docs/index.md`
+- [x] Full suite passes (`N passed`, 0 failed/errors).
+- [x] Docs: this file's phases marked DONE as completed; `docs/index.md`
       status + last-updated synced (see `track-work` skill).
-- [ ] Serena memory updated for changed areas.
-- [ ] Git: commit per phase; push only when suite is green; no generated
+- [x] Serena memory updated for changed areas.
+- [x] Git: commit per phase; push only when suite is green; no generated
       artifacts committed.
