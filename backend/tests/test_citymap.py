@@ -187,54 +187,6 @@ def test_cache_key_deterministic_and_memory_roundtrip():
     asyncio.run(roundtrip())
 
 
-def test_render_rotation_zero_matches_unrotated():
-    layers = ["highways", "roads"]
-    geoms, _ = split_elements(_elements(), layers)
-    bbox = (47.4, 19.0, 47.6, 19.3)
-    plain, _ = render_svg(geoms, bbox, layers, width=1000)
-    rotated, _ = render_svg(geoms, bbox, layers, width=1000, rotation_deg=0.0)
-    assert rotated == plain
-
-
-def test_render_rotation_90_swaps_extents():
-    layers = ["highways"]
-    geoms, _ = split_elements(_elements(), layers)
-    bbox = (47.4, 19.0, 47.6, 19.3)
-    plain, _ = render_svg(geoms, bbox, layers, width=1000)
-    turned, counts = render_svg(geoms, bbox, layers, width=1000, rotation_deg=90.0)
-    assert turned != plain
-    assert sum(counts.values()) == sum(
-        render_svg(geoms, bbox, layers, width=1000)[1].values()
-    )
-    import re
-
-    def _size(svg):
-        m = re.search(r'width="(\d+)" height="([\d.]+)"', svg)
-        return float(m.group(1)), float(m.group(2))
-
-    pw, ph = _size(plain)
-    tw, th = _size(turned)
-    assert pw != ph  # non-square fixture, so a swap is observable
-    assert abs(tw - pw) > 1 or abs(th - ph) > 1
-
-
-def test_render_rejects_rotation_out_of_range_422(http_client):
-    resp = http_client.post(
-        "/v1/citymap/render",
-        json={
-            "bbox": {"south": 47.4, "west": 19.0, "north": 47.6, "east": 19.3},
-            "layers": ["roads"],
-            "rotation_deg": 200.0,
-        },
-    )
-    assert resp.status_code == 422
-
-
-def test_citymap_page_has_rotation_slider(http_client):
-    html = http_client.get("/citymap").text
-    assert 'id="city_rotate"' in html
-
-
 def test_geocode_search_rejects_limit_over_10(http_client):
     """CR-001 Phase 3: limit bounds are validated before any Nominatim call
     (hermetic — 422 comes from validation, no network)."""

@@ -42,21 +42,15 @@ def render_svg(
     *,
     width: int = 1000,
     min_path_len_m: float = 0.0,
-    rotation_deg: float = 0.0,
 ) -> tuple[str, dict[str, int]]:
     """Render layer geometries to a chrome-free SVG document.
 
     Returns ``(svg_text, path_counts)``. Polylines shorter than
     ``min_path_len_m`` meters are dropped (the city-roads ``minLength``
-    pen-plotter option, but in meters instead of pixels). The artwork is
-    rotated ``rotation_deg`` degrees clockwise around the bbox center
-    before fitting — bounds are recomputed after rotation so nothing is
-    clipped.
+    pen-plotter option, but in meters instead of pixels).
     """
     south, west, north, east = bbox
     lon0, lat0 = (west + east) / 2.0, (south + north) / 2.0
-    theta = math.radians(rotation_deg)
-    cos_t, sin_t = math.cos(theta), math.sin(theta)
 
     projected: dict[str, list[list[tuple[float, float]]]] = {}
     min_x = min_y = math.inf
@@ -71,10 +65,6 @@ def render_svg(
             )
             if length < min_path_len_m:
                 continue
-            if theta:
-                pts = [
-                    (x * cos_t - y * sin_t, x * sin_t + y * cos_t) for x, y in pts
-                ]
             polys.append(pts)
             for x, y in pts:
                 min_x, max_x = min(min_x, x), max(max_x, x)
