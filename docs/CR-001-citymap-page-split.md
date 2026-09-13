@@ -38,6 +38,14 @@ source), `docs/drawscape-map-source-findings.md` (layer mapping).
 - [ ] Delete `test_penplot_page_pulls_in_citymap`; `/penplot` asserts NO
       `city_name` / `cityBtn` / `citymap/import` strings.
 
+Acceptance criteria → tests (Phase 1):
+
+| # | Criterion | Test |
+|---|-----------|------|
+| 1.1 | `/penplot` 200, no city section | `test_penplot_has_no_citymap_section` (negative markup asserts) |
+| 1.2 | Upload → convert flow unchanged | existing `test_penplot_*` suite stays green |
+| 1.3 | No dead JS references | page contains no `importCity`, `searchCity`, `cityBboxes` strings |
+
 ### Phase 2 — New `GET /citymap` page (DONE when)
 
 - [ ] New `backend/citymap/ui.py` + `backend/citymap/templates/citymap.html`,
@@ -53,6 +61,24 @@ source), `docs/drawscape-map-source-findings.md` (layer mapping).
 - [ ] Load reads `map.getBounds()` → `POST /v1/citymap/import` with bbox +
       layers → title block auto-stamp → shared `convert()` flow.
 
+Acceptance criteria → tests (Phase 2):
+
+| # | Criterion | Test |
+|---|-----------|------|
+| 2.1 | `GET /citymap` 200, map container + search + layer checkboxes | `test_citymap_page_renders_map_section` (markup asserts) |
+| 2.2 | Shared sections (Page & pen, Label, Display, stats, vpype, download) present on BOTH pages | `test_citymap_page_reuses_convert_sections` + existing `test_penplot_display` / `test_penplot_ui` |
+| 2.3 | `/citymap` unknown path / bad query → 404/422, never 5xx | `test_citymap_page_negative` |
+| 2.4 | Full user journey (search → pick → load → convert → download) verified manually against dev server (MapLibre CDN + tiles are client-side; E2E is manual per QA table) | manual checklist in PR/commit message |
+
+Acceptance criteria → tests (Phase 3):
+
+| # | Criterion | Test |
+|---|-----------|------|
+| 3.1 | New page markup complete | §2.1 test green |
+| 3.2 | `/penplot` negative assertions | §1.1 test green |
+| 3.3 | `geocode/search?limit=99` → 422 without network | `test_geocode_search_rejects_limit_over_10` (live-server fixture, validation only) |
+| 3.4 | Full suite: `N passed`, 0 failed/errors | `.venv/bin/python -m pytest backend/tests/ -q` |
+
 ### Phase 3 — Tests, all hermetic (DONE when)
 
 - [ ] New page 200; contains map container, `geocode/search` hook, layer
@@ -60,6 +86,31 @@ source), `docs/drawscape-map-source-findings.md` (layer mapping).
 - [ ] `/penplot` negative assertions (§Phase 1).
 - [ ] `geocode/search?limit=99` → 422 (no network).
 - [ ] Full suite green: `.venv/bin/python -m pytest backend/tests/ -q`.
+
+## QA strategy (per affilio DoD test-type table, adapted)
+
+| Work in this CR | Required test type |
+|---|---|
+| New `GET /citymap` page, `/penplot` template surgery | Page integration via live-server fixtures (real HTTP, never TestClient) — the repo default |
+| MapLibre preview journey (CDN + tiles, client-side) | Manual E2E against dev server (no Playwright harness in this repo); markup-only server asserts |
+| No complex algorithms | No unit tests required |
+
+## NFR checklist (per affilio `NON_FUNCTIONAL_REQUIREMENTS.md` practice)
+
+- [ ] Performance: `/citymap` renders static template (no CPU work); tile
+      traffic stays client ↔ OpenFreeMap, never through our backend.
+- [ ] Rate limiting: Load path reuses `/v1/citymap/import` (already
+      rate-limited); page itself unthrottled like `/penplot`.
+- [ ] Security: bbox/layers validated by existing Pydantic schemas
+      (`extra="forbid"`); MapLibre pinned to a fixed CDN version.
+- [ ] Usability: layer toggles instant (style filters); candidate picker
+      for same-named places; title-block auto-stamp preserved.
+
+## Schemathesis scope
+
+No JSON API routes are added or changed (only the `GET /citymap` HTML
+page) — scoped Schemathesis run NOT required. If implementation touches
+shared middleware/auth, fall back to the full schema per affilio DoD.
 
 ## Definition of Done (adapted from affilio `docs/impl/DEFINITION_OF_DONE.md`)
 
