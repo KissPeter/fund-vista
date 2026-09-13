@@ -24,6 +24,7 @@ from backend.penplot.methods import METHOD_REGISTRY, MethodContext
 from backend.penplot.optimize import (
     build_vpype_command,
     count_points,
+    curvesmooth,
     layout,
     layout_scale,
     linemerge,
@@ -137,6 +138,7 @@ def run_convert(
                 src_w, src_h,
                 params.page.size, params.page.orientation, params.page.margin_mm,
                 reserve_bottom_mm,
+                params.page.padding_mm,
             )
             pitch_px = params.hatch_pitch_mm / max(scale, 1e-9)
             pitch_px_clamped = float(np.clip(pitch_px, 2.0, 200.0))
@@ -151,6 +153,7 @@ def run_convert(
                 contour_simplify=params.contour_simplify,
                 hatch_angle_deg=params.hatch_angle_deg,
                 hatch_pitch_px=pitch_px_clamped,
+                centerline_prune_px=params.centerline_prune_px,
             )
             # Every selected generator runs on the same (mask, gray) in the
             # requested order; outputs concatenate before the shared optimize
@@ -174,6 +177,7 @@ def run_convert(
             orientation=params.page.orientation,
             margin_mm=params.page.margin_mm,
             reserve_bottom_mm=reserve_bottom_mm,
+            padding_mm=params.page.padding_mm,
         )
         _timed("layout", image_id, method_label, t0)
         if params.label.enabled and params.label.text.strip():
@@ -215,7 +219,16 @@ def run_convert(
             merged.extend(linemerge(quantize(static_lines, q), tol))
         _timed("linemerge", image_id, method_label, t0)
         t0 = time.perf_counter()
-        simplified = linesimplify(merged, params.linesimplify_tolerance_mm)
+        smoothed = (
+            curvesmooth(merged, params.curve_smooth)
+            if params.curve_smooth > 0
+            else merged
+        )
+        if smoothed is not merged:
+            warnings.append("curve_smoothed")
+        _timed("curvesmooth", image_id, method_label, t0)
+        t0 = time.perf_counter()
+        simplified = linesimplify(smoothed, params.linesimplify_tolerance_mm)
         _timed("linesimplify", image_id, method_label, t0)
         t0 = time.perf_counter()
         ordered = linesort(simplified) if params.linesort else simplified

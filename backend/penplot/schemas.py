@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-MethodName = Literal["contour", "hatch", "flow"]
+MethodName = Literal["contour", "centerline", "hatch", "flow"]
 PageSizeName = Literal["A4", "A3", "A5", "Letter", "a4", "a3", "a5", "letter"]
 Orientation = Literal["portrait", "landscape"]
 
@@ -33,6 +33,10 @@ class PageParams(BaseModel):
     size: PageSizeName = "A4"
     orientation: Orientation = "portrait"
     margin_mm: float = Field(default=10.0, ge=0.0, le=50.0)
+    padding_mm: float = Field(
+        default=5.0, ge=0.0, le=20.0,
+        description="Internal padding inside the margin/frame; artwork never touches the border.",
+    )
     frame: bool = Field(
         default=False,
         description="Draw the whole-page margin frame (rounded border).",
@@ -146,6 +150,23 @@ class ConvertParams(BaseModel):
         description="Hatch line direction in degrees; cross pass runs at +90°.",
     )
     contour_simplify: float = Field(default=2.0, ge=0.0, le=20.0)
+    centerline_prune_px: int = Field(
+        default=4, ge=0, le=50,
+        description=(
+            "Centerline method only: drop skeleton branches shorter than this "
+            "many pixels (source resolution) — thinning spurs from stroke "
+            "edges and noise. 0 disables pruning. Ignored by other methods."
+        ),
+    )
+    curve_smooth: int = Field(
+        default=0, ge=0, le=3,
+        description=(
+            "Chaikin corner-cutting passes over the merged polylines (mm "
+            "space), rounding faceted contour/centerline corners into smooth "
+            "curves — the stand-in for potrace alphamax/opttolerance and "
+            "vtracer spline mode. 0 disables (identity)."
+        ),
+    )
     linemerge_tolerance_mm: float = Field(default=0.5, ge=0.0, le=5.0)
     linesimplify_tolerance_mm: float = Field(default=0.1, ge=0.0, le=2.0)
     linesort: bool = True

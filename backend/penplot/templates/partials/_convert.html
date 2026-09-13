@@ -13,7 +13,7 @@ const setStatus = (msg, cls) => { statusEl.textContent = msg; statusEl.className
 function readParams() {
   const num = (id) => parseFloat($(id).value);
   return {
-    methods: ["contour", "hatch", "flow"].filter((m) => $("m_" + m).checked),
+    methods: ["contour", "centerline", "hatch", "flow"].filter((m) => $("m_" + m).checked),
     threshold: parseInt($("threshold").value, 10),
     blur_radius: num("blur_radius"),
     contrast: num("contrast"),
@@ -23,6 +23,8 @@ function readParams() {
     hatch_pitch_mm: num("hatch_pitch_mm"),
     hatch_angle_deg: num("hatch_angle_deg"),
     contour_simplify: num("contour_simplify"),
+    centerline_prune_px: parseInt($("centerline_prune_px").value, 10),
+    curve_smooth: parseInt($("curve_smooth").value, 10),
     linemerge_tolerance_mm: num("linemerge_tolerance_mm"),
     linesimplify_tolerance_mm: num("linesimplify_tolerance_mm"),
     linesort: $("linesort").checked,
@@ -31,6 +33,7 @@ function readParams() {
       size: $("page_size").value,
       orientation: $("page_orientation").value,
       margin_mm: num("page_margin_mm"),
+      padding_mm: num("page_padding_mm"),
       frame: $("page_frame").checked,
       frame_radius_mm: num("page_frame_radius_mm"),
     },

@@ -164,6 +164,52 @@ def linesimplify(lines: list[Polyline], tol: float) -> list[Polyline]:
     return out
 
 
+# -- curvesmooth (Chaikin corner-cutting) ---------------------------------
+# Stand-in for potrace -a/alphamax + --opttolerance and vtracer's spline
+# mode: rounds faceted contour/centerline corners into smooth curves with no
+# new dependency (pure Python, operates post-layout in mm). 0 iterations is
+# identity (off). Runs between linemerge and linesimplify so the RDP pass
+# can still drop any redundant points the smoothing adds.
+
+def _chaikin_once(points: Polyline) -> Polyline:
+    if len(points) < 3:
+        return list(points)
+    closed = dist(points[0], points[-1]) <= 1e-9
+    body = points[:-1] if closed else points
+    if len(body) < 3:
+        return list(points)
+    out: Polyline = []
+    n = len(body)
+    for i in range(n if closed else n - 1):
+        p0 = body[i]
+        p1 = body[(i + 1) % n] if closed else body[i + 1]
+        if i == 0 and not closed:
+            out.append(p0)  # keep open endpoints fixed
+        q = (0.75 * p0[0] + 0.25 * p1[0], 0.75 * p0[1] + 0.25 * p1[1])
+        r = (0.25 * p0[0] + 0.75 * p1[0], 0.25 * p0[1] + 0.75 * p1[1])
+        out += [q, r]
+    if closed:
+        out.append(out[0])
+    else:
+        out.append(body[-1])
+    return out
+
+
+def curvesmooth(lines: list[Polyline], iterations: int) -> list[Polyline]:
+    """Round polyline corners via Chaikin corner-cutting (mm space)."""
+    iters = max(0, int(iterations))
+    if iters <= 0:
+        return [list(pl) for pl in lines]
+    out = [list(pl) for pl in lines]
+    for _ in range(min(iters, 5)):  # CPU/size guard: each pass ~doubles points
+        out = [_chaikin_once(pl) for pl in out]
+    log.debug(
+        "curvesmooth: %d -> %d pts (iters=%d)",
+        count_points(lines), count_points(out), iters,
+    )
+    return out
+
+
 # -- linesort (greedy nearest-neighbour incl. reversal) ------------------
 
 def linesort(lines: list[Polyline]) -> list[Polyline]:
@@ -230,19 +276,23 @@ def layout(
     orientation: str,
     margin_mm: float,
     reserve_bottom_mm: float = 0.0,
+    padding_mm: float = 0.0,
 ) -> tuple[list[Polyline], float, float]:
     """Scale pixel polylines into the margined page rect (mm). Returns (lines, W, H).
 
     ``reserve_bottom_mm`` keeps a strip above the bottom margin free (the
     title-block label zone) — artwork centers in the remaining area and
     bottoms out exactly where the label divider will sit.
+    ``padding_mm`` is internal breathing room inside the margin/frame on all
+    sides, so artwork never touches the border (B-001).
     """
     page_w, page_h = page_dims_mm(size, orientation, margin_mm)
-    draw_w = max(1e-6, page_w - 2 * margin_mm)
-    draw_h = max(1e-6, page_h - 2 * margin_mm - max(reserve_bottom_mm, 0.0))
+    pad = max(float(padding_mm), 0.0)
+    draw_w = max(1e-6, page_w - 2 * margin_mm - 2 * pad)
+    draw_h = max(1e-6, page_h - 2 * margin_mm - max(reserve_bottom_mm, 0.0) - 2 * pad)
     scale = min(draw_w / max(src_w, 1e-6), draw_h / max(src_h, 1e-6))
-    ox = margin_mm + (draw_w - src_w * scale) / 2.0
-    oy = margin_mm + (draw_h - src_h * scale) / 2.0
+    ox = margin_mm + pad + (draw_w - src_w * scale) / 2.0
+    oy = margin_mm + pad + (draw_h - src_h * scale) / 2.0
     out = [
         [(ox + x * scale, oy + y * scale) for x, y in pl]
         for pl in lines_px
@@ -250,11 +300,12 @@ def layout(
     return out, page_w, page_h
 
 
-def layout_scale(src_w: float, src_h: float, size: str, orientation: str, margin_mm: float, reserve_bottom_mm: float = 0.0) -> float:
+def layout_scale(src_w: float, src_h: float, size: str, orientation: str, margin_mm: float, reserve_bottom_mm: float = 0.0, padding_mm: float = 0.0) -> float:
     page_w, page_h = page_dims_mm(size, orientation, margin_mm)
+    pad = max(float(padding_mm), 0.0)
     return min(
-        max(1e-6, page_w - 2 * margin_mm) / max(src_w, 1e-6),
-        max(1e-6, page_h - 2 * margin_mm - max(reserve_bottom_mm, 0.0)) / max(src_h, 1e-6),
+        max(1e-6, page_w - 2 * margin_mm - 2 * pad) / max(src_w, 1e-6),
+        max(1e-6, page_h - 2 * margin_mm - max(reserve_bottom_mm, 0.0) - 2 * pad) / max(src_h, 1e-6),
     )
 
 

@@ -100,7 +100,7 @@ A tényleges generálás. Ez fut le minden csúszka-módosításnál.
 }
 ```
 
-`method`: `"contour"` | `"hatch"` | `"flow"` — melyik vonalasító algoritmus fusson (lásd 3.2).
+`method`: `"contour"` | `"centerline"` | `"hatch"` | `"flow"` — melyik vonalasító algoritmus fusson (lásd 3.2).
 
 **Válasz `200 OK`:**
 ```json
@@ -252,8 +252,8 @@ Implementation lives in `backend/penplot/`. Module map:
 | `config.py` | Limits/TTL/dirs (env-overridable), page table, `quantization_mm = 0.02` |
 | `store.py` | Filesystem store: `images/{sha256}.{ext}`, `results/{sha256}_{paramhash}_optimized.svg`, lazy TTL |
 | `imaging.py` | Pixels (Pillow/NumPy/OpenCV) + SVG `read` |
-| `methods.py` | `contour`/`hatch`/`flow` behind the `LineMethod` protocol |
-| `optimize.py` | layout → quantize → linemerge → linesimplify → linesort → reloop → SVG |
+| `methods.py` | `contour`/`centerline`/`hatch`/`flow` behind the `LineMethod` protocol |
+| `optimize.py` | layout → quantize → linemerge → curvesmooth → linesimplify → linesort → reloop → SVG |
 | `pipeline.py` | Orchestration with per-stage timing logs |
 | `router.py` | Thin HTTP glue for `/v1/*` (+ `GET /v1/results/{file}` serving `svg_url`) |
 
@@ -395,7 +395,7 @@ an API break (all fixable inside v1).
 | §2.3 errors 404/422/500 | ✅ conforms | `image_not_found` (`errors.py:39-44`), Pydantic → `invalid_params` (`router.py:62-73`, registered in `main.py:64-65`), `processing_failed` without internals (`pipeline.py:179-182`) |
 | §2.3 optional async jobs | ✅ deliberately deferred | Sync-only, documented in Part B; flow has a 600-line CPU cap (`methods.py:178-180`). Recommend a load test before opening large-image `flow` to abuse |
 | §3.1 Pillow/NumPy/OpenCV; SVG bypass | ✅ conforms | `imaging.py:1-116` preprocess; `pipeline.py:84-88` vector branch skips pixels |
-| §3.2 contour/hatch/flow | ⚠️ documented substitution, 2 minor gaps | In-house impls (`methods.py`), no Potrace/hatched/flow-imager per §7 licence note. Gaps: hatch-pitch clip is silent (C.2.4); flow ignores `hatch_pitch`/`contour_simplify` (C.2.4) |
+| §3.2 contour/centerline/hatch/flow | ⚠️ documented substitution, 2 minor gaps | In-house impls (`methods.py`), no Potrace/hatched/flow-imager per §7 licence note. `centerline` thins to a 1-px skeleton (NumPy Zhang-Suen) then walks it; `curve_smooth` (Chaikin, 0=off) rounds corners between linemerge and linesimplify. Gaps: hatch-pitch clip is silent (C.2.4); flow ignores `hatch_pitch`/`contour_simplify` (C.2.4) |
 | §3.3 vpype chain incl. conditional linesort | ✅ conforms in effect, order differs (documented) | `pipeline.py:127-143` runs layout→quantize→merge→simplify→sort→reloop; `optimize.py:1-13` justifies (tolerances in final mm). `linesort` conditional (`pipeline.py:140`). `vpype_command` is an equivalent recipe, honestly labelled (`optimize.py:277-295`, §B.1) |
 | §3.4 stats formulas | ✅ conforms, definition broader (docs-only) | pen-down/pen-up/estimate (`pipeline.py:146-163`) match spec; before/after counts raw→final incl. quantize/merge, not simplify-only (C.2.3) |
 | §4 client logic | ➖ no frontend in repo | Backend side supports it: hash recompute, 404 re-upload flow, low-res hint on both upload and convert (`router.py:210-213`) |
@@ -903,7 +903,7 @@ landing: **60 passed**.
 ## PART H — Multi-method converts (post-v1 addition, 2026-09-12)
 
 `POST /v1/convert` takes `params.methods`: a non-empty array of
-`"contour" | "hatch" | "flow"` run in order on the same mask, concatenated
+`"contour" | "centerline" | "hatch" | "flow"` run in order on the same mask, concatenated
 before the shared optimize chain (shading first, outlines last is the classic
 combo). The old singular `params.method` still works — it maps to a
 one-element array and canonicalizes, so both spellings share one cache entry;

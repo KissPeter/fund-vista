@@ -43,7 +43,7 @@ async def penplot_ui(request: Request) -> HTMLResponse:
         "penplot.html",
         {
             "defaults": defaults,
-            "methods": ["contour", "hatch", "flow"],
+            "methods": ["contour", "centerline", "hatch", "flow"],
             "page_sizes": sorted(PAGE_SIZES_MM),
             "orientations": ["portrait", "landscape"],
             "fonts": list(LABEL_FONTS),
