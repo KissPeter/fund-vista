@@ -55,7 +55,7 @@ def test_get_unknown_image_404_envelope(http_client):
 
 
 def test_upload_oversize_413(http_client):
-    big = b"x" * (11 * 1024 * 1024)  # size gate runs before format sniffing
+    big = b"x" * (26 * 1024 * 1024)  # size gate runs before format sniffing
     resp = upload(http_client, big, "huge.png")
     assert resp.status_code == 413
     assert resp.json()["error"]["code"] == "payload_too_large"

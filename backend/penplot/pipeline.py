@@ -17,6 +17,7 @@ import numpy as np
 
 from backend.penplot import imaging
 from backend.penplot import labels
+from backend.penplot.backgrounds import get_background_data_uri
 from backend.penplot.config import Settings
 from backend.penplot.errors import PenPlotError, processing_failed
 from backend.penplot.methods import METHOD_REGISTRY, MethodContext
@@ -240,7 +241,11 @@ def run_convert(
             pen_up_mm=round(pen_up, 2),
             estimated_time_s=round(est, 1),
         )
-        svg_text = to_svg(final, page_w, page_h)
+        svg_text = to_svg(
+            final, page_w, page_h,
+            stroke_color=params.line_color,
+            background_data_uri=get_background_data_uri(params.background),
+        )
         vpype_command = build_vpype_command(
             linemerge_tol=params.linemerge_tolerance_mm,
             linesimplify_tol=params.linesimplify_tolerance_mm,

@@ -15,6 +15,8 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
+from backend.citymap.cache import configure_citymap_redis
+from backend.citymap.router import router as citymap_router
 from backend.penplot.errors import PenPlotError
 from backend.penplot.ratelimit import configure_redis
 from backend.penplot.router import (
@@ -94,6 +96,8 @@ async def _request_id_middleware(request: Request, call_next):  # type: ignore[n
 # rides along here for the same reason.
 app.include_router(penplot_router)
 app.include_router(penplot_ui_router)
+# City maps next: versioned routes must win over the catch-all proxy below.
+app.include_router(citymap_router)
 app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
 
@@ -129,9 +133,11 @@ async def _startup() -> None:
         redis_client = Redis.from_url(settings.redis_cloud_url, decode_responses=False)
         await redis_client.ping()
         configure_redis(redis_client)
+        configure_citymap_redis(redis_client)
     except Exception as exc:
         redis_client = None
         configure_redis(None)
+        configure_citymap_redis(None)
         print(f"Redis unavailable, continuing without cache: {exc}")
 
 

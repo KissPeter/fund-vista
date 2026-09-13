@@ -29,7 +29,7 @@ class Settings(BaseSettings):
         frozen=True,
     )
 
-    max_upload_bytes: int = 10 * 1024 * 1024
+    max_upload_bytes: int = 25 * 1024 * 1024
     image_ttl_hours: int = 48
     data_dir: str = os.path.join(
         os.path.dirname(os.path.dirname(__file__)), ".data"

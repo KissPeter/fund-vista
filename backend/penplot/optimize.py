@@ -261,14 +261,41 @@ def layout_scale(src_w: float, src_h: float, size: str, orientation: str, margin
 # -- svg -------------------------------------------------------------------
 
 def to_svg(
-    lines_mm: list[Polyline], page_w: float, page_h: float, stroke_mm: float = 0.2
+    lines_mm: list[Polyline], page_w: float, page_h: float, stroke_mm: float = 0.2,
+    stroke_color: str = "black", background_data_uri: str | None = None,
 ) -> str:
+    """Render plot geometry plus an optional display-only background layer.
+
+    ``stroke_color`` is a pen name (black/white/red/blue) resolved through
+    the ``LINE_COLORS`` allowlist — unknown values fall back to black so a
+    display param can never inject markup. ``background_data_uri`` (a
+    ``data:image/...`` URI) is embedded as a fill-only ``<image>`` stretched
+    over the full page (``preserveAspectRatio="none"``); with no background
+    and white lines a solid dark page rect is emitted instead so white ink
+    stays visible in previews. Background layers carry no stroke and are
+    ignored by plotters — geometry and stats are unaffected.
+    """
+    from backend.penplot.backgrounds import LINE_COLORS
+
+    stroke = LINE_COLORS.get(stroke_color, LINE_COLORS["black"])
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{page_w:.2f}mm" '
         f'height="{page_h:.2f}mm" viewBox="0 0 {page_w:.3f} {page_h:.3f}">',
-        f'<g fill="none" stroke="black" stroke-width="{stroke_mm}" '
-        'stroke-linecap="round" stroke-linejoin="round">',
     ]
+    if background_data_uri:
+        parts.append(
+            f'<image href="{background_data_uri}" x="0" y="0" '
+            f'width="{page_w:.3f}" height="{page_h:.3f}" '
+            'preserveAspectRatio="none"/>',
+        )
+    elif stroke_color == "white":
+        parts.append(
+            f'<rect x="0" y="0" width="{page_w:.3f}" height="{page_h:.3f}" fill="#222222"/>',
+        )
+    parts.append(
+        f'<g fill="none" stroke="{stroke}" stroke-width="{stroke_mm}" '
+        'stroke-linecap="round" stroke-linejoin="round">',
+    )
     for pl in lines_mm:
         if len(pl) < 2:
             continue

@@ -18,6 +18,14 @@ MethodName = Literal["contour", "hatch", "flow"]
 PageSizeName = Literal["A4", "A3", "A5", "Letter", "a4", "a3", "a5", "letter"]
 Orientation = Literal["portrait", "landscape"]
 
+# Display-only pen color (physical pen). Allowlist enforced by
+# backgrounds.LINE_COLORS at render time; any value here must be a key there.
+LineColorName = Literal["black", "white", "red", "blue"]
+# Display-only page background (paper texture preview). Vendored files in
+# backend/penplot/backgrounds/ (white e-commerce frames pre-trimmed);
+# "none" is plain paper. Independent of line_color — any combination works.
+BackgroundName = Literal["none", "dark-texture", "light-texture"]
+
 
 class PageParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -145,6 +153,22 @@ class ConvertParams(BaseModel):
     page: PageParams = Field(default_factory=PageParams)
     pen: PenParams = Field(default_factory=PenParams)
     label: LabelParams = Field(default_factory=LabelParams)
+    line_color: LineColorName = Field(
+        default="black",
+        description=(
+            "Display pen color (black/white/red/blue). Preview + SVG stroke "
+            "only; never affects geometry or stats. Independent of background."
+        ),
+    )
+    background: BackgroundName = Field(
+        default="none",
+        description=(
+            "Display page background (none/dark-texture/light-texture). "
+            "Vendored texture, white shop frame pre-trimmed, stretched to the "
+            "full page. Preview + SVG fill layer only; never affects geometry "
+            "or stats. Independent of line_color."
+        ),
+    )
 
     @model_validator(mode="after")
     def _resolve_methods(self) -> ConvertParams:

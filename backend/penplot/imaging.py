@@ -28,7 +28,7 @@ from backend.penplot.errors import PenPlotError, ErrorCode, image_too_large
 log = logging.getLogger(__name__)
 
 # Explicit decompression limit (review D.3.2). Pillow errors out past this
-# pixel count BEFORE touching the pixel buffer, so a ≤10 MB file can never
+# pixel count BEFORE touching the pixel buffer, so a ≤25 MB file can never
 # allocate gigabytes. The value is deliberately generous (a 40+ MP DSLR photo
 # must still load so the pipeline can downscale it) — the real guard is the
 # explicit error path below, not a tight cap.

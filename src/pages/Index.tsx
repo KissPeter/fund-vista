@@ -10,6 +10,7 @@ import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { FundCard } from "@/components/FundCard";
 import { InvestmentChart, type ReturnAnalysisRow } from "@/components/InvestmentChart";
 import { InvestmentsTab } from "@/components/InvestmentsTab";
+import { PenPlotTab } from "@/components/PenPlotTab";
 import { Progress } from "@/components/ui/progress";
 import { investmentApi, type Fund, type ChartData } from "@/services/investmentApi";
 import { Search, Shield, X } from "lucide-react";
@@ -469,10 +470,11 @@ const Index = () => {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-          <TabsList className="grid w-full grid-cols-3 max-w-[600px] mx-auto">
+          <TabsList className="grid w-full grid-cols-4 max-w-[800px] mx-auto">
             <TabsTrigger value="funds">Controls</TabsTrigger>
             <TabsTrigger value="analysis">Analysis</TabsTrigger>
             <TabsTrigger value="investments">Investments</TabsTrigger>
+            <TabsTrigger value="penplot">Pen Plot</TabsTrigger>
           </TabsList>
 
           <TabsContent value="funds" className="space-y-6">
@@ -683,6 +685,10 @@ const Index = () => {
 
           <TabsContent value="investments" className="space-y-6">
             <InvestmentsTab onAnalyzeFund={handleAnalyzeInvestmentFund} />
+          </TabsContent>
+
+          <TabsContent value="penplot" className="space-y-6">
+            <PenPlotTab />
           </TabsContent>
         </Tabs>
       </div>

@@ -22,6 +22,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from backend.citymap.layers import LAYERS as CITYMAP_LAYERS
+from backend.citymap.layers import LAYER_ORDER as CITYMAP_LAYER_ORDER
+from backend.penplot.backgrounds import BACKGROUNDS, LINE_COLORS
 from backend.penplot.config import PAGE_SIZES_MM
 from backend.penplot.labels import LABEL_FONTS
 from backend.penplot.schemas import ConvertParams
@@ -46,5 +49,14 @@ async def penplot_ui(request: Request) -> HTMLResponse:
             "page_sizes": sorted(PAGE_SIZES_MM),
             "orientations": ["portrait", "landscape"],
             "fonts": list(LABEL_FONTS),
+            "line_colors": list(LINE_COLORS),
+            "backgrounds": [
+                {"id": bid, "label": info["label"]}
+                for bid, info in BACKGROUNDS.items()
+            ],
+            "citymap_layers": [
+                {"id": lid, "label": CITYMAP_LAYERS[lid]["label"]}
+                for lid in CITYMAP_LAYER_ORDER
+            ],
         },
     )
