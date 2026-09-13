@@ -69,6 +69,8 @@ const map = new maplibregl.Map({
   center: [19.04, 47.5],
   zoom: 11,
 });
+// Explicit zoom/pan controls (plus scroll-wheel and drag work by default).
+map.addControl(new maplibregl.NavigationControl(), "top-right");
 // Our layer ids -> preview style ids (water/waterway/building/aeroway are
 // always on: they are area layers, cheap to keep).
 const STYLE_IDS = {
