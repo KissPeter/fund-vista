@@ -57,7 +57,7 @@ class RenderRequest(BaseModel):
     bbox: BBox | None = None
     layers: list[LayerName] = Field(min_length=1)
     min_path_len_m: float = Field(
-        default=0.0, ge=0.0, le=100.0,
+        default=10.0, ge=0.0, le=100.0,
         description="Drop projected polylines shorter than this (meters). "
         "Pen-plotter fast path, like city-roads' minLength option.",
     )
@@ -96,6 +96,25 @@ class GeocodeResponse(BaseModel):
     bbox: BBox
     lat: float
     lon: float
+    cache_hit: bool
+
+
+class GeocodeCandidate(BaseModel):
+    """One Nominatim match for a place-name search."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str
+    bbox: BBox
+    lat: float
+    lon: float
+    category: str = ""
+    type: str = ""
+
+
+class GeocodeSearchResponse(BaseModel):
+    city: str
+    candidates: list[GeocodeCandidate]
     cache_hit: bool
 
 

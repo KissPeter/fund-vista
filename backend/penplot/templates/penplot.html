@@ -45,11 +45,13 @@
   <fieldset>
     <legend>2. City map (OpenStreetMap)</legend>
     <label>city <input type="text" id="city_name" maxlength="120" placeholder="Budapest" value="Budapest"></label>
+    <label>match <select id="city_candidate" hidden></select></label>
+    <button type="button" id="citySearchBtn">Find places</button>
     <span>layers (tick any)</span>
       {% for l in citymap_layers %}
       <label><input type="checkbox" class="city_layer" value="{{ l.id }}"{% if l.id in ["highways", "roads"] %} checked{% endif %}> {{ l.label }}</label>
       {% endfor %}
-    <label>min detail (m) <input type="range" id="city_minlen" min="0" max="50" step="1" value="0"><output id="city_minlen_val">0</output></label>
+    <label>min detail (m) <input type="range" id="city_minlen" min="0" max="50" step="1" value="10"><output id="city_minlen_val">10</output></label>
     <button type="button" id="cityBtn">Load city map</button>
     <p class="meta">Pulls street geometry via <code>/v1/citymap/import</code> and plots it with the settings below (vector input: shading sliders don't apply; pen, page, label and display do). First load can take a minute; repeats are served from cache. Credit: © OpenStreetMap contributors (ODbL).</p>
   </fieldset>
@@ -331,20 +333,22 @@ async function importCity() {
   const layers = Array.from(document.querySelectorAll(".city_layer"))
     .filter((el) => el.checked).map((el) => el.value);
   if (!layers.length) { setStatus("Tick at least one city layer."); return; }
+  const sel = $("city_candidate");
+  const useBbox = !sel.hidden && sel.value !== "" && cityBboxes[sel.value];
   const city = $("city_name").value.trim();
-  if (!city) { setStatus("Enter a city name."); return; }
+  if (!useBbox && !city) { setStatus("Enter a city name."); return; }
   setBusy(true);
   setStatus("Loading city map… (first load can take a minute)");
   try {
+    const body_data = useBbox
+      ? { bbox: cityBboxes[sel.value], layers,
+          min_path_len_m: parseFloat($("city_minlen").value), width: 1000 }
+      : { city, layers,
+          min_path_len_m: parseFloat($("city_minlen").value), width: 1000 };
     const resp = await fetch("/v1/citymap/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        city,
-        layers,
-        min_path_len_m: parseFloat($("city_minlen").value),
-        width: 1000,
-      }),
+      body: JSON.stringify(body_data),
     });
     const body = await resp.json();
     if (!resp.ok) {
@@ -356,10 +360,18 @@ async function importCity() {
     imageId = body.image_id;
     currentFile = null; // imports have no local file: on cache expiry just re-import
     const total = Object.values(body.path_counts).reduce((a, b) => a + b, 0);
+    const placeLabel = body.display_name || body.city || city || "map";
     $("meta").textContent =
-      (body.display_name || city) + " — " + body.layers.join("+") +
+      placeLabel + " — " + body.layers.join("+") +
       " (" + total + " paths)" +
       ((body.warnings && body.warnings.length) ? " ⚠ " + body.warnings.join(", ") : "");
+    // A chosen place stamps its own title block: label on, bordered,
+    // location name as text, 5 mm right padding.
+    $("label_enabled").checked = true;
+    $("label_border").checked = true;
+    $("label_text").value = placeLabel.slice(0, 120);
+    $("label_pad_right_mm").value = 5;
+    syncOutputs();
     await convert(false);
   } catch (e) { setStatus(String(e), "error"); }
   finally { if (depth === 0) drain(); }
@@ -367,6 +379,49 @@ async function importCity() {
 
 $("cityBtn").addEventListener("click", () => {
   importCity().catch((e) => setStatus(String(e), "error"));
+});
+
+// Same-named places: "Find places" lists Nominatim candidates so the user
+// can pick which Budapest (etc.); the import then uses that bbox directly.
+let cityBboxes = {}; // select-index -> bbox
+async function searchCity() {
+  const q = $("city_name").value.trim();
+  if (!q) { setStatus("Enter a city name."); return; }
+  const sel = $("city_candidate");
+  setBusy(true);
+  setStatus("Searching places…");
+  try {
+    const resp = await fetch("/v1/citymap/geocode/search?city=" + encodeURIComponent(q) + "&limit=5");
+    const body = await resp.json();
+    if (!resp.ok) {
+      setStatus("Place search failed (" + (body.error ? body.error.code : resp.status) + ")", "error");
+      return;
+    }
+    cityBboxes = {};
+    sel.innerHTML = "";
+    (body.candidates || []).forEach((c, i) => {
+      cityBboxes[String(i)] = c.bbox;
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = c.display_name;
+      sel.appendChild(opt);
+    });
+    sel.hidden = false;
+    setStatus(body.candidates.length > 1
+      ? "Pick a match below, then Load city map."
+      : "One match found — Load city map.");
+  } catch (e) { setStatus(String(e), "error"); }
+  finally { if (depth === 0) drain(); }
+}
+
+$("citySearchBtn").addEventListener("click", () => {
+  searchCity().catch((e) => setStatus(String(e), "error"));
+});
+$("city_name").addEventListener("input", () => {
+  // Typed text no longer matches the listed candidates — fall back to name.
+  cityBboxes = {};
+  $("city_candidate").innerHTML = "";
+  $("city_candidate").hidden = true;
 });
 
 $("file").addEventListener("change", async (e) => {

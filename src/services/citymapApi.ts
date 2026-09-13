@@ -63,6 +63,21 @@ export interface CitymapGeocodeResponse {
   cache_hit: boolean;
 }
 
+export interface CitymapGeocodeCandidate {
+  display_name: string;
+  bbox: CitymapBBox;
+  lat: number;
+  lon: number;
+  category: string;
+  type: string;
+}
+
+export interface CitymapGeocodeSearchResponse {
+  city: string;
+  candidates: CitymapGeocodeCandidate[];
+  cache_hit: boolean;
+}
+
 const readError = async (resp: Response, fallback: string): Promise<Error> => {
   try {
     const body = await resp.json();
@@ -91,7 +106,7 @@ export async function loadCityMap(opts: CitymapRenderOptions): Promise<CitymapRe
       city: opts.city,
       bbox: opts.bbox,
       layers: opts.layers,
-      min_path_len_m: opts.minPathLenM ?? 0,
+      min_path_len_m: opts.minPathLenM ?? 10,
       width: opts.width ?? 1000,
     }),
   });
@@ -102,6 +117,19 @@ export async function loadCityMap(opts: CitymapRenderOptions): Promise<CitymapRe
 export async function geocodeCity(city: string): Promise<CitymapGeocodeResponse> {
   const resp = await fetch(getApiBaseUrl(`/v1/citymap/geocode?city=${encodeURIComponent(city)}`));
   if (!resp.ok) throw await readError(resp, "Place lookup failed");
+  return resp.json();
+}
+
+/**
+ * Search place names and return up to `limit` ranked candidates, so the
+ * caller can let the user pick among same-named places (e.g. Budapest, HU
+ * vs Budapest, MO). Feed the chosen candidate's `bbox` to `loadCityMap`.
+ */
+export async function searchPlaces(city: string, limit = 5): Promise<CitymapGeocodeSearchResponse> {
+  const resp = await fetch(
+    getApiBaseUrl(`/v1/citymap/geocode/search?city=${encodeURIComponent(city)}&limit=${limit}`)
+  );
+  if (!resp.ok) throw await readError(resp, "Place search failed");
   return resp.json();
 }
 

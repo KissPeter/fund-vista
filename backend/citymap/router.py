@@ -31,6 +31,7 @@ from backend.citymap.geocode import (
     GeocodeError,
     check_bbox_span,
     geocode_city,
+    search_places,
 )
 from backend.citymap.layers import LAYERS, LAYER_ORDER
 from backend.citymap.overpass import (
@@ -46,7 +47,9 @@ from backend.citymap.render import render_svg
 from backend.citymap.schemas import (
     ATTRIBUTION,
     BBox as BBoxSchema,
+    GeocodeCandidate,
     GeocodeResponse,
+    GeocodeSearchResponse,
     ImportResponse,
     LayersResponse,
     LayerInfo,
@@ -153,6 +156,45 @@ async def list_layers() -> LayersResponse:
             )
             for layer in LAYER_ORDER
         ]
+    )
+
+
+@router.get("/geocode/search", response_model=GeocodeSearchResponse)
+async def geocode_search(
+    city: str = Query(min_length=1, max_length=120),
+    limit: int = Query(default=5, ge=1, le=10),
+) -> GeocodeSearchResponse | JSONResponse:
+    """Search place names and return up to ``limit`` candidates.
+
+    Same-named places (e.g. several Budapests) come back as a ranked list;
+    feed the chosen candidate's ``bbox`` to render/import so the map covers
+    the place the user actually picked.
+    """
+    try:
+        result = await search_places(city, limit)
+    except CityNotFoundError:
+        exc = PenPlotError(status=404, code="city_not_found", message=f"No place found for '{city}'.")
+        return _error(exc.status, exc.code, exc.message)
+    except GeocodeError as exc:
+        err = PenPlotError(status=502, code="nominatim_unavailable", message=f"Place lookup failed: {exc.detail}")
+        return _error(err.status, err.code, err.message)
+    return GeocodeSearchResponse(
+        city=city,
+        candidates=[
+            GeocodeCandidate(
+                display_name=c["display_name"],
+                bbox=BBoxSchema(
+                    south=c["bbox"][0], west=c["bbox"][1],
+                    north=c["bbox"][2], east=c["bbox"][3],
+                ),
+                lat=c["lat"],
+                lon=c["lon"],
+                category=c.get("category", ""),
+                type=c.get("type", ""),
+            )
+            for c in result["candidates"]
+        ],
+        cache_hit=result["cache_hit"],
     )
 
 

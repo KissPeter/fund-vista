@@ -1,0 +1,1 @@
+Work tracking: docs/index.md is the status source of truth; items named F-<n>/CR-<n>/B-<n>. Open: CR-001 split citymap out of /penplot into /citymap (todo). Skill: track-work (ID allocation, index sync, DoD adapted from affilio DEFINITION_OF_DONE.md). Research notes stay untracked without IDs.
