@@ -51,3 +51,27 @@ status, last updated, doc link. Rules:
 5. Commit tracking files with `git add docs/*.md
    .opencode/skills/track-work/SKILL.md`; never push unless asked.
 6. Never include secrets in docs.
+
+## Worktree convention (MANDATORY, adapted from affilio DoD)
+
+> Tracked implementation work (any `F-`/`CR-`/`B-` item) MUST happen in a
+> dedicated git worktree, never in the main working tree. Fixed root:
+> `~/PycharmProjects/fund-vista.worktrees/` — allowlist this path once;
+> no per-feature permission is needed afterwards.
+
+- [ ] Directory name is the next free **integer** (`1`, `2`, …), never the
+  feature name. Scan `~/PycharmProjects/fund-vista.worktrees/` and pick
+  the lowest unused number; never reuse a number.
+- [ ] Create from a clean, pushed `main`: `git worktree add -b
+  work/<ID>-<slug> ~/PycharmProjects/fund-vista.worktrees/<n> main`
+  (e.g. `work/CR-002-map-print`).
+- [ ] ALL implementation + phase commits happen on the worktree branch;
+  the main checkout MUST NOT receive feature commits (tracking-doc
+  commits for status flips are the only exception).
+- [ ] Push only when the item's full DoD is green, then merge/push the
+  worktree branch to `main` on origin.
+- [ ] After a successful push, the agent MUST clean up automatically:
+  `git worktree remove ~/PycharmProjects/fund-vista.worktrees/<n>`
+  (force-remove only if the branch is fully merged). Never leave stale
+  worktrees behind.
+- [ ] Docs-only changes (no code) may go direct to the main checkout.
