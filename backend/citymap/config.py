@@ -25,23 +25,36 @@ class CitymapSettings(BaseSettings):
     # several past outages when one of the other two 504'd).
     # osm.fr is the French OSM chapter mirror (EU) — added as a fourth
     # fallback after a triple-504 outage (see docs/hungary-europe-map-providers.md).
+    # nchc (Taiwan) added after a full-EU 504 + osm.fr 403 outage — different
+    # continent/operator, useful when EU instances are busy at once.
     overpass_urls: Annotated[list[str], NoDecode] = [
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
         "https://overpass.private.coffee/api/interpreter",
         "https://overpass.openstreetmap.fr/api/interpreter",
+        "https://overpass.nchc.org.tw/api/interpreter",
     ]
     # Live-query timeout: public mirrors 504 on heavy queries (e.g.
     # buildings over a large bbox). Keep this short so we fail over to the
     # OSM Main API quickly instead of holding a worker for 2 minutes.
     overpass_timeout_s: float = 30.0
+    # Per-mirror retries on retryable failures (HTTP 408/429/5xx + network
+    # errors). 400/403/404 fail fast for that mirror (no retry — retrying
+    # won't help). Backoff is exponential: backoff_s * 2**attempt + jitter.
+    overpass_retries: int = 1
+    overpass_retry_backoff_s: float = 1.0
     # OSM Main API v0.6 /map fallback (different infra from Overpass, so it
     # survives Overpass outages). Zero new deps: OSM XML -> Overpass-like
     # elements, reused by split_elements/render unchanged.
     # Limit is 0.25 deg^2 per call — bigger bboxes are chunked (see osm_api).
+    # Dense city centers also 400 on node count (~50k), so cells start small
+    # (max_deg) and subdivide adaptively down to min_deg on 400s.
     osm_api_url: str = "https://api.openstreetmap.org/api/0.6/map"
     osm_api_timeout_s: float = 30.0
-    osm_api_max_deg: float = 0.25
+    osm_api_max_deg: float = 0.1
+    osm_api_min_deg: float = 0.025
+    osm_api_retries: int = 2
+    osm_api_retry_backoff_s: float = 0.5
     nominatim_url: str = "https://nominatim.openstreetmap.org/search"
     nominatim_timeout_s: float = 15.0
     # Fixed-window cache TTL for geocode payloads, raw Overpass payloads and
