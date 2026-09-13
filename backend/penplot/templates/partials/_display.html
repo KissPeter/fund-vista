@@ -1,0 +1,18 @@
+  <fieldset>
+    <legend>{{ legend_display }}</legend>
+    <label>line_color
+      <select id="line_color">
+      {% for c in line_colors %}
+        <option value="{{ c }}"{% if defaults.line_color == c %} selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+      </select>
+    </label>
+    <label>background
+      <select id="background">
+      {% for b in backgrounds %}
+        <option value="{{ b.id }}"{% if defaults.background == b.id %} selected{% endif %}>{{ b.label }}</option>
+      {% endfor %}
+      </select>
+    </label>
+    <p class="meta">Preview only — never changes geometry or stats. Suggested pairs: white pen + dark texture; red / black / blue pen + light texture. Textures are pre-trimmed (white shop frames removed) and stretched to the full page.</p>
+  </fieldset>

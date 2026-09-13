@@ -1,0 +1,196 @@
+{% include "partials/_head.html" %}
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@{{ maplibre_version }}/dist/maplibre-gl.css">
+</head>
+<body>
+<h1>City Map — OpenStreetMap to plotter SVG <span class="meta">(v1 API demo)</span></h1>
+
+<div class="layout">
+<div>
+  <form id="params" action="javascript:void(0)">
+  <fieldset>
+    <legend>1. Place</legend>
+    <label>city <input type="text" id="city_name" maxlength="120" placeholder="Budapest" value="Budapest"></label>
+    <button type="button" id="citySearchBtn">Find places</button>
+    <label>match <select id="city_candidate" hidden></select></label>
+    <div id="map"></div>
+    <p class="meta">Pan and zoom the preview — the loaded map covers exactly the visible area. Tiles: © OpenMapTiles © OpenStreetMap contributors.</p>
+    <span>layers (tick any)</span>
+      {% for l in citymap_layers %}
+      <label><input type="checkbox" class="city_layer" value="{{ l.id }}"{% if l.id in ["highways", "roads"] %} checked{% endif %}> {{ l.label }}</label>
+      {% endfor %}
+    <label>min detail (m) <input type="range" id="city_minlen" min="0" max="50" step="1" value="10"><output id="city_minlen_val">10</output></label>
+    <button type="button" id="cityBtn">Load city map</button>
+    <p class="meta" id="meta">Pulls street geometry via <code>/v1/citymap/import</code> for the visible area and plots it with the settings below (vector input: shading sliders don't apply; pen, page, label and display do). First load can take a minute; repeats are served from cache. Credit: © OpenStreetMap contributors (ODbL).</p>
+  </fieldset>
+
+  {% with legend_method="2. Method" %}{% include "partials/_method.html" %}{% endwith %}
+
+  {% with legend_cleanup="3. Cleanup (vpype chain)" %}{% include "partials/_cleanup.html" %}{% endwith %}
+
+  {% with legend_page_pen="4. Page & pen" %}{% include "partials/_page_pen.html" %}{% endwith %}
+
+  {% with legend_label="5. Label (title block)" %}{% include "partials/_label.html" %}{% endwith %}
+  {% with legend_display="6. Display (pen + background, independent)" %}{% include "partials/_display.html" %}{% endwith %}
+  <button type="button" id="resetBtn">Reset to defaults</button>
+  </form>
+</div>
+
+{% include "partials/_result_panel.html" %}
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@{{ maplibre_version }}/dist/maplibre-gl.js"></script>
+<script>
+// Preview: OpenFreeMap vector tiles (free OpenMapTiles, no key).
+// Zoom levels carry pre-generalized detail (motorways first, buildings
+// last) — the same mechanics as Drawscape's Mapbox tiles.
+const TILE_URL = "https://tiles.openfreemap.org/planet/latest/{z}/{x}/{y}.pbf";
+const LINE = (classes, color) => ({
+  filter: ["in", "class"].concat(classes),
+  color,
+});
+const map = new maplibregl.Map({
+  container: "map",
+  style: {
+    version: 8,
+    sources: { ofm: { type: "vector", tiles: [TILE_URL], maxzoom: 14 } },
+    layers: [
+      { id: "bg", type: "background", paint: { "background-color": "#f2f2f2" } },
+      { id: "lyr-water", type: "fill", source: "ofm", "source-layer": "water", paint: { "fill-color": "#aad3df" } },
+      { id: "lyr-waterway", type: "line", source: "ofm", "source-layer": "waterway", paint: { "line-color": "#3388cc", "line-width": 1 } },
+      { id: "lyr-building", type: "fill", source: "ofm", "source-layer": "building", paint: { "fill-color": "#d9d0c9" } },
+      { id: "lyr-aeroway", type: "line", source: "ofm", "source-layer": "aeroway", paint: { "line-color": "#888888", "line-width": 1 } },
+      { id: "lyr-ferry", type: "line", source: "ofm", "source-layer": "transportation", filter: ["in", "class", "ferry"], paint: { "line-color": "#3388cc", "line-width": 1, "line-dasharray": [2, 2] } },
+      { id: "lyr-rails", type: "line", source: "ofm", "source-layer": "transportation", filter: ["in", "class", "transit", "rail"], paint: { "line-color": "#666666", "line-width": 1 } },
+      { id: "lyr-highways", type: "line", source: "ofm", "source-layer": "transportation", filter: ["in", "class", "motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link"], paint: { "line-color": "#e990a0", "line-width": 1.5 } },
+      { id: "lyr-roads", type: "line", source: "ofm", "source-layer": "transportation", filter: ["in", "class", "secondary", "secondary_link", "tertiary", "tertiary_link", "minor", "service", "track"], paint: { "line-color": "#ffffff", "line-width": 1 } },
+      { id: "lyr-paths", type: "line", source: "ofm", "source-layer": "transportation", filter: ["in", "class", "path", "pedestrian", "cycleway"], paint: { "line-color": "#bbbbbb", "line-width": 0.75, "line-dasharray": [1, 1] } },
+    ],
+  },
+  center: [19.04, 47.5],
+  zoom: 11,
+});
+// Our layer ids -> preview style ids (water/waterway/building/aeroway are
+// always on: they are area layers, cheap to keep).
+const STYLE_IDS = {
+  highways: ["lyr-highways"], roads: ["lyr-roads"], paths: ["lyr-paths"],
+  rails: ["lyr-rails"], waterway: ["lyr-waterway"], water: ["lyr-water"],
+  buildings: ["lyr-building"], aeroway: ["lyr-aeroway"], ferry: ["lyr-ferry"],
+};
+function syncPreviewLayers() {
+  if (!map || !map.isStyleLoaded()) return;
+  const wanted = {};
+  document.querySelectorAll(".city_layer").forEach((el) => { wanted[el.value] = el.checked; });
+  for (const [layer, ids] of Object.entries(STYLE_IDS)) {
+    for (const id of ids) {
+      try { map.setLayoutProperty(id, "visibility", wanted[layer] ? "visible" : "none"); } catch (e) { /* layer not ready yet */ }
+    }
+  }
+}
+map.on("load", syncPreviewLayers);
+document.querySelectorAll(".city_layer").forEach((el) => el.addEventListener("change", syncPreviewLayers));
+</script>
+<script>
+{% include "partials/_convert.html" %}
+
+// Same-named places: "Find places" lists Nominatim candidates; picking one
+// flies the preview there. Loading always renders the visible map area.
+let cityBboxes = {}; // select-index -> bbox
+function fitCandidate(bbox) {
+  map.fitBounds([[bbox.west, bbox.south], [bbox.east, bbox.north]], { animate: false });
+}
+async function searchCity() {
+  const q = $("city_name").value.trim();
+  if (!q) { setStatus("Enter a city name."); return; }
+  const sel = $("city_candidate");
+  setBusy(true);
+  setStatus("Searching places…");
+  try {
+    const resp = await fetch("/v1/citymap/geocode/search?city=" + encodeURIComponent(q) + "&limit=5");
+    const body = await resp.json();
+    if (!resp.ok) {
+      setStatus("Place search failed (" + (body.error ? body.error.code : resp.status) + ")", "error");
+      return;
+    }
+    cityBboxes = {};
+    sel.innerHTML = "";
+    (body.candidates || []).forEach((c, i) => {
+      cityBboxes[String(i)] = c.bbox;
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = c.display_name;
+      sel.appendChild(opt);
+    });
+    sel.hidden = false;
+    if (body.candidates.length) fitCandidate(body.candidates[0].bbox);
+    setStatus(body.candidates.length > 1
+      ? "Pick a match below, pan/zoom freely, then Load city map."
+      : "One match found — pan/zoom freely, then Load city map.");
+  } catch (e) { setStatus(String(e), "error"); }
+  finally { if (depth === 0) drain(); }
+}
+
+async function importCity() {
+  const layers = Array.from(document.querySelectorAll(".city_layer"))
+    .filter((el) => el.checked).map((el) => el.value);
+  if (!layers.length) { setStatus("Tick at least one city layer."); return; }
+  const b = map.getBounds();
+  const bbox = { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() };
+  setBusy(true);
+  setStatus("Loading city map… (first load can take a minute)");
+  try {
+    const resp = await fetch("/v1/citymap/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bbox,
+        layers,
+        min_path_len_m: parseFloat($("city_minlen").value),
+        width: 1000,
+      }),
+    });
+    const body = await resp.json();
+    if (!resp.ok) {
+      const code = body.error ? body.error.code : "";
+      if (resp.status === 429) { setStatus("Rate limited — retry in a few seconds.", "error"); return; }
+      setStatus("City load failed (" + code + "): " + (body.error ? body.error.message : ""), "error");
+      return;
+    }
+    imageId = body.image_id;
+    currentFile = null; // imports have no local file: on cache expiry just re-import
+    const total = Object.values(body.path_counts).reduce((a, b) => a + b, 0);
+    const placeLabel = body.display_name || body.city || $("city_name").value.trim() || "map";
+    $("meta").textContent =
+      placeLabel + " — " + body.layers.join("+") +
+      " (" + total + " paths)" +
+      ((body.warnings && body.warnings.length) ? " ⚠ " + body.warnings.join(", ") : "");
+    // A loaded view stamps its own title block: label on, bordered,
+    // location name as text, 5 mm right padding.
+    $("label_enabled").checked = true;
+    $("label_border").checked = true;
+    $("label_text").value = placeLabel.slice(0, 120);
+    $("label_pad_right_mm").value = 5;
+    syncOutputs();
+    await convert(false);
+  } catch (e) { setStatus(String(e), "error"); }
+  finally { if (depth === 0) drain(); }
+}
+
+$("citySearchBtn").addEventListener("click", () => {
+  searchCity().catch((e) => setStatus(String(e), "error"));
+});
+$("city_candidate").addEventListener("change", (e) => {
+  const bbox = cityBboxes[e.target.value];
+  if (bbox) fitCandidate(bbox);
+});
+$("city_name").addEventListener("input", () => {
+  // Typed text no longer matches the listed candidates — hide the picker.
+  cityBboxes = {};
+  $("city_candidate").innerHTML = "";
+  $("city_candidate").hidden = true;
+});
+$("cityBtn").addEventListener("click", () => {
+  importCity().catch((e) => setStatus(String(e), "error"));
+});
+</script>
+</body>
+</html>

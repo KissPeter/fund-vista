@@ -17,6 +17,7 @@ from redis.exceptions import RedisError
 
 from backend.citymap.cache import configure_citymap_redis
 from backend.citymap.router import router as citymap_router
+from backend.citymap.ui import ui_router as citymap_ui_router
 from backend.penplot.errors import PenPlotError
 from backend.penplot.ratelimit import configure_redis
 from backend.penplot.router import (
@@ -98,6 +99,7 @@ app.include_router(penplot_router)
 app.include_router(penplot_ui_router)
 # City maps next: versioned routes must win over the catch-all proxy below.
 app.include_router(citymap_router)
+app.include_router(citymap_ui_router)
 app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
 

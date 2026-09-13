@@ -1,0 +1,7 @@
+  <fieldset>
+    <legend>{{ legend_cleanup }}</legend>
+    <label>linemerge_tolerance_mm <input type="range" id="linemerge_tolerance_mm" min="0" max="5" step="0.1" value="{{ defaults.linemerge_tolerance_mm }}"><output id="linemerge_tolerance_mm_val">{{ defaults.linemerge_tolerance_mm }}</output></label>
+    <label>linesimplify_tolerance_mm <input type="range" id="linesimplify_tolerance_mm" min="0" max="2" step="0.05" value="{{ defaults.linesimplify_tolerance_mm }}"><output id="linesimplify_tolerance_mm_val">{{ defaults.linesimplify_tolerance_mm }}</output></label>
+    <label>linesort <input type="checkbox" id="linesort"{% if defaults.linesort %} checked{% endif %}></label>
+    <label>reloop_tolerance_mm <input type="range" id="reloop_tolerance_mm" min="0" max="2" step="0.05" value="{{ defaults.reloop_tolerance_mm }}"><output id="reloop_tolerance_mm_val">{{ defaults.reloop_tolerance_mm }}</output></label>
+  </fieldset>

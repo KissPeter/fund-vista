@@ -1,0 +1,25 @@
+  <fieldset>
+    <legend>{{ legend_label }}</legend>
+    <label>enabled <input type="checkbox" id="label_enabled"{% if defaults.label.enabled %} checked{% endif %}></label>
+    <label>text <input type="text" id="label_text" maxlength="120" placeholder="SCALE 1:50" value="{{ defaults.label.text }}"></label>
+    <label>align
+      <select id="label_align">
+      {% for a in ["left", "right", "fill"] %}
+        <option value="{{ a }}"{% if defaults.label.align == a %} selected{% endif %}>{{ a }}</option>
+      {% endfor %}
+      </select>
+    </label>
+    <label>height_mm <input type="range" id="label_height_mm" min="2" max="12" step="0.5" value="{{ defaults.label.height_mm }}"><output id="label_height_mm_val">{{ defaults.label.height_mm }}</output></label>
+    <label>font
+      <select id="label_font">
+      {% for f in fonts %}
+        <option value="{{ f }}"{% if defaults.label.font == f %} selected{% endif %}>{{ f }}</option>
+      {% endfor %}
+      </select>
+    </label>
+    <label>border <input type="checkbox" id="label_border"{% if defaults.label.border %} checked{% endif %}></label>
+    <label>pad_left_mm <input type="range" id="label_pad_left_mm" min="0" max="20" step="0.5" value="{{ defaults.label.pad_left_mm }}"><output id="label_pad_left_mm_val">{{ defaults.label.pad_left_mm }}</output></label>
+    <label>pad_right_mm <input type="range" id="label_pad_right_mm" min="0" max="20" step="0.5" value="{{ defaults.label.pad_right_mm }}"><output id="label_pad_right_mm_val">{{ defaults.label.pad_right_mm }}</output></label>
+    <label>border_radius_mm <input type="range" id="label_border_radius_mm" min="0" max="20" step="0.5" value="{{ defaults.label.border_radius_mm }}"><output id="label_border_radius_mm_val">{{ defaults.label.border_radius_mm }}</output></label>
+    <p class="meta">Single-stroke plotter fonts (futural default; futuram; simplex: A–Z 0–9 + marks) — bottom strip with border, inside margins. Outline faces (excalifont, comic-shanns, nunito): pen draws each stem twice.</p>
+  </fieldset>

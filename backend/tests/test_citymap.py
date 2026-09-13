@@ -187,6 +187,40 @@ def test_cache_key_deterministic_and_memory_roundtrip():
     asyncio.run(roundtrip())
 
 
+def test_citymap_page_renders_map_section(http_client):
+    """CR-001 Phase 2: standalone /citymap page with searchable, pannable,
+    zoomable preview plus the shared convert sections."""
+    resp = http_client.get("/citymap")
+    assert resp.status_code == 200, resp.text
+    assert "text/html" in resp.headers["content-type"]
+    html = resp.text
+    # MapLibre preview on free OpenFreeMap tiles.
+    assert 'id="map"' in html
+    assert "maplibre" in html.lower()
+    assert "tiles.openfreemap.org" in html
+    # Search -> candidate picker -> layer filters.
+    assert 'id="city_name"' in html
+    assert 'id="citySearchBtn"' in html
+    assert 'id="city_candidate"' in html
+    assert "/v1/citymap/geocode/search" in html
+    for layer in ("highways", "roads", "ferry", "buildings"):
+        assert f'value="{layer}"' in html, layer
+    assert "/v1/citymap/import" in html
+    # Shared convert sections (Page & pen, Label, Display, stats, download).
+    for marker in (
+        'id="page_size"', 'id="label_enabled"', 'id="label_text"',
+        'id="background"', 'id="preview"', 'id="stats"', 'id="vpype"',
+        "/v1/convert",
+    ):
+        assert marker in html, marker
+
+
+def test_citymap_page_negative(http_client):
+    """Unknown /citymap sub-paths must not 5xx."""
+    resp = http_client.get("/citymap/__nope__")
+    assert resp.status_code == 404
+
+
 def test_import_rejects_unknown_layer_422(http_client):
     resp = http_client.post(
         "/v1/citymap/import",

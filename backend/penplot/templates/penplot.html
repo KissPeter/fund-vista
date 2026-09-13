@@ -1,34 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pen Plot — image to plotter SVG</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.4rem; }
-  .layout { display: grid; grid-template-columns: 340px 1fr; gap: 1.5rem; align-items: start; }
-  @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
-  fieldset { border: 1px solid #8884; border-radius: 8px; margin-bottom: 1rem; min-width: 0; }
-  label { display: flex; justify-content: space-between; gap: .5rem; margin: .3rem 0; font-size: .9rem; overflow-wrap: anywhere; }
-  input[type=range] { flex: 1; min-width: 0; }
-  input[type=text] { flex: 1; min-width: 0; }
-  output { min-width: 3.4rem; text-align: right; font-variant-numeric: tabular-nums; }
-  select { width: 7rem; }
-  input[type=file] { max-width: 100%; }
-  #preview { width: 100%; border: 1px solid #8884; border-radius: 8px; background: #fff; min-height: 200px; }
-  table { border-collapse: collapse; font-size: .9rem; }
-  td, th { border: 1px solid #8884; padding: .2rem .6rem; text-align: right; }
-  th { text-align: left; }
-  code { font-size: .8rem; word-break: break-all; }
-  #status { min-height: 1.5em; font-size: .9rem; }
-  form.busy { opacity: .55; }
-  form.busy :disabled { cursor: wait; }
-  .warn { color: #a60; }
-  .error { color: #c00; }
-  .meta { font-size: .85rem; color: #666; word-break: break-all; }
-</style>
+{% include "partials/_head.html" %}
 </head>
 <body>
 <h1>Pen Plot — image to plotter SVG <span class="meta">(v1 API demo)</span></h1>
@@ -42,279 +12,23 @@
   </fieldset>
 
   <form id="params" action="javascript:void(0)">
-  <fieldset>
-    <legend>1. Method</legend>
-    <span>methods (tick any)</span>
-      {% for m in methods %}
-      <label><input type="checkbox" id="m_{{ m }}" value="{{ m }}"{% if m in defaults.methods %} checked{% endif %}> {{ m }}</label>
-      {% endfor %}
-    <label>threshold <input type="range" id="threshold" min="0" max="255" step="1" value="{{ defaults.threshold }}"><output id="threshold_val">{{ defaults.threshold }}</output></label>
-    <label>blur_radius <input type="range" id="blur_radius" min="0" max="10" step="0.1" value="{{ defaults.blur_radius }}"><output id="blur_radius_val">{{ defaults.blur_radius }}</output></label>
-    <label>contrast <input type="range" id="contrast" min="0" max="3" step="0.1" value="{{ defaults.contrast }}"><output id="contrast_val">{{ defaults.contrast }}</output></label>
-    <label>brightness <input type="range" id="brightness" min="-100" max="100" step="1" value="{{ defaults.brightness }}"><output id="brightness_val">{{ defaults.brightness }}</output></label>
-    <label>remove_background <input type="checkbox" id="remove_background"{% if defaults.remove_background %} checked{% endif %}></label>
-    <label>strip_hatch_px <input type="range" id="strip_hatch_px" min="0" max="20" step="1" value="{{ defaults.strip_hatch_px }}"><output id="strip_hatch_px_val">{{ defaults.strip_hatch_px }}</output></label>
-    <label>hatch_pitch_mm <input type="range" id="hatch_pitch_mm" min="0.2" max="5" step="0.1" value="{{ defaults.hatch_pitch_mm }}"><output id="hatch_pitch_mm_val">{{ defaults.hatch_pitch_mm }}</output></label>
-    <label>hatch_angle_deg <input type="range" id="hatch_angle_deg" min="0" max="175" step="5" value="{{ defaults.hatch_angle_deg }}"><output id="hatch_angle_deg_val">{{ defaults.hatch_angle_deg }}</output></label>
-    <label>contour_simplify <input type="range" id="contour_simplify" min="0" max="20" step="0.5" value="{{ defaults.contour_simplify }}"><output id="contour_simplify_val">{{ defaults.contour_simplify }}</output></label>
-  </fieldset>
+  {% with legend_method="1. Method" %}{% include "partials/_method.html" %}{% endwith %}
 
-  <fieldset>
-    <legend>2. Cleanup (vpype chain)</legend>
-    <label>linemerge_tolerance_mm <input type="range" id="linemerge_tolerance_mm" min="0" max="5" step="0.1" value="{{ defaults.linemerge_tolerance_mm }}"><output id="linemerge_tolerance_mm_val">{{ defaults.linemerge_tolerance_mm }}</output></label>
-    <label>linesimplify_tolerance_mm <input type="range" id="linesimplify_tolerance_mm" min="0" max="2" step="0.05" value="{{ defaults.linesimplify_tolerance_mm }}"><output id="linesimplify_tolerance_mm_val">{{ defaults.linesimplify_tolerance_mm }}</output></label>
-    <label>linesort <input type="checkbox" id="linesort"{% if defaults.linesort %} checked{% endif %}></label>
-    <label>reloop_tolerance_mm <input type="range" id="reloop_tolerance_mm" min="0" max="2" step="0.05" value="{{ defaults.reloop_tolerance_mm }}"><output id="reloop_tolerance_mm_val">{{ defaults.reloop_tolerance_mm }}</output></label>
-  </fieldset>
+  {% with legend_cleanup="2. Cleanup (vpype chain)" %}{% include "partials/_cleanup.html" %}{% endwith %}
 
-  <fieldset>
-    <legend>3. Page &amp; pen</legend>
-    <label>page size
-      <select id="page_size">
-      {% for s in page_sizes %}
-        <option value="{{ s }}"{% if defaults.page.size|upper == s %} selected{% endif %}>{{ s }}</option>
-      {% endfor %}
-      </select>
-    </label>
-    <label>orientation
-      <select id="page_orientation">
-      {% for o in orientations %}
-        <option value="{{ o }}"{% if defaults.page.orientation == o %} selected{% endif %}>{{ o }}</option>
-      {% endfor %}
-      </select>
-    </label>
-    <label>margin_mm <input type="range" id="page_margin_mm" min="0" max="50" step="1" value="{{ defaults.page.margin_mm }}"><output id="page_margin_mm_val">{{ defaults.page.margin_mm }}</output></label>
-    <label>frame <input type="checkbox" id="page_frame"{% if defaults.page.frame %} checked{% endif %}></label>
-    <label>frame_radius_mm <input type="range" id="page_frame_radius_mm" min="0" max="20" step="0.5" value="{{ defaults.page.frame_radius_mm }}"><output id="page_frame_radius_mm_val">{{ defaults.page.frame_radius_mm }}</output></label>
-    <label>draw_speed_mm_s <input type="range" id="draw_speed_mm_s" min="5" max="200" step="5" value="{{ defaults.pen.draw_speed_mm_s }}"><output id="draw_speed_mm_s_val">{{ defaults.pen.draw_speed_mm_s }}</output></label>
-    <label>travel_speed_mm_s <input type="range" id="travel_speed_mm_s" min="10" max="500" step="10" value="{{ defaults.pen.travel_speed_mm_s }}"><output id="travel_speed_mm_s_val">{{ defaults.pen.travel_speed_mm_s }}</output></label>
-    <label>pen_lift_s <input type="range" id="pen_lift_s" min="0" max="2" step="0.1" value="{{ defaults.pen.pen_lift_s }}"><output id="pen_lift_s_val">{{ defaults.pen.pen_lift_s }}</output></label>
-  </fieldset>
+  {% with legend_page_pen="3. Page & pen" %}{% include "partials/_page_pen.html" %}{% endwith %}
 
-  <fieldset>
-    <legend>4. Label (title block)</legend>
-    <label>enabled <input type="checkbox" id="label_enabled"{% if defaults.label.enabled %} checked{% endif %}></label>
-    <label>text <input type="text" id="label_text" maxlength="120" placeholder="SCALE 1:50" value="{{ defaults.label.text }}"></label>
-    <label>align
-      <select id="label_align">
-      {% for a in ["left", "right", "fill"] %}
-        <option value="{{ a }}"{% if defaults.label.align == a %} selected{% endif %}>{{ a }}</option>
-      {% endfor %}
-      </select>
-    </label>
-    <label>height_mm <input type="range" id="label_height_mm" min="2" max="12" step="0.5" value="{{ defaults.label.height_mm }}"><output id="label_height_mm_val">{{ defaults.label.height_mm }}</output></label>
-    <label>font
-      <select id="label_font">
-      {% for f in fonts %}
-        <option value="{{ f }}"{% if defaults.label.font == f %} selected{% endif %}>{{ f }}</option>
-      {% endfor %}
-      </select>
-    </label>
-    <label>border <input type="checkbox" id="label_border"{% if defaults.label.border %} checked{% endif %}></label>
-    <label>pad_left_mm <input type="range" id="label_pad_left_mm" min="0" max="20" step="0.5" value="{{ defaults.label.pad_left_mm }}"><output id="label_pad_left_mm_val">{{ defaults.label.pad_left_mm }}</output></label>
-    <label>pad_right_mm <input type="range" id="label_pad_right_mm" min="0" max="20" step="0.5" value="{{ defaults.label.pad_right_mm }}"><output id="label_pad_right_mm_val">{{ defaults.label.pad_right_mm }}</output></label>
-    <label>border_radius_mm <input type="range" id="label_border_radius_mm" min="0" max="20" step="0.5" value="{{ defaults.label.border_radius_mm }}"><output id="label_border_radius_mm_val">{{ defaults.label.border_radius_mm }}</output></label>
-    <p class="meta">Single-stroke plotter fonts (futural default; futuram; simplex: A–Z 0–9 + marks) — bottom strip with border, inside margins. Outline faces (excalifont, comic-shanns, nunito): pen draws each stem twice.</p>
-  </fieldset>
-  <fieldset>
-    <legend>5. Display (pen + background, independent)</legend>
-    <label>line_color
-      <select id="line_color">
-      {% for c in line_colors %}
-        <option value="{{ c }}"{% if defaults.line_color == c %} selected{% endif %}>{{ c }}</option>
-      {% endfor %}
-      </select>
-    </label>
-    <label>background
-      <select id="background">
-      {% for b in backgrounds %}
-        <option value="{{ b.id }}"{% if defaults.background == b.id %} selected{% endif %}>{{ b.label }}</option>
-      {% endfor %}
-      </select>
-    </label>
-    <p class="meta">Preview only — never changes geometry or stats. Suggested pairs: white pen + dark texture; red / black / blue pen + light texture. Textures are pre-trimmed (white shop frames removed) and stretched to the full page.</p>
-  </fieldset>
+  {% with legend_label="4. Label (title block)" %}{% include "partials/_label.html" %}{% endwith %}
+  {% with legend_display="5. Display (pen + background, independent)" %}{% include "partials/_display.html" %}{% endwith %}
   <button type="button" id="resetBtn">Reset to defaults</button>
   </form>
 </div>
 
-<div>
-  <p id="status" role="status"></p>
-  <img id="preview" alt="Converted plot preview">
-  <h2>Stats</h2>
-  <table id="stats" hidden>
-    <tr><th>strokes</th><td id="st_strokes"></td></tr>
-    <tr><th>points before → after</th><td id="st_points"></td></tr>
-    <tr><th>segments before → after</th><td id="st_segments"></td></tr>
-    <tr><th>pen down (mm)</th><td id="st_down"></td></tr>
-    <tr><th>pen up (mm)</th><td id="st_up"></td></tr>
-    <tr><th>estimated time (s)</th><td id="st_time"></td></tr>
-  </table>
-  <h2>Warnings</h2>
-  <ul id="warnings"></ul>
-  <h2>vpype recipe</h2>
-  <code id="vpype"></code>
-  <p><a id="download" href="#" download="plot_optimized.svg">download SVG</a></p>
-</div>
+{% include "partials/_result_panel.html" %}
 </div>
 
 <script>
-"use strict";
-let imageId = null;      // sha256 from POST /v1/images (spec §1)
-let currentFile = null;  // retained for the §4.3 silent re-upload retry
-let timer = null;
-let busy = false;    // a convert/upload is in flight; controls are disabled
-let pending = false; // slider moved mid-flight → one follow-up convert after
-let depth = 0;       // convert() recursion depth (the §4.3 retry nests once)
-
-const $ = (id) => document.getElementById(id);
-const statusEl = $("status");
-const setStatus = (msg, cls) => { statusEl.textContent = msg; statusEl.className = cls || ""; };
-
-function readParams() {
-  const num = (id) => parseFloat($(id).value);
-  return {
-    methods: ["contour", "hatch", "flow"].filter((m) => $("m_" + m).checked),
-    threshold: parseInt($("threshold").value, 10),
-    blur_radius: num("blur_radius"),
-    contrast: num("contrast"),
-    brightness: num("brightness"),
-    remove_background: $("remove_background").checked,
-    strip_hatch_px: parseInt($("strip_hatch_px").value, 10),
-    hatch_pitch_mm: num("hatch_pitch_mm"),
-    hatch_angle_deg: num("hatch_angle_deg"),
-    contour_simplify: num("contour_simplify"),
-    linemerge_tolerance_mm: num("linemerge_tolerance_mm"),
-    linesimplify_tolerance_mm: num("linesimplify_tolerance_mm"),
-    linesort: $("linesort").checked,
-    reloop_tolerance_mm: num("reloop_tolerance_mm"),
-    page: {
-      size: $("page_size").value,
-      orientation: $("page_orientation").value,
-      margin_mm: num("page_margin_mm"),
-      frame: $("page_frame").checked,
-      frame_radius_mm: num("page_frame_radius_mm"),
-    },
-    pen: {
-      draw_speed_mm_s: num("draw_speed_mm_s"),
-      travel_speed_mm_s: num("travel_speed_mm_s"),
-      pen_lift_s: num("pen_lift_s"),
-    },
-    label: {
-      enabled: $("label_enabled").checked,
-      text: $("label_text").value,
-      align: $("label_align").value,
-      height_mm: num("label_height_mm"),
-      font: $("label_font").value,
-      border: $("label_border").checked,
-      pad_left_mm: num("label_pad_left_mm"),
-      pad_right_mm: num("label_pad_right_mm"),
-      border_radius_mm: num("label_border_radius_mm"),
-    },
-    line_color: $("line_color").value,
-    background: $("background").value,
-  };
-}
-
-async function upload(file) {
-  const form = new FormData();
-  form.append("file", file);
-  const resp = await fetch("/v1/images", { method: "POST", body: form });
-  const body = await resp.json();
-  if (!resp.ok) throw new Error(body.error ? body.error.code + ": " + body.error.message : "upload failed");
-  imageId = body.image_id;
-  $("meta").textContent =
-    body.image_id.slice(0, 12) + "… " + body.format + " " +
-    body.width + "×" + body.height + (body.is_vector ? " (vector)" : "") +
-    (body.warnings.length ? " ⚠ " + body.warnings.join(", ") : "");
-  return body;
-}
-
-async function convert(retried) {
-  if (!imageId) { setStatus("Upload an image first."); return; }
-  depth += 1;
-  setBusy(true);
-  try {
-    setStatus("Converting…");
-    const resp = await fetch("/v1/convert", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_id: imageId, params: readParams() }),
-    });
-    const body = await resp.json();
-    if (resp.ok) { render(body); return; }
-    const code = body.error ? body.error.code : "";
-    // Spec §4.3: expired cache → silent re-upload with the retained file, retry once.
-    if (resp.status === 404 && code === "image_not_found" && currentFile && !retried) {
-      setStatus("Cache expired, re-uploading…");
-      await upload(currentFile);
-      return convert(true);
-    }
-    if (resp.status === 429) {
-      setStatus("Rate limited — retry in a few seconds.", "error");
-      return;
-    }
-    setStatus("Convert failed (" + code + "): " + (body.error ? body.error.message : ""), "error");
-  } finally {
-    depth -= 1;
-    if (depth === 0) drain(); // only the outermost call re-enables + follows up
-  }
-}
-
-function setBusy(on) {
-  busy = on;
-  document.querySelectorAll("#params input, #params select, #params button, #file")
-    .forEach((el) => { el.disabled = on; });
-  $("params").classList.toggle("busy", on);
-}
-
-function drain() {
-  // End of an in-flight op: re-enable, then re-arm the SAME debounce timer
-  // (not an immediate convert) if a slider moved mid-flight. The user may
-  // still be mid-drag exactly when the prior request resolves, so firing
-  // right away would convert on a half-adjusted value; scheduleConvert()
-  // gives them a fresh debounce window instead.
-  setBusy(false);
-  if (pending && imageId) {
-    pending = false;
-    scheduleConvert();
-  } else {
-    pending = false;
-  }
-}
-
-function render(body) {
-  setStatus("Done.");
-  $("preview").src = body.svg_url;
-  $("download").href = body.svg_url;
-  const s = body.stats;
-  $("st_strokes").textContent = s.strokes;
-  $("st_points").textContent = s.points.before + " → " + s.points.after;
-  $("st_segments").textContent = s.segments.before + " → " + s.segments.after;
-  $("st_down").textContent = s.pen_down_mm;
-  $("st_up").textContent = s.pen_up_mm;
-  $("st_time").textContent = s.estimated_time_s;
-  $("stats").hidden = false;
-  $("vpype").textContent = body.vpype_command;
-  const ul = $("warnings");
-  ul.innerHTML = "";
-  for (const w of body.warnings || []) {
-    const li = document.createElement("li");
-    li.textContent = w;
-    li.className = "warn";
-    ul.appendChild(li);
-  }
-}
-
-function scheduleConvert() {
-  clearTimeout(timer);
-  timer = setTimeout(() => {
-    // A queued timer firing mid-flight must not overlap: coalesce into one
-    // follow-up drained when the in-flight op finishes.
-    if (busy) { pending = true; return; }
-    convert(false).catch((e) => setStatus(String(e), "error"));
-  }, 500); // spec §4.2: "~300-500ms debounce" — upper end of the stated range
-}
+{% include "partials/_convert.html" %}
 
 $("file").addEventListener("change", async (e) => {
   const f = e.target.files[0];
@@ -327,23 +41,6 @@ $("file").addEventListener("change", async (e) => {
     await convert(false);
   } catch (err) { setStatus(String(err), "error"); }
   finally { if (depth === 0) drain(); }
-});
-
-$("params").addEventListener("input", scheduleConvert); // spec §4.2: debounce, convert only
-
-function syncOutputs() {
-  document.querySelectorAll('#params input[type="range"]').forEach((el) => {
-    const out = $(el.id + "_val");
-    if (out) out.textContent = el.value;
-  });
-}
-$("params").addEventListener("input", syncOutputs);
-syncOutputs();
-
-$("resetBtn").addEventListener("click", () => {
-  $("params").reset(); // restores server-rendered defaults, checkboxes included
-  syncOutputs();
-  scheduleConvert();
 });
 </script>
 </body>
