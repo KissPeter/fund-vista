@@ -15,6 +15,7 @@
       </select>
     </label>
     <label>margin_mm <input type="range" id="page_margin_mm" min="0" max="50" step="1" value="{{ defaults.page.margin_mm }}"><output id="page_margin_mm_val">{{ defaults.page.margin_mm }}</output></label>
+    <label>padding_mm <input type="range" id="page_padding_mm" min="0" max="20" step="0.5" value="{{ defaults.page.padding_mm }}"><output id="page_padding_mm_val">{{ defaults.page.padding_mm }}</output></label>
     <label>frame <input type="checkbox" id="page_frame"{% if defaults.page.frame %} checked{% endif %}></label>
     <label>frame_radius_mm <input type="range" id="page_frame_radius_mm" min="0" max="20" step="0.5" value="{{ defaults.page.frame_radius_mm }}"><output id="page_frame_radius_mm_val">{{ defaults.page.frame_radius_mm }}</output></label>
     <label>draw_speed_mm_s <input type="range" id="draw_speed_mm_s" min="5" max="200" step="5" value="{{ defaults.pen.draw_speed_mm_s }}"><output id="draw_speed_mm_s_val">{{ defaults.pen.draw_speed_mm_s }}</output></label>
