@@ -32,12 +32,11 @@ from backend.airports.ourairports import FT_TO_M, heading_from_ident
 
 # Bump on any output-affecting change: the rendered-SVG cache key includes
 # it, so clients never see a stale layout after an upgrade.
-RENDER_VERSION = 4
+RENDER_VERSION = 5
 
 # A4 portrait in user units at 1000 wide → height set by content; the plotter
 # scales the viewBox to the page with margin (iDraw working area 210×297mm).
 _MARGIN = 40.0
-_TITLE_H = 46.0
 _STRIP_H = 96.0
 _STRIP_PAD = 14.0
 _FOOTER_H = 54.0
@@ -177,7 +176,7 @@ def render_diagram(
     min_y -= pad_m
     max_y += pad_m
 
-    header_h = _TITLE_H + _STRIP_H
+    header_h = _STRIP_H
     diagram_w = width - 2 * _MARGIN
     scale = diagram_w / max(max_x - min_x, 1e-9) * zoom
     # Centered mapping (identical to corner fit at zoom=1.0): zooming
@@ -306,13 +305,10 @@ def render_diagram(
     runway_w = max(6.0, width / 130.0)
     taxi_w = max(1.2, width / 700.0)
     thin_w = max(0.8, width / 1100.0)
-    title_h = max(22.0, width / 34.0)
     freq_big = max(20.0, width / 42.0)
     freq_small = max(11.0, width / 72.0)
     text_h = max(11.0, width / 72.0)
 
-    place = (airport.get("municipality") or airport.get("name") or "").strip()
-    title = f"{place}, {airport.get('iso_country', '')}".strip(" ,").upper()
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
         f'height="{total_h:.1f}" viewBox="0 0 {width} {total_h:.1f}">',
@@ -324,18 +320,11 @@ def render_diagram(
     counts = {"runway": 0, "taxiway": 0, "apron": 0, "terminal": 0,
               "hangar": 0, "stands": 0, "stopways": 0, "context": 0}
 
-    # -- title header --------------------------------------------------------
-    title_y = _MARGIN + _TITLE_H * 0.7
-    parts.append(
-        f'<g id="title" fill="none" stroke="#000000" stroke-width="{thin_w:.2f}">'
-        f'<text x="{width / 2:.1f}" y="{title_y:.1f}" text-anchor="middle" '
-        f'font-family="monospace" font-size="{title_h:.1f}" letter-spacing="4" '
-        f'stroke="none" fill="#000000">{_esc(title)}</text>'
-        "</g>"
-    )
+    # NOTE: no in-SVG title — name/country live as fixed labels at the top
+    # of the /airports page (and the convert title block), never plotted.
 
     # -- frequency strip: full-bleed columns (label small, freq large) ----
-    strip_y = _MARGIN + _TITLE_H
+    strip_y = _MARGIN
     cols = frequencies[:_MAX_FREQ_COLS]
     ncols = max(len(cols), 1)
     parts.append(

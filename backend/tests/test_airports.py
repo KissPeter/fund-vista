@@ -201,10 +201,12 @@ def test_render_blueprint_groups_and_badges():
     assert warnings == []
     # Primary 130° runway stands vertical via the minimal −50° turn.
     assert abs(rotation - rotation_for_heading(130.0)) < 5.0
-    for marker in ("title", "freq-strip", "osm-taxiways", "osm-aprons",
+    for marker in ("freq-strip", "osm-taxiways", "osm-aprons",
                    "runways", "runway-marks", "compass", "footer"):
         assert f'id="{marker}"' in svg, marker
-    assert "BUDAPEST" in svg  # title header
+    # No in-SVG title: name/country live as fixed page labels, never plot.
+    assert 'id="title"' not in svg
+    assert "BUDAPEST" not in svg
     assert "13L" in svg and "31R" in svg  # ident badges
     assert "130°" in svg and "310°" in svg  # degree ovals
     assert "118.100" in svg and "TWR" in svg  # frequency column
@@ -550,6 +552,9 @@ def test_airports_page_renders_search_and_convert_sections(http_client):
     assert "lastPlottedIcao" in html
     # Zoom slider to fill the A4 page.
     assert 'id="apt_zoom"' in html
+    # Fixed top labels (name/country live on the page, not in the SVG).
+    assert 'id="apt_title"' in html
+    assert "setAirportTitle" in html
 
 
 def test_airports_page_negative(http_client):

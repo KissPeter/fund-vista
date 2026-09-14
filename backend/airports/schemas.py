@@ -99,6 +99,8 @@ class LookupResponse(BaseModel):
 class RenderResponse(BaseModel):
     icao: str
     name: str
+    municipality: str = ""
+    iso_country: str = ""
     runways: list[RunwayInfo] = Field(default_factory=list)
     frequencies: list[FrequencyInfo] = Field(default_factory=list)
     rotation_deg: float
@@ -117,6 +119,8 @@ class ImportResponse(BaseModel):
     image_id: str
     icao: str
     name: str
+    municipality: str = ""
+    iso_country: str = ""
     rotation_deg: float
     path_counts: dict[str, int]
     raw_counts: dict[str, int]

@@ -333,6 +333,8 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     return RenderResponse(
         icao=icao,
         name=airport.get("name", ""),
+        municipality=airport.get("municipality", ""),
+        iso_country=airport.get("iso_country", ""),
         runways=_runway_infos(runway_rows),  # type: ignore[arg-type]
         frequencies=freq_rows,  # type: ignore[arg-type]
         rotation_deg=rotation,
@@ -393,6 +395,8 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
         image_id=image_id,
         icao=icao,
         name=airport.get("name", ""),
+        municipality=airport.get("municipality", ""),
+        iso_country=airport.get("iso_country", ""),
         rotation_deg=rotation,
         path_counts=path_counts,
         raw_counts=raw_counts,

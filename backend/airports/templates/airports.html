@@ -8,6 +8,7 @@
   <form id="params" action="javascript:void(0)">
   <fieldset>
     <legend>1. Airport (ICAO)</legend>
+    <div id="apt_title" class="meta">No airport loaded — search or enter an ICAO code.</div>
     <label>find <input type="text" id="apt_search" maxlength="60" placeholder="Budapest, BUD, EGLL…"></label>
     <button type="button" id="aptSearchBtn">Find airports</button>
     <label>match <select id="apt_candidate" hidden></select></label>
@@ -42,6 +43,14 @@
 
 function icaoCode() {
   return $("icao_code").value.trim().toUpperCase();
+}
+
+// Fixed top labels: airport name + place/country, refreshed on every
+// lookup/render (the SVG itself carries no title — it never plots).
+function setAirportTitle(body) {
+  const place = [body.municipality, body.iso_country].filter(Boolean).join(", ");
+  $("apt_title").textContent =
+    body.name + " (" + body.icao + ")" + (place ? " — " + place : "");
 }
 
 // Same-named places: "Find airports" lists OurAirports candidates (city,
@@ -96,6 +105,7 @@ async function lookupAirport() {
     }
     const rwy = (body.runways || []).map((r) => r.le_ident + "/" + r.he_ident).join(", ");
     const frq = (body.frequencies || []).slice(0, 4).map((f) => f.type + " " + f.frequency_mhz.toFixed(3)).join(" · ");
+    setAirportTitle(body);
     $("airport_meta").textContent =
       body.name + " (" + body.icao + ") — " + body.municipality + ", " + body.iso_country +
       " | runways: " + (rwy || "none listed") +
@@ -151,6 +161,7 @@ async function renderAirport() {
     imageId = ibody.image_id;
     currentFile = null; // imports have no local file: on cache expiry just re-import
     const total = Object.values(ibody.path_counts).reduce((a, b) => a + b, 0);
+    setAirportTitle(ibody);
     $("meta").textContent =
       ibody.name + " (" + ibody.icao + ") — rotation " + ibody.rotation_deg.toFixed(1) + "° (" + total + " paths)" +
       ((ibody.warnings && ibody.warnings.length) ? " ⚠ " + ibody.warnings.join(", ") : "");
