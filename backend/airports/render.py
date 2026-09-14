@@ -7,10 +7,13 @@ draws lines, not fills — the white-on-navy look of the reference mock is a
 display style, available via the page's Display background picker.
 
 Runway boldness is GEOMETRY, not ``stroke-width``: each strip is drawn as
-two edge paths (± half ``width_ft``) plus a centerline, so the runway stays
-bold through ``parse_svg_vectors`` (which discards stroke widths), vpype and
-the single-ink plot. The heavy ``stroke-width`` on the group only affects
-the raw-SVG preview.
+a solid band of nine parallel longitudinal paths across twice the true
+width (2× ``width_ft`` schematic exaggeration — at poster scale the true
+45 m strip is ~1.6 mm wide and unreadable). At typical pen/plot scales the
+~0.3 mm line pitch merges into a near-solid black bar, making the runway
+the heaviest feature through ``parse_svg_vectors`` (which discards stroke
+widths), vpype and the single-ink plot. The heavy ``stroke-width`` on the
+group only affects the raw-SVG preview.
 
 Text stays as ``<text>`` (monospace): Inkscape converts it to paths before
 plotting via the iDraw extension — same step that already handles title
@@ -51,6 +54,12 @@ def render_source_version() -> str:
 # pure diagram geometry (runways, ground, badges, compass). Names,
 # frequencies and credits live on the page / API responses, never plotted.
 _MARGIN = 40.0
+
+# Runway strip treatment: schematic 2× width exaggeration + 9 longitudinal
+# infill lines. True-width strips vanish at poster scale; the exaggerated
+# band with ~0.3 mm line pitch plots as a near-solid black bar.
+_RUNWAY_WIDTH_EXAGGERATE = 2.0
+_RUNWAY_INFILL_FRACS = tuple(-1.0 + 2.0 * i / 8 for i in range(9))
 
 
 def _esc(text: object) -> str:
@@ -145,28 +154,45 @@ def render_diagram(
 
     def _project_polys(
         polys: list[list[tuple[float, float]]],
+        closed: bool = False,
     ) -> list[list[tuple[float, float]]]:
         kept: list[list[tuple[float, float]]] = []
         for lonlat in polys:
             pts = [proj(ll) for ll in lonlat]
-            length = sum(
-                math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
-                for i in range(1, len(pts))
-            )
-            if length < min_path_len_m:
-                continue
+            if closed:
+                # Area outlines: perimeter misleads (a 12×12 m shed has a
+                # ~48 m perimeter and would survive a 30 m cutoff). Filter
+                # by footprint instead — longest bbox side in meters, so
+                # "min detail 30 m" hides anything smaller than 30 m across.
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                if max(max(xs) - min(xs), max(ys) - min(ys)) < min_path_len_m:
+                    continue
+            else:
+                length = sum(
+                    math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+                    for i in range(1, len(pts))
+                )
+                if length < min_path_len_m:
+                    continue
             kept.append([rotate_point(x, y, rotation) for x, y in pts])
         return kept
 
+    # Closed area outlines (filter by footprint extent); everything else is
+    # an open centerline/polyline (filter by path length).
+    _AREA_CLASSES = frozenset({
+        "runway", "apron", "terminal", "hangar", "stands", "stopways",
+        "water", "buildings",
+    })
     osm_r: dict[str, list[list[tuple[float, float]]]] = {}
     for cls, polys in osm_geoms.items():
-        osm_r[cls] = _project_polys(polys)
+        osm_r[cls] = _project_polys(polys, closed=cls in _AREA_CLASSES)
     if not any(osm_r.values()):
         warnings.append("no_osm_aeroway")
     ctx_r: dict[str, list[list[tuple[float, float]]]] = {}
     if context_geoms:
         for cls, polys in context_geoms.items():
-            ctx_r[cls] = _project_polys(polys)
+            ctx_r[cls] = _project_polys(polys, closed=cls in _AREA_CLASSES)
         if not any(ctx_r.values()):
             warnings.append("no_context_data")
 
@@ -410,7 +436,12 @@ def render_diagram(
                 counts["runway"] += 1
         parts.append("</g>")
 
-    # -- authoritative strips: 2 edges + centerline (geometry-bold) ---------
+    # -- authoritative strips: solid band (geometry-bold) ------------------
+    # Nine longitudinal paths across 2× the true width. The exaggeration is
+    # deliberate: at poster scale a true 45 m strip is ~1.6 mm wide and the
+    # infill pitch (~0.3 mm) merges into a near-solid black bar — the
+    # heaviest feature on the page. Pure geometry: stroke-width would not
+    # survive the vector pipeline.
     if show_runway:
         parts.append(
             f'<g id="runways" fill="none" stroke="#000000" '
@@ -420,20 +451,21 @@ def render_diagram(
             dx, dy = s["he"][0] - s["le"][0], s["he"][1] - s["le"][1]
             seg = math.hypot(dx, dy) or 1.0
             nx, ny = -dy / seg, dx / seg  # world-space normal
-            hw = s["width_m"] / 2.0
+            hw = s["width_m"] / 2.0 * _RUNWAY_WIDTH_EXAGGERATE
             strips_world = [
-                [(s["le"][0] + nx * hw * side, s["le"][1] + ny * hw * side),
-                 (s["he"][0] + nx * hw * side, s["he"][1] + ny * hw * side)]
-                for side in (-1.0, 1.0)
-            ] + [[s["le"], s["he"]]]
+                [(s["le"][0] + nx * hw * frac, s["le"][1] + ny * hw * frac),
+                 (s["he"][0] + nx * hw * frac, s["he"][1] + ny * hw * frac)]
+                for frac in _RUNWAY_INFILL_FRACS
+            ]
             for world_seg in strips_world:
                 for d in clipped_d(world_seg, False):
                     parts.append(f"<path d=\"{d}\"/>")
                     counts["runway"] += 1
         parts.append("</g>")
 
-    # -- badges (ident) + degree ovals + displaced-threshold ticks ---------
-    # Annotations of the runway layer: hidden with it.
+    # -- badges (ident) + displaced-threshold ticks -------------------------
+    # Annotations of the runway layer: hidden with it. (No degree ovals —
+    # the ident already encodes the heading; the oval was chart clutter.)
     if show_runway:
         parts.append(
             f'<g id="runway-marks" fill="none" stroke="#000000" '
@@ -446,10 +478,10 @@ def render_diagram(
         seg = math.hypot(dx, dy) or 1.0
         ux, uy = dx / seg, dy / seg
         nx, ny = -uy, ux
-        half_band = (s["width_m"] * scale) / 2.0
-        for (px, py), ident, deg, disp_m, end_sign in (
-            ((x1, y1), s["le_ident"], s["le_deg"], s["le_disp_m"], -1.0),
-            ((x2, y2), s["he_ident"], s["he_deg"], s["he_disp_m"], +1.0),
+        half_band = (s["width_m"] * _RUNWAY_WIDTH_EXAGGERATE * scale) / 2.0
+        for (px, py), ident, disp_m, end_sign in (
+            ((x1, y1), s["le_ident"], s["le_disp_m"], -1.0),
+            ((x2, y2), s["he_ident"], s["he_disp_m"], +1.0),
         ):
             # Off-frame runway ends (zoomed in) lose their furniture too.
             if not _in_frame(px, py):
@@ -468,24 +500,13 @@ def render_diagram(
                     parts.append(
                         f"<path d=\"M {ax_:.2f} {ay_:.2f} L {bx_:.2f} {by_:.2f}\"/>"
                     )
-            # Ident label just past the threshold …
+            # Ident label just past the threshold.
             off_ident = half_band + text_h * 1.2
             ix, iy = px + ux * end_sign * off_ident, py + uy * end_sign * off_ident
             parts.append(
                 f'<text x="{ix:.2f}" y="{iy + text_h * 0.35:.2f}" text-anchor="middle" '
                 f'font-family="monospace" data-stroke-font="hershey" font-size="{text_h * 1.4:.1f}" '
                 f'stroke="none" fill="#000000">{_esc(ident)}</text>'
-            )
-            # … and the degree oval beyond it.
-            off_deg = half_band + text_h * 3.6
-            bx, by = px + ux * end_sign * off_deg, py + uy * end_sign * off_deg
-            rx, ry = text_h * 1.9, text_h * 1.05
-            deg_txt = f"{deg:.0f}°" if deg is not None else "?"
-            parts.append(
-                f'<ellipse cx="{bx:.2f}" cy="{by:.2f}" rx="{rx:.2f}" ry="{ry:.2f}"/>'
-                f'<text x="{bx:.2f}" y="{by + text_h * 0.32:.2f}" text-anchor="middle" '
-                f'font-family="monospace" data-stroke-font="hershey" font-size="{text_h * 0.9:.1f}" '
-                f'stroke="none" fill="#000000">{_esc(deg_txt)}</text>'
             )
     if show_runway:
         parts.append("</g>")

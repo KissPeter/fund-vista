@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -163,6 +164,41 @@ async def _load_polygons(
     return elements, None
 
 
+def _effective_radius_m(
+    airport: dict,
+    runway_rows: list[dict],
+    requested_m: float,
+    margin_m: float = 1000.0,
+) -> float:
+    """Overpass radius covering the runway ends, not just the request.
+
+    The query is centered on the ARP, which can sit kilometers from the far
+    threshold (LHBP's 13R end is ~3.7 km out) — a fixed 3000 m default then
+    silently drops that end's taxiways. The authoritative endpoints are known
+    before the fetch, so expand to farthest-threshold + margin (capped to
+    bound the fetch). Never shrinks below the requested radius.
+    """
+    try:
+        from backend.airports.geometry import project
+        from backend.airports.ourairports import runway_endpoints
+
+        lat0, lon0 = float(airport["latitude_deg"]), float(airport["longitude_deg"])
+        need = 0.0
+        for row in runway_rows:
+            try:
+                le_ll, he_ll, _ = runway_endpoints(row, lat0, lon0)
+            except Exception:
+                continue
+            for ll in (le_ll, he_ll):
+                x, y = project(ll[0], ll[1], lon0, lat0)
+                need = max(need, math.hypot(x, y))
+        if need > 0:
+            return max(requested_m, min(need + margin_m, 8000.0))
+    except Exception:
+        pass
+    return requested_m
+
+
 def _build_svg(
     airport: dict,
     runway_rows: list[dict],
@@ -265,9 +301,12 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     airport, runway_rows, freq_rows, warnings, lookup_hit = resolved
     lat, lon = float(airport["latitude_deg"]), float(airport["longitude_deg"])
     icao = (airport.get("ident") or body.icao).strip().upper()
+    radius_m = _effective_radius_m(airport, runway_rows, body.radius_m)
+    if radius_m > body.radius_m:
+        warnings.append("radius_expanded_to_cover_runways")
 
     svg_key = airports_cache_key(
-        "svg", icao, f"r={body.radius_m:.0f}",
+        "svg", icao, f"r={radius_m:.0f}",
         f"minlen={body.min_path_len_m}", f"width={body.width}",
         f"layers={','.join(sorted(body.effective_layers()))}",
         f"zoom={body.zoom}",
@@ -278,13 +317,13 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         svg_text = cached_svg
         cache_hit = True
         warnings.append("svg_cache_hit")
-        elements, err = await _load_polygons(lat, lon, body.radius_m, warnings)
+        elements, err = await _load_polygons(lat, lon, radius_m, warnings)
         if err is not None or elements is None:
             return err  # type: ignore[return-value]
         ctx_elements: list[dict] | None = None
         if body.needs_context():
             ctx_elements, _ = await _load_polygons(
-                lat, lon, body.radius_m, warnings, kind="overpass-ctx")
+                lat, lon, radius_m, warnings, kind="overpass-ctx")
             warnings.append("context_enabled")
         geoms, raw_counts = await asyncio.to_thread(split_aeroway, elements)
         selected = set(body.effective_layers())
@@ -316,13 +355,13 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
             render_diagram, **render_kwargs)
     else:
         cache_hit = False
-        elements, err = await _load_polygons(lat, lon, body.radius_m, warnings)
+        elements, err = await _load_polygons(lat, lon, radius_m, warnings)
         if err is not None or elements is None:
             return err  # type: ignore[return-value]
         ctx_elements = None
         if body.needs_context():
             ctx_elements, _ = await _load_polygons(
-                lat, lon, body.radius_m, warnings, kind="overpass-ctx")
+                lat, lon, radius_m, warnings, kind="overpass-ctx")
             warnings.append("context_enabled")
         svg_text, path_counts, raw_counts, rotation, render_warnings = (
             await asyncio.to_thread(
@@ -371,13 +410,16 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
     airport, runway_rows, freq_rows, warnings, _ = resolved
     lat, lon = float(airport["latitude_deg"]), float(airport["longitude_deg"])
     icao = (airport.get("ident") or body.icao).strip().upper()
-    elements, err = await _load_polygons(lat, lon, body.radius_m, warnings)
+    radius_m = _effective_radius_m(airport, runway_rows, body.radius_m)
+    if radius_m > body.radius_m:
+        warnings.append("radius_expanded_to_cover_runways")
+    elements, err = await _load_polygons(lat, lon, radius_m, warnings)
     if err is not None or elements is None:
         return err  # type: ignore[return-value]
     ctx_elements = None
     if body.needs_context():
         ctx_elements, _ = await _load_polygons(
-            lat, lon, body.radius_m, warnings, kind="overpass-ctx")
+            lat, lon, radius_m, warnings, kind="overpass-ctx")
         warnings.append("context_enabled")
     svg_text, path_counts, raw_counts, rotation, render_warnings = (
         await asyncio.to_thread(

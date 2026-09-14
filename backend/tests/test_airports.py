@@ -215,11 +215,14 @@ def test_render_blueprint_groups_and_badges():
     assert 'id="title"' not in svg
     assert "BUDAPEST" not in svg
     # All labels are crisp single-stroke (never raster-traced outlines).
-    assert svg.count('data-stroke-font="hershey"') >= 5
+    assert svg.count('data-stroke-font="hershey"') >= 3
     assert "13L" in svg and "31R" in svg  # ident badges
-    assert "130°" in svg and "310°" in svg  # degree ovals
-    # Geometry-bold: 1 OSM outline + 2 edges + 1 centerline per strip.
-    assert counts == {"runway": 4, "taxiway": 1, "apron": 1,
+    # No degree ovals: the ident already encodes the heading.
+    assert "<ellipse" not in svg
+    assert "130°" not in svg and "310°" not in svg
+    # Geometry-bold: 1 OSM outline + 9 strip lines per runway
+    # (solid band across 2× width).
+    assert counts == {"runway": 10, "taxiway": 1, "apron": 1,
                       "terminal": 0, "hangar": 0, "stands": 0,
                       "stopways": 0, "highways": 0, "roads": 0,
                       "paths": 0, "rails": 0, "waterway": 0,
@@ -354,6 +357,51 @@ def test_render_layers_filter_draw_fit_and_counts():
     assert sum(counts.values()) == 1
 
 
+def test_min_detail_filters_small_footprints_not_perimeters():
+    """Regression: a 12×12 m shed has a ~48 m perimeter — length-based
+    filtering kept it at min-detail 30 m. Area outlines filter by footprint
+    (longest side), open lines still by path length."""
+    lon0, lat0 = 19.2556, 47.4369
+    dlat = 12 / 110540.0
+    dlon = 12 / (111320.0 * math.cos(math.radians(lat0)))
+    small = [(lon0, lat0), (lon0 + dlon, lat0), (lon0 + dlon, lat0 + dlat),
+             (lon0, lat0 + dlat), (lon0, lat0)]
+    dlat_big = 80 / 110540.0
+    dlon_big = 200 / (111320.0 * math.cos(math.radians(lat0)))
+    big = [(lon0, lat0), (lon0 + dlon_big, lat0),
+           (lon0 + dlon_big, lat0 + dlat_big),
+           (lon0, lat0 + dlat_big), (lon0, lat0)]
+    empty = {cls: [] for cls in
+             ("runway", "taxiway", "apron", "terminal", "hangar",
+              "stands", "stopways")}
+    ctx = {"highways": [], "roads": [], "paths": [], "rails": [],
+           "waterway": [], "water": [], "buildings": [small, big]}
+    _, counts30, _, _ = render_diagram(
+        airport=_airport(), runways=[], frequencies=[],
+        osm_geoms=dict(empty), context_geoms=ctx, width=1000,
+        min_path_len_m=30.0, layers=["buildings"],
+    )
+    assert counts30["buildings"] == 1  # small shed gone, terminal kept
+    _, counts5, _, _ = render_diagram(
+        airport=_airport(), runways=[], frequencies=[],
+        osm_geoms=dict(empty), context_geoms=ctx, width=1000,
+        min_path_len_m=5.0, layers=["buildings"],
+    )
+    assert counts5["buildings"] == 2
+
+
+def test_effective_radius_covers_runway_ends():
+    """The ARP can sit kilometers from the far threshold (LHBP 13R ~3.7 km
+    out) — the fetch radius must expand to cover the ends, never shrink."""
+    from backend.airports.router import _effective_radius_m
+
+    assert _effective_radius_m(_airport(), [_runway_row()], 3000.0) == 3000.0
+    far = dict(_runway_row(), le_latitude_deg="47.5487",
+               le_longitude_deg="19.1208")
+    assert _effective_radius_m(_airport(), [far], 500.0) > 3000.0
+    assert _effective_radius_m(_airport(), [], 500.0) == 500.0
+
+
 def test_render_zoom_scales_about_center():
     """Zoom fills the page: geometry distances scale, labels don't."""
     import re
@@ -395,7 +443,7 @@ def test_geometry_independent_of_frequency_strip():
         airport=_airport(), runways=[_runway_row()], frequencies=freqs,
         osm_geoms=osm, width=1000)
     assert counts_full["taxiway"] == counts_bare["taxiway"] == 1
-    assert counts_full["runway"] == counts_bare["runway"] == 3
+    assert counts_full["runway"] == counts_bare["runway"] == 9
 
     def group_paths(svg, gid):
         section = svg.split(f'id="{gid}"')[1].split("</g>")[0]
@@ -532,9 +580,9 @@ def test_render_request_layers_defaults_and_rejects(http_client):
     assert resp.status_code == 422
 
 
-def test_render_runway_edges_are_parallel_at_true_width():
-    """Boldness is geometry (±width/2 edge paths), so it survives the
-    vector convert pipeline that discards stroke-width."""
+def test_render_runway_band_is_parallel_at_exaggerated_width():
+    """Boldness is geometry (exaggerated band + infill lines), so it
+    survives the vector convert pipeline that discards stroke-width."""
     import re
 
     osm = {"runway": [], "taxiway": [], "apron": [],
@@ -543,16 +591,20 @@ def test_render_runway_edges_are_parallel_at_true_width():
         airport=_airport(), runways=[_runway_row()], frequencies=[],
         osm_geoms=osm, width=1000,
     )
-    assert counts["runway"] == 3  # 2 edges + 1 centerline, no OSM outlines
+    assert counts["runway"] == 9  # solid band of 9, no OSM outlines
     group = svg.split('id="runways"')[1].split("</g>")[0]
     segs = re.findall(r"M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)", group)
-    assert len(segs) == 3
-    (x1, y1, x2, y2), (a1, b1, a2, b2), (c1, d1, c2, d2) = (
-        tuple(map(float, s)) for s in segs)
-    # Edges are parallel to the centerline and symmetric about it.
+    assert len(segs) == 9
+    lines = [tuple(map(float, s)) for s in segs]
+    (x1, y1, x2, y2), (a1, b1, a2, b2) = lines[0], lines[-1]
+    (c1, d1, c2, d2) = lines[4]  # centerline
+    # Outer edges are parallel to the centerline and symmetric about it.
     assert abs((x1 + a1) / 2 - c1) < 0.05 and abs((y1 + b1) / 2 - d1) < 0.05
     edge_gap = math.hypot(x1 - a1, y1 - b1)
-    assert edge_gap > 0  # true scaled width apart, not a triple-drawn line
+    assert edge_gap > 0  # exaggerated band, not overlapping lines
+    # Infill sits strictly inside the edges, evenly spaced.
+    inner_gap = math.hypot(lines[1][0] - lines[2][0], lines[1][1] - lines[2][1])
+    assert abs(inner_gap - edge_gap / 8) < 0.05
 
 
 def test_render_no_runway_data_warns_but_draws_osm():

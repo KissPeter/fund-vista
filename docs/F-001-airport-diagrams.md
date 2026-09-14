@@ -27,21 +27,26 @@ Credit line (footer + response `attribution`): `Runway/frequency data: OurAirpor
 
 1. Resolve ICAO → center lat/lon, name, country (`airports.csv`; accept `LHBP`, case/whitespace tolerant; reject unknown → 404 `airport_not_found`).
 2. Pull matching `runways.csv` + `airport-frequencies.csv` rows.
-3. Overpass `around:3000` query at center; OSM Main API `/map` chunked fallback on total Overpass outage (same pattern as citymap).
+3. Overpass `around` query at center (requested radius, auto-expanded to
+   farthest runway threshold + 1000 m, capped at 8000 — the ARP can sit
+   kilometers from the far end; LHBP's 13R is ~3.7 km out, so a fixed 3000
+   silently dropped its taxiways); OSM Main API `/map` chunked fallback on total Overpass outage (same pattern as citymap).
 4. Project to local flat plane (equirectangular meters about airport center — same math as `citymap/render.py:project`, good to ~1% at airport scale).
 5. **Rotate once, apply to everything:** `rotation = target_angle − primary_runway_heading` (primary = longest open runway; target = vertical, i.e. runway along page Y). One matrix × all geometry (runways, taxiways, aprons, buildings, labels). Compass arrow drawn at `true_north_bearing − rotation` — never left pointing up.
 6. Stroke treatments (single-ink plottable; "color" = weight, not ink):
-   - Runways: geometry-bold — two edge paths at ± half `width_ft` plus a
-     centerline (NOT a fat `stroke-width`: `parse_svg_vectors` discards
-     stroke widths, so a band collapses to one thin line after
-     import→convert; edges survive vpype + plot as a doubled-line strip).
+   - Runways: geometry-bold — solid band of nine longitudinal paths across
+     2× `width_ft` (deliberate schematic exaggeration: a true 45 m strip is
+     ~1.6 mm wide at poster scale and unreadable; the ~0.3 mm infill pitch
+     merges into a near-solid black bar with a normal pen). NOT a fat
+     `stroke-width`: `parse_svg_vectors` discards stroke widths, so width
+     must be geometry to survive import→convert, vpype and plot.
      Heavy `stroke-width` kept on the group for raw-SVG preview only.
    - Taxiways: thin centerlines. Aprons/terminals/hangars: thin closed outlines, `fill="none"`.
 7. No title / frequency strip / footer in the artwork (client decision):
    the SVG is pure diagram geometry — name, frequencies and credits live
    on the page, in API responses and the convert title block, never plotted.
-8. Heading badges: ident label past each threshold + oval with `NNN°`
-   (per-end `le_/he_heading_degT`, else ident × 10) beyond it; displaced-threshold ticks where `> 0`.
+8. Heading badges: ident label past each threshold (the ident already
+   encodes the heading — no degree ovals); displaced-threshold ticks where `> 0`.
 9. Compass/declination arrow at rotation-adjusted angle (true north; WMM magnetic = TODO).
 10. Single SVG, strokes only, `fill="none"`, A4 portrait viewBox with iDraw 2.0 margin.
 12. Labels: all `<text>` carries `data-stroke-font="hershey"` — import lays
