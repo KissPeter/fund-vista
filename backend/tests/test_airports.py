@@ -328,12 +328,53 @@ def test_render_zoom_scales_about_center():
         osm_geoms=osm, width=1000, zoom=1.0)
     svg2, _, _, _ = render_diagram(
         airport=_airport(), runways=[_runway_row()], frequencies=[],
-        osm_geoms=osm, width=1000, zoom=2.0)
-    assert abs(runway_len(svg2) / runway_len(svg1) - 2.0) < 0.01
+        osm_geoms=osm, width=1000, zoom=0.5)
+    assert abs(runway_len(svg2) / runway_len(svg1) - 0.5) < 0.01
     # Same document height grows (page fills vertically too).
     h1 = float(re.search(r'height="([\d.]+)"', svg1).group(1))
     h2 = float(re.search(r'height="([\d.]+)"', svg2).group(1))
-    assert h2 > h1
+    assert h1 > h2
+
+
+def test_geometry_independent_of_frequency_strip():
+    """Regression: the strip loop once rebound the fit-center closure var,
+    shifting all geometry out of the clipped frame whenever frequencies
+    were present (all counts dropped to 0)."""
+    osm = {"runway": [], "taxiway": [[(19.252, 47.438), (19.259, 47.435)]],
+           "apron": [], "terminal": [], "hangar": []}
+    freqs = [{"type": "TWR", "description": "Tower", "frequency_mhz": 118.1}]
+    svg_bare, counts_bare, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=[],
+        osm_geoms=osm, width=1000)
+    svg_full, counts_full, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=freqs,
+        osm_geoms=osm, width=1000)
+    assert counts_full["taxiway"] == counts_bare["taxiway"] == 1
+    assert counts_full["runway"] == counts_bare["runway"] == 3
+
+    def group_paths(svg, gid):
+        section = svg.split(f'id="{gid}"')[1].split("</g>")[0]
+        import re
+        return re.findall(r"<path d=\"[^\"]+\"/>", section)
+
+    assert group_paths(svg_full, "osm-taxiways") == group_paths(svg_bare, "osm-taxiways")
+    assert group_paths(svg_full, "runways") == group_paths(svg_bare, "runways")
+
+
+def test_zoomed_content_is_cut_at_the_frame():
+    """Zoomed geometry must not spill into the margins (or past them)."""
+    import re
+
+    osm = {"runway": [], "taxiway": [[(19.0, 47.43), (19.5, 47.43)]],
+           "apron": [], "terminal": [], "hangar": []}
+    svg, _, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=[],
+        osm_geoms=osm, width=1000, zoom=3.0)
+    for gid in ("osm-taxiways", "runways", "runway-marks"):
+        section = svg.split(f'id="{gid}"')[1].split("</g>")[0]
+        xs = [float(x) for x, _ in re.findall(r"[ML] ([\d.]+) ([\d.]+)", section)]
+        assert xs, gid
+        assert min(xs) >= 39.9 and max(xs) <= 960.1, (gid, min(xs), max(xs))
 
 
 def test_render_version_busts_stale_svg_cache():

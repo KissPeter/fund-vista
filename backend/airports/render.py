@@ -32,7 +32,7 @@ from backend.airports.ourairports import FT_TO_M, heading_from_ident
 
 # Bump on any output-affecting change: the rendered-SVG cache key includes
 # it, so clients never see a stale layout after an upgrade.
-RENDER_VERSION = 3
+RENDER_VERSION = 4
 
 # A4 portrait in user units at 1000 wide → height set by content; the plotter
 # scales the viewBox to the page with margin (iDraw working area 210×297mm).
@@ -193,6 +193,115 @@ def render_diagram(
         return (_MARGIN + diagram_w / 2 + (x - cx) * scale,
                 origin_y + diagram_h / 2 - (y - cy) * scale)
 
+    # -- frame clipping (SVG space): zoomed geometry is cut at the diagram
+    # border, never drawn into the margins. Open polylines use
+    # Cohen–Sutherland (a line crossing the frame becomes visible runs);
+    # closed outlines use Sutherland–Hodgman. Done geometrically — not via
+    # clip-path, which the vector/plotter pipeline would ignore.
+    _CX0, _CY0 = _MARGIN, origin_y
+    _CX1, _CY1 = _MARGIN + diagram_w, origin_y + diagram_h
+
+    def _outcode(x: float, y: float) -> int:
+        code = 0
+        if x < _CX0:
+            code |= 1
+        elif x > _CX1:
+            code |= 2
+        if y < _CY0:
+            code |= 4
+        elif y > _CY1:
+            code |= 8
+        return code
+
+    def _clip_segment(
+        p: tuple[float, float], q: tuple[float, float]
+    ) -> tuple[tuple[float, float], tuple[float, float]] | None:
+        x0, y0 = p
+        x1, y1 = q
+        c0, c1 = _outcode(x0, y0), _outcode(x1, y1)
+        while True:
+            if not (c0 | c1):
+                return (x0, y0), (x1, y1)
+            if c0 & c1:
+                return None
+            c = c0 if c0 else c1
+            if c & 8:
+                x = x0 + (x1 - x0) * (_CY1 - y0) / (y1 - y0) if y1 != y0 else x0
+                y = _CY1
+            elif c & 4:
+                x = x0 + (x1 - x0) * (_CY0 - y0) / (y1 - y0) if y1 != y0 else x0
+                y = _CY0
+            elif c & 2:
+                y = y0 + (y1 - y0) * (_CX1 - x0) / (x1 - x0) if x1 != x0 else y0
+                x = _CX1
+            else:
+                y = y0 + (y1 - y0) * (_CX0 - x0) / (x1 - x0) if x1 != x0 else y0
+                x = _CX0
+            if c == c0:
+                x0, y0, c0 = x, y, _outcode(x, y)
+            else:
+                x1, y1, c1 = x, y, _outcode(x, y)
+
+    def _clip_open(pts: list[tuple[float, float]]) -> list[list[tuple[float, float]]]:
+        runs: list[list[tuple[float, float]]] = []
+        current: list[tuple[float, float]] = []
+        for i in range(len(pts) - 1):
+            seg = _clip_segment(pts[i], pts[i + 1])
+            if seg is None:
+                if len(current) >= 2:
+                    runs.append(current)
+                current = []
+                continue
+            a, b = seg
+            if current and current[-1] == a:
+                current.append(b)
+            else:
+                if len(current) >= 2:
+                    runs.append(current)
+                current = [a, b]
+        if len(current) >= 2:
+            runs.append(current)
+        return runs
+
+    def _clip_edge(
+        pts: list[tuple[float, float]], inside, intersect
+    ) -> list[tuple[float, float]]:
+        if not pts:
+            return []
+        out = [pts[0]] if inside(pts[0]) else []
+        for i in range(1, len(pts)):
+            prev, cur = pts[i - 1], pts[i]
+            cur_in, prev_in = inside(cur), inside(prev)
+            if cur_in:
+                if not prev_in:
+                    out.append(intersect(prev, cur))
+                out.append(cur)
+            elif prev_in:
+                out.append(intersect(prev, cur))
+        return out
+
+    def _clip_closed(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        ring = list(pts)
+        if ring[0] != ring[-1]:
+            ring.append(ring[0])
+        for inside, intersect in (
+            (lambda p: p[0] >= _CX0,
+             lambda a, b: (_CX0, a[1] + (b[1] - a[1]) * (_CX0 - a[0]) / (b[0] - a[0]))),
+            (lambda p: p[0] <= _CX1,
+             lambda a, b: (_CX1, a[1] + (b[1] - a[1]) * (_CX1 - a[0]) / (b[0] - a[0]))),
+            (lambda p: p[1] >= _CY0,
+             lambda a, b: (a[0] + (b[0] - a[0]) * (_CY0 - a[1]) / (b[1] - a[1]), _CY0)),
+            (lambda p: p[1] <= _CY1,
+             lambda a, b: (a[0] + (b[0] - a[0]) * (_CY1 - a[1]) / (b[1] - a[1]), _CY1)),
+        ):
+            ring = _clip_edge(ring, inside, intersect)
+            if len(ring) < 3:
+                return []
+        return ring
+
+    def _in_frame(x: float, y: float) -> bool:
+        return _CX0 <= x <= _CX1 and _CY0 <= y <= _CY1
+
     # -- stroke weights (preview only; hierarchy survives via geometry) ----
     runway_w = max(6.0, width / 130.0)
     taxi_w = max(1.2, width / 700.0)
@@ -236,7 +345,9 @@ def render_diagram(
     )
     if cols:
         for i, freq in enumerate(cols):
-            cx = width * (i + 0.5) / ncols
+            # NOTE: never reuse the names cx/cy here — W2S closes over the
+            # fit center and rebinding it shifts all geometry out of frame.
+            col_x = width * (i + 0.5) / ncols
             if i > 0:
                 div_x = width * i / ncols
                 parts.append(
@@ -245,10 +356,10 @@ def render_diagram(
                 )
             label = f"{freq['type']} {freq['description']}".strip().upper()
             parts.append(
-                f'<text x="{cx:.1f}" y="{strip_y + 30:.1f}" text-anchor="middle" '
+                f'<text x="{col_x:.1f}" y="{strip_y + 30:.1f}" text-anchor="middle" '
                 f'font-family="monospace" font-size="{freq_small:.1f}" '
                 f'stroke="none" fill="#000000">{_esc(label)}</text>'
-                f'<text x="{cx:.1f}" y="{strip_y + 30 + freq_big + 8:.1f}" text-anchor="middle" '
+                f'<text x="{col_x:.1f}" y="{strip_y + 30 + freq_big + 8:.1f}" text-anchor="middle" '
                 f'font-family="monospace" font-size="{freq_big:.1f}" '
                 f'stroke="none" fill="#000000">{freq["frequency_mhz"]:.3f}</text>'
             )
@@ -272,16 +383,23 @@ def render_diagram(
     parts.append("</g>")
 
     # -- surrounding context first (faintest, under the airfield) ---------
-    def path_d(poly: list[tuple[float, float]], close: bool) -> str:
-        pts = [W2S(x, y) for x, y in poly]
-        d = f"M {pts[0][0]:.2f} {pts[0][1]:.2f} " + " ".join(
-            f"L {x:.2f} {y:.2f}" for x, y in pts[1:]
-        )
-        if close and len(pts) > 2:
-            first, last = pts[0], pts[-1]
-            if math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-6:
+    def clipped_d(world_poly: list[tuple[float, float]], close: bool) -> list[str]:
+        """Map world → SVG, cut at the diagram frame, return path strings."""
+        pts = [W2S(x, y) for x, y in world_poly]
+        if close:
+            ring = _clip_closed(pts)
+            seqs = [ring] if len(ring) >= 3 else []
+        else:
+            seqs = _clip_open(pts)
+        out = []
+        for seq in seqs:
+            d = f"M {seq[0][0]:.2f} {seq[0][1]:.2f} " + " ".join(
+                f"L {x:.2f} {y:.2f}" for x, y in seq[1:]
+            )
+            if close:
                 d += " Z"
-        return d
+            out.append(d)
+        return out
 
     faint_w = max(0.5, width / 1600.0)
     parts.append(
@@ -290,8 +408,9 @@ def render_diagram(
     )
     for cls in ("roads", "buildings", "water"):
         for poly in ctx_r.get(cls, []):
-            parts.append(f"<path d=\"{path_d(poly, cls != 'roads')}\"/>")
-            counts["context"] += 1
+            for d in clipped_d(poly, cls != "roads"):
+                parts.append(f"<path d=\"{d}\"/>")
+                counts["context"] += 1
     parts.append("</g>")
 
     # -- OSM ground: taxiway centerlines; apron/terminal/hangar outlines ---
@@ -308,8 +427,9 @@ def render_diagram(
             f'stroke-width="{w:.2f}" stroke-linecap="round" stroke-linejoin="round">'
         )
         for poly in osm_r.get(cls, []):
-            parts.append(f"<path d=\"{path_d(poly, closed)}\"/>")
-            counts[cls] += 1
+            for d in clipped_d(poly, closed):
+                parts.append(f"<path d=\"{d}\"/>")
+                counts[cls] += 1
         parts.append("</g>")
 
     # -- OSM runway outlines (thin, under the authoritative strip) ----------
@@ -318,8 +438,9 @@ def render_diagram(
         f'stroke-width="{thin_w:.2f}" stroke-linecap="round" stroke-linejoin="round">'
     )
     for poly in osm_r.get("runway", []):
-        parts.append(f"<path d=\"{path_d(poly, True)}\"/>")
-        counts["runway"] += 1
+        for d in clipped_d(poly, True):
+            parts.append(f"<path d=\"{d}\"/>")
+            counts["runway"] += 1
     parts.append("</g>")
 
     # -- authoritative strips: 2 edges + centerline (geometry-bold) ---------
@@ -332,17 +453,15 @@ def render_diagram(
         seg = math.hypot(dx, dy) or 1.0
         nx, ny = -dy / seg, dx / seg  # world-space normal
         hw = s["width_m"] / 2.0
-        for side in (-1.0, 1.0):
-            edge = [(s["le"][0] + nx * hw * side, s["le"][1] + ny * hw * side),
-                    (s["he"][0] + nx * hw * side, s["he"][1] + ny * hw * side)]
-            x1, y1 = W2S(*edge[0])
-            x2, y2 = W2S(*edge[1])
-            parts.append(f"<path d=\"M {x1:.2f} {y1:.2f} L {x2:.2f} {y2:.2f}\"/>")
-            counts["runway"] += 1
-        x1, y1 = W2S(*s["le"])
-        x2, y2 = W2S(*s["he"])
-        parts.append(f"<path d=\"M {x1:.2f} {y1:.2f} L {x2:.2f} {y2:.2f}\"/>")
-        counts["runway"] += 1
+        strips_world = [
+            [(s["le"][0] + nx * hw * side, s["le"][1] + ny * hw * side),
+             (s["he"][0] + nx * hw * side, s["he"][1] + ny * hw * side)]
+            for side in (-1.0, 1.0)
+        ] + [[s["le"], s["he"]]]
+        for world_seg in strips_world:
+            for d in clipped_d(world_seg, False):
+                parts.append(f"<path d=\"{d}\"/>")
+                counts["runway"] += 1
     parts.append("</g>")
 
     # -- badges (ident) + degree ovals + displaced-threshold ticks -----------
@@ -362,15 +481,23 @@ def render_diagram(
             ((x1, y1), s["le_ident"], s["le_deg"], s["le_disp_m"], -1.0),
             ((x2, y2), s["he_ident"], s["he_deg"], s["he_disp_m"], +1.0),
         ):
+            # Off-frame runway ends (zoomed in) lose their furniture too.
+            if not _in_frame(px, py):
+                continue
             # Displaced-threshold tick: perpendicular bar disp_m inside the end.
             if disp_m > 0 and s["length_m"] > 0:
                 frac = disp_m / s["length_m"]
                 tx = px - ux * end_sign * frac * seg
                 ty = py - uy * end_sign * frac * seg
-                parts.append(
-                    f"<path d=\"M {tx - nx * half_band:.2f} {ty - ny * half_band:.2f} "
-                    f"L {tx + nx * half_band:.2f} {ty + ny * half_band:.2f}\"/>"
+                tick = _clip_segment(
+                    (tx - nx * half_band, ty - ny * half_band),
+                    (tx + nx * half_band, ty + ny * half_band),
                 )
+                if tick is not None:
+                    (ax_, ay_), (bx_, by_) = tick
+                    parts.append(
+                        f"<path d=\"M {ax_:.2f} {ay_:.2f} L {bx_:.2f} {by_:.2f}\"/>"
+                    )
             # Ident label just past the threshold …
             off_ident = half_band + text_h * 1.2
             ix, iy = px + ux * end_sign * off_ident, py + uy * end_sign * off_ident
