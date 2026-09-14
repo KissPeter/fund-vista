@@ -208,6 +208,7 @@ def test_render_blueprint_groups_and_badges():
     assert "13L" in svg and "31R" in svg  # ident badges
     assert "130°" in svg and "310°" in svg  # degree ovals
     assert "118.100" in svg and "TWR" in svg  # frequency column
+    assert '<rect x="0"' in svg  # strip runs full-bleed, border to border
     assert "Elev. 495'" in svg and "LHBP / BUD" in svg  # footer left
     assert "OurAirports" in svg and "OpenStreetMap" in svg  # footer credit
     # Geometry-bold: 1 OSM outline + 2 edges + 1 centerline per strip.
@@ -446,6 +447,10 @@ def test_airports_page_renders_search_and_convert_sections(http_client):
     assert 'id="aptSearchBtn"' in html
     assert 'id="apt_candidate"' in html
     assert "/v1/airports/search" in html
+    # Preview (render-only) vs Render & plot (import+convert).
+    assert 'id="aptPreviewBtn"' in html
+    assert 'id="aptBtn"' in html
+    assert "schedulePreview" in html
 
 
 def test_airports_page_negative(http_client):

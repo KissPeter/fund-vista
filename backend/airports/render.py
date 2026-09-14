@@ -215,20 +215,20 @@ def render_diagram(
         "</g>"
     )
 
-    # -- frequency strip: columns (label small, frequency large) -------------
+    # -- frequency strip: full-bleed columns (label small, freq large) ----
     strip_y = _MARGIN + _TITLE_H
     cols = frequencies[:_MAX_FREQ_COLS]
     ncols = max(len(cols), 1)
     parts.append(
         f'<g id="freq-strip" fill="none" stroke="#000000" stroke-width="{thin_w:.2f}">'
-        f'<rect x="{_MARGIN:.1f}" y="{strip_y:.1f}" width="{diagram_w:.1f}" '
+        f'<rect x="0" y="{strip_y:.1f}" width="{width}" '
         f'height="{_STRIP_H:.1f}"/>'
     )
     if cols:
         for i, freq in enumerate(cols):
-            cx = _MARGIN + diagram_w * (i + 0.5) / ncols
+            cx = width * (i + 0.5) / ncols
             if i > 0:
-                div_x = _MARGIN + diagram_w * i / ncols
+                div_x = width * i / ncols
                 parts.append(
                     f"<path d=\"M {div_x:.1f} {strip_y + 8:.1f} "
                     f"L {div_x:.1f} {strip_y + _STRIP_H - 8:.1f}\"/>"
@@ -244,7 +244,7 @@ def render_diagram(
             )
         if len(frequencies) > _MAX_FREQ_COLS:
             parts.append(
-                f'<text x="{_MARGIN + diagram_w - 8:.1f}" y="{strip_y + _STRIP_H - 10:.1f}" '
+                f'<text x="{width - 8:.1f}" y="{strip_y + _STRIP_H - 10:.1f}" '
                 f'text-anchor="end" font-family="monospace" font-size="{freq_small:.1f}" '
                 f'stroke="none" fill="#000000">+{len(frequencies) - _MAX_FREQ_COLS} more</text>'
             )
@@ -257,8 +257,7 @@ def render_diagram(
         warnings.append("no_frequencies")
     rule_y = strip_y + _STRIP_H
     parts.append(
-        f"<path d=\"M {_MARGIN:.1f} {rule_y:.1f} "
-        f"L {_MARGIN + diagram_w:.1f} {rule_y:.1f}\"/>"
+        f"<path d=\"M 0 {rule_y:.1f} L {width} {rule_y:.1f}\"/>"
     )
     parts.append("</g>")
 

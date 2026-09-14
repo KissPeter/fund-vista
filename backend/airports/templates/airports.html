@@ -21,7 +21,8 @@
     <label>detail radius (m) <input type="range" id="apt_radius" min="500" max="6000" step="250" value="3000"><output id="apt_radius_val">3000</output></label>
     <label>min detail (m) <input type="range" id="apt_minlen" min="0" max="50" step="1" value="5"><output id="apt_minlen_val">5</output></label>
     <label><input type="checkbox" id="apt_context"> surrounding streets &amp; buildings (extra Overpass query, faint group)</label>
-    <button type="button" id="aptBtn">Render diagram</button>
+    <button type="button" id="aptPreviewBtn">Update preview</button>
+    <button type="button" id="aptBtn">Render &amp; plot</button>
     <p class="meta" id="meta">Looks up runway/frequency data (OurAirports, CC0), pulls ground polygons via <code>/v1/airports/render</code>, and plots the blueprint with the settings below (vector input: shading sliders don't apply; pen, page, label and display do). First render can take a minute; repeats are served from cache. Runway/frequency data: OurAirports.com (CC0). Ground layout: © OpenStreetMap contributors (ODbL). Spot-check small fields against a real map — OSM detail varies.</p>
   </fieldset>
 
@@ -140,7 +141,7 @@ async function renderAirport(andImport) {
     $("diagram_caption").textContent =
       rbody.name + " — rotation " + rbody.rotation_deg.toFixed(1) + "° (" + total + " paths)" +
       ((rbody.warnings && rbody.warnings.length) ? " ⚠ " + rbody.warnings.join(", ") : "");
-    if (!andImport) { setStatus("Preview ready — Render & load plots it below."); return; }
+    if (!andImport) { setStatus("Preview ready — Render & plot sends it below."); return; }
     // … then register as a penplot image and convert like an uploaded SVG.
     const iresp = await fetch("/v1/airports/import", {
       method: "POST",
@@ -189,9 +190,23 @@ $("apt_search").addEventListener("input", () => {
 $("aptBtn").addEventListener("click", () => {
   renderAirport(true).catch((e) => setStatus(String(e), "error"));
 });
-for (const [id, out] of [["apt_radius", "apt_radius_val"], ["apt_minlen", "apt_minlen_val"]]) {
-  $("" + id).addEventListener("input", (e) => { $("" + out).value = e.target.value; });
+$("aptPreviewBtn").addEventListener("click", () => {
+  renderAirport(false).catch((e) => setStatus(String(e), "error"));
+});
+// Sliders/flag refresh the lightweight preview (render-only, no
+// import/convert) after a short pause — dragging never hammers Overpass.
+let aptPreviewTimer = null;
+function schedulePreview() {
+  if (aptPreviewTimer) clearTimeout(aptPreviewTimer);
+  aptPreviewTimer = setTimeout(() => {
+    aptPreviewTimer = null;
+    renderAirport(false).catch((e) => setStatus(String(e), "error"));
+  }, 900);
 }
+for (const [id, out] of [["apt_radius", "apt_radius_val"], ["apt_minlen", "apt_minlen_val"]]) {
+  $("" + id).addEventListener("input", (e) => { $("" + out).value = e.target.value; schedulePreview(); });
+}
+$("apt_context").addEventListener("change", schedulePreview);
 </script>
 </body>
 </html>
