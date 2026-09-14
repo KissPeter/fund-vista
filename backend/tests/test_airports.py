@@ -390,6 +390,54 @@ def test_min_detail_filters_small_footprints_not_perimeters():
     assert counts5["buildings"] == 2
 
 
+def test_taxiway_refs_extract_draw_and_tick():
+    """Opt-in taxiway designators: refs come from way `ref` tags, draw once
+    per designator at the longest way's midpoint, and obey the tick + layer."""
+    from backend.airports.overpass import extract_taxiway_refs
+
+    long_way = [(19.25, 47.43), (19.26, 47.43), (19.27, 47.43)]
+    short_way = [(19.25, 47.431), (19.251, 47.431)]
+    elements = [
+        {"type": "way", "id": 1, "tags": {"aeroway": "taxiway", "ref": "A1"},
+         "geometry": [{"lon": lo, "lat": la} for lo, la in long_way]},
+        {"type": "way", "id": 2, "tags": {"aeroway": "taxilane", "ref": "A1"},
+         "geometry": [{"lon": lo, "lat": la} for lo, la in short_way]},
+        {"type": "way", "id": 3, "tags": {"aeroway": "taxiway"},
+         "geometry": [{"lon": lo, "lat": la} for lo, la in long_way]},
+        {"type": "way", "id": 4, "tags": {"aeroway": "apron", "ref": "A2"},
+         "geometry": [{"lon": lo, "lat": la} for lo, la in long_way]},
+    ]
+    refs = extract_taxiway_refs(elements)
+    assert sorted(r for r, _ in refs) == ["A1", "A1"]  # ref-less + apron skipped
+
+    osm = {"runway": [], "taxiway": [long_way, short_way],
+           "apron": [], "terminal": [], "hangar": []}
+    svg, _, _, _ = render_diagram(
+        airport=_airport(), runways=[], frequencies=[],
+        osm_geoms=osm, width=1000, layers=["taxiway"],
+        taxiway_refs=refs, taxiway_labels=True,
+    )
+    assert 'id="taxiway-labels"' in svg
+    assert svg.count(">A1<") == 1  # deduped to the longest stretch
+    # Tick off → no group; layer off → no group even when ticked.
+    for kwargs in ({"taxiway_labels": False},
+                   {"layers": ["apron"], "taxiway_labels": True}):
+        svg_off, _, _, _ = render_diagram(
+            airport=_airport(), runways=[], frequencies=[],
+            osm_geoms=osm, width=1000, taxiway_refs=refs, **kwargs,
+        )
+        assert 'id="taxiway-labels"' not in svg_off
+    # A ref whose way is min-detail filtered out never draws.
+    svg_min, _, _, _ = render_diagram(
+        airport=_airport(), runways=[], frequencies=[],
+        osm_geoms={"runway": [], "taxiway": [short_way],
+                   "apron": [], "terminal": [], "hangar": []},
+        width=1000, layers=["taxiway"], min_path_len_m=10000.0,
+        taxiway_refs=refs, taxiway_labels=True,
+    )
+    assert 'id="taxiway-labels"' not in svg_min
+
+
 def test_effective_radius_covers_runway_ends():
     """The ARP can sit kilometers from the far threshold (LHBP 13R ~3.7 km
     out) — the fetch radius must expand to cover the ends, never shrink."""
@@ -423,10 +471,12 @@ def test_render_zoom_scales_about_center():
         airport=_airport(), runways=[_runway_row()], frequencies=[],
         osm_geoms=osm, width=1000, zoom=0.5)
     assert abs(runway_len(svg2) / runway_len(svg1) - 0.5) < 0.01
-    # Same document height grows (page fills vertically too).
+    # Fixed frame: zoom scales content inside the same page rect, so the
+    # document height is identical (zoom used to grow it, letterboxing
+    # tall SVGs into a thin middle band downstream).
     h1 = float(re.search(r'height="([\d.]+)"', svg1).group(1))
     h2 = float(re.search(r'height="([\d.]+)"', svg2).group(1))
-    assert h1 > h2
+    assert abs(h1 - h2) < 0.05
 
 
 def test_geometry_independent_of_frequency_strip():
@@ -463,11 +513,17 @@ def test_zoomed_content_is_cut_at_the_frame():
     svg, _, _, _ = render_diagram(
         airport=_airport(), runways=[_runway_row()], frequencies=[],
         osm_geoms=osm, width=1000, zoom=3.0)
+    total_h = float(re.search(r'height="([\d.]+)"', svg).group(1))
     for gid in ("osm-taxiways", "runways", "runway-marks"):
         section = svg.split(f'id="{gid}"')[1].split("</g>")[0]
-        xs = [float(x) for x, _ in re.findall(r"[ML] ([\d.]+) ([\d.]+)", section)]
+        pts = re.findall(r"[ML] ([\d.]+) ([\d.]+)", section)
+        xs = [float(x) for x, _ in pts]
+        ys = [float(y) for _, y in pts]
         assert xs, gid
         assert min(xs) >= 39.9 and max(xs) <= 960.1, (gid, min(xs), max(xs))
+        # Fixed frame: zoom crops vertically too (60 = top edge, total_h-40 = bottom).
+        assert ys, gid
+        assert min(ys) >= 59.9 and max(ys) <= total_h - 39.9, (gid, min(ys), max(ys))
 
 
 def test_render_version_busts_stale_svg_cache():
@@ -711,6 +767,9 @@ def test_airports_page_renders_search_and_convert_sections(http_client):
                   "roads", "water", "buildings", "rails"):
         assert f'value="{layer}"' in html, layer
     assert 'id="apt_context"' not in html
+    # Taxiway-refs tick (opt-in annotations, off by default).
+    assert 'id="apt_twy_labels"' in html
+    assert "taxiway_labels" in html
     # Fixed top labels (name/country live on the page, not in the SVG).
     assert 'id="apt_title"' in html
     assert "setAirportTitle" in html

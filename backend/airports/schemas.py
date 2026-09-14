@@ -74,7 +74,7 @@ class RenderRequest(BaseModel):
         description="SVG width in user units (plane meters scaled to fit).",
     )
     zoom: float = Field(
-        default=1.0, ge=0.25, le=4.0,
+        default=1.0, ge=0.25, le=6.0,
         description="Zoom about the scene center (1.0 = fit all content; "
         ">1 crops edges to fill the page, <1 adds margin).",
     )
@@ -82,6 +82,11 @@ class RenderRequest(BaseModel):
         default=None,
         description="Diagram layers to draw (omit = airfield default). "
         "Context layers fire the second Overpass query.",
+    )
+    taxiway_labels: bool = Field(
+        default=False,
+        description="Draw taxiway designators (OSM `ref`: A1, B3, …) at way "
+        "midpoints. Annotations of the taxiway layer: hidden with it.",
     )
 
     _norm_icao = field_validator("icao", mode="before")(normalize_icao)

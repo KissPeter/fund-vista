@@ -86,6 +86,8 @@ def render_diagram(
     min_path_len_m: float = 5.0,
     zoom: float = 1.0,
     layers: list[str] | None = None,
+    taxiway_refs: list[tuple[str, list[tuple[float, float]]]] | None = None,
+    taxiway_labels: bool = False,
 ) -> tuple[str, dict[str, int], float, list[str]]:
     """Render the pure-diagram SVG (no title/strip/footer — those live on
     the page and in API responses, never plotted).
@@ -94,7 +96,9 @@ def render_diagram(
     needs ``latitude_deg/longitude_deg``. ``runways`` are raw ``runways.csv``
     rows; endpoints come from :func:`runway_endpoints` (authoritative coords
     or ident-heading fallback). ``frequencies`` is accepted for signature
-    stability but not drawn.
+    stability but not drawn. ``taxiway_refs`` are ``(ref, way-lonlat)`` pairs
+    (see :func:`extract_taxiway_refs`); a ref draws iff its way survives the
+    min-detail filter and the taxiway layer is selected.
     """
     from backend.airports.ourairports import runway_endpoints
 
@@ -223,12 +227,18 @@ def render_diagram(
 
     header_h = 0.0
     diagram_w = width - 2 * _MARGIN
-    scale = diagram_w / max(max_x - min_x, 1e-9) * zoom
+    # Fixed frame: the page rect is sized by the zoom=1.0 fit and never
+    # grows with zoom. Zoom only scales content about the center, so
+    # zoom>1 crops ALL sides evenly (it used to grow diagram_h with the
+    # scale, cropping left/right only and letterboxing tall SVGs into a
+    # thin middle band downstream).
+    base_scale = diagram_w / max(max_x - min_x, 1e-9)
+    scale = base_scale * zoom
     # Centered mapping (identical to corner fit at zoom=1.0): zooming
     # crops/expands about the content center so the page fills evenly.
     cx = (min_x + max_x) / 2.0
     cy = (min_y + max_y) / 2.0
-    diagram_h = (max_y - min_y) * scale
+    diagram_h = (max_y - min_y) * base_scale
     total_h = _MARGIN + header_h + _MARGIN / 2 + diagram_h + _MARGIN
     origin_y = _MARGIN + header_h + _MARGIN / 2
 
@@ -462,6 +472,37 @@ def render_diagram(
                     parts.append(f"<path d=\"{d}\"/>")
                     counts["runway"] += 1
         parts.append("</g>")
+
+    # -- taxiway designators (opt-in annotations of the taxiway layer) -----
+    # One label per designator (OSM splits ways arbitrarily): keep the
+    # longest surviving way so the ref sits on the major stretch. A ref
+    # draws iff its way survives the min-detail filter, the taxiway layer
+    # is selected, and the midpoint lands in frame.
+    if taxiway_labels and "taxiway" in selected and taxiway_refs:
+        best: dict[str, tuple[float, list[tuple[float, float]]]] = {}
+        for ref, lonlat in taxiway_refs:
+            kept = _project_polys([lonlat], closed=False)
+            if not kept:
+                continue
+            poly = kept[0]
+            length = sum(
+                math.hypot(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1])
+                for i in range(1, len(poly))
+            )
+            if ref not in best or length > best[ref][0]:
+                best[ref] = (length, poly)
+        if best:
+            parts.append('<g id="taxiway-labels" fill="none">')
+            for ref in sorted(best):
+                mx, my = W2S(*best[ref][1][len(best[ref][1]) // 2])
+                if not _in_frame(mx, my):
+                    continue
+                parts.append(
+                    f'<text x="{mx:.2f}" y="{my:.2f}" text-anchor="middle" '
+                    f'font-family="monospace" data-stroke-font="hershey" font-size="{text_h:.1f}" '
+                    f'stroke="none" fill="#000000">{_esc(ref)}</text>'
+                )
+            parts.append("</g>")
 
     # -- badges (ident) + displaced-threshold ticks -------------------------
     # Annotations of the runway layer: hidden with it. (No degree ovals —

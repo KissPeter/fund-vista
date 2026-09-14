@@ -209,10 +209,12 @@ def _build_svg(
     context_elements: list[dict] | None = None,
     zoom: float = 1.0,
     layers: list[str] | None = None,
+    taxiway_labels: bool = False,
 ) -> tuple[str, dict[str, int], dict[str, int], float, list[str]]:
-    from backend.airports.overpass import split_context
+    from backend.airports.overpass import extract_taxiway_refs, split_context
 
     geoms, raw_counts = split_aeroway(elements)
+    twy_refs = extract_taxiway_refs(elements) if taxiway_labels else None
     ctx_geoms = split_context(context_elements or []) if context_elements else {}
     if context_elements:
         raw_counts = {**raw_counts, "context_ways": sum(len(v) for v in ctx_geoms.values())}
@@ -233,6 +235,8 @@ def _build_svg(
         min_path_len_m=min_path_len_m,
         zoom=zoom,
         layers=layers,
+        taxiway_refs=twy_refs,
+        taxiway_labels=taxiway_labels,
     )
     return svg, path_counts, raw_counts, rotation, warnings
 
@@ -310,6 +314,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         f"minlen={body.min_path_len_m}", f"width={body.width}",
         f"layers={','.join(sorted(body.effective_layers()))}",
         f"zoom={body.zoom}",
+        f"tlabels={int(body.taxiway_labels)}",
         f"v={render_diagram_version()}",
     )
     cached_svg = await cache_get(svg_key)
@@ -367,7 +372,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
             await asyncio.to_thread(
                 _build_svg, airport, runway_rows, freq_rows, elements,
                 body.width, body.min_path_len_m, ctx_elements, body.zoom,
-                body.effective_layers(),
+                body.effective_layers(), body.taxiway_labels,
             )
         )
         warnings.extend(render_warnings)
@@ -425,7 +430,7 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
         await asyncio.to_thread(
             _build_svg, airport, runway_rows, freq_rows, elements,
             body.width, body.min_path_len_m, ctx_elements, body.zoom,
-            body.effective_layers(),
+            body.effective_layers(), body.taxiway_labels,
         )
     )
     warnings.extend(render_warnings)

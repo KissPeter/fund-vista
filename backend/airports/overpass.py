@@ -193,6 +193,36 @@ def split_context(
     return geoms
 
 
+def extract_taxiway_refs(
+    elements: list[dict],
+) -> list[tuple[str, list[tuple[float, float]]]]:
+    """Taxiway designators for optional labels: ``[(ref, [(lon, lat), ...])]``.
+
+    Only ways tagged ``aeroway=taxiway`` (or the folded ``taxilane``) that
+    carry a ``ref`` (``A1``, ``B3``, …). Relations skipped — their member
+    geometry has no single representative point.
+    """
+    refs: list[tuple[str, list[tuple[float, float]]]] = []
+    for el in elements:
+        if el.get("type") != "way":
+            continue
+        tags = el.get("tags", {}) or {}
+        raw_cls = (tags.get("aeroway") or "").strip()
+        if _AEROWAY_TO_CLASS.get(raw_cls, raw_cls) != "taxiway":
+            continue
+        ref = (tags.get("ref") or "").strip()
+        if not ref:
+            continue
+        pts = [
+            (pt["lon"], pt["lat"])
+            for pt in el.get("geometry", []) or []
+            if pt.get("lon") is not None and pt.get("lat") is not None
+        ]
+        if len(pts) >= 2:
+            refs.append((ref, pts))
+    return refs
+
+
 async def fetch_airport_polygons(
     query: str, client: httpx.AsyncClient | None = None
 ) -> list[dict]:
@@ -276,6 +306,7 @@ __all__ = [
     "AirportOverpassError",
     "build_airport_query",
     "build_context_query",
+    "extract_taxiway_refs",
     "fetch_airport_polygons",
     "split_aeroway",
     "split_context",
