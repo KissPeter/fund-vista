@@ -14,15 +14,10 @@
     <label>icao <input type="text" id="icao_code" maxlength="4" placeholder="LHBP" value="LHBP" style="text-transform:uppercase"></label>
     <button type="button" id="icaoLookupBtn">Look up</button>
     <div id="airport_meta" class="meta"></div>
-    <div id="diagram_preview" hidden>
-      <img id="diagram_img" alt="Airport diagram preview" style="max-width:100%; border:1px solid #ccc">
-      <p class="meta" id="diagram_caption"></p>
-    </div>
     <label>detail radius (m) <input type="range" id="apt_radius" min="500" max="6000" step="250" value="3000"><output id="apt_radius_val">3000</output></label>
     <label>min detail (m) <input type="range" id="apt_minlen" min="0" max="50" step="1" value="5"><output id="apt_minlen_val">5</output></label>
     <label><input type="checkbox" id="apt_context"> surrounding streets &amp; buildings (extra Overpass query, faint group)</label>
-    <button type="button" id="aptPreviewBtn">Update preview</button>
-    <button type="button" id="aptBtn">Render &amp; plot</button>
+    <button type="button" id="aptBtn">Render diagram</button>
     <p class="meta" id="meta">Looks up runway/frequency data (OurAirports, CC0), pulls ground polygons via <code>/v1/airports/render</code>, and plots the blueprint with the settings below (vector input: shading sliders don't apply; pen, page, label and display do). First render can take a minute; repeats are served from cache. Runway/frequency data: OurAirports.com (CC0). Ground layout: © OpenStreetMap contributors (ODbL). Spot-check small fields against a real map — OSM detail varies.</p>
   </fieldset>
 
@@ -110,9 +105,14 @@ async function lookupAirport() {
   finally { if (depth === 0) drain(); }
 }
 
-async function renderAirport(andImport) {
+// One flow: any change re-renders the diagram and re-plots it below
+// (debounced — the geometry comes from Overpass, so unlike the purely
+// client-side pen sliders this cannot refresh keystroke-instantly).
+// The convert result panel is the only preview; there is no second one.
+let lastPlottedIcao = "";
+async function renderAirport() {
   const code = icaoCode();
-  if (!code) { setStatus("Enter an ICAO code (e.g. LHBP)."); return; }
+  if (code.length < 3) { setStatus("Enter an ICAO code (e.g. LHBP)."); return; }
   const payload = {
     icao: code,
     radius_m: parseFloat($("apt_radius").value),
@@ -121,9 +121,8 @@ async function renderAirport(andImport) {
     context: $("apt_context").checked,
   };
   setBusy(true);
-  setStatus((andImport ? "Loading" : "Rendering") + " diagram for " + code + "… (first render can take a minute)");
+  setStatus("Rendering diagram for " + code + "… (first render can take a minute)");
   try {
-    // Preview render (cheap to show) …
     const rresp = await fetch("/v1/airports/render", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -135,13 +134,6 @@ async function renderAirport(andImport) {
       setStatus("Render failed (" + (rbody.error ? rbody.error.code : rresp.status) + "): " + (rbody.error ? rbody.error.message : ""), "error");
       return;
     }
-    $("diagram_img").src = rbody.svg_url;
-    $("diagram_preview").hidden = false;
-    const total = Object.values(rbody.path_counts).reduce((a, b) => a + b, 0);
-    $("diagram_caption").textContent =
-      rbody.name + " — rotation " + rbody.rotation_deg.toFixed(1) + "° (" + total + " paths)" +
-      ((rbody.warnings && rbody.warnings.length) ? " ⚠ " + rbody.warnings.join(", ") : "");
-    if (!andImport) { setStatus("Preview ready — Render & plot sends it below."); return; }
     // … then register as a penplot image and convert like an uploaded SVG.
     const iresp = await fetch("/v1/airports/import", {
       method: "POST",
@@ -156,15 +148,20 @@ async function renderAirport(andImport) {
     }
     imageId = ibody.image_id;
     currentFile = null; // imports have no local file: on cache expiry just re-import
+    const total = Object.values(ibody.path_counts).reduce((a, b) => a + b, 0);
     $("meta").textContent =
-      ibody.name + " (" + ibody.icao + ") — rotation " + ibody.rotation_deg.toFixed(1) + "°" +
+      ibody.name + " (" + ibody.icao + ") — rotation " + ibody.rotation_deg.toFixed(1) + "° (" + total + " paths)" +
       ((ibody.warnings && ibody.warnings.length) ? " ⚠ " + ibody.warnings.join(", ") : "");
-    // A loaded diagram stamps its own title block: label on, bordered,
-    // airport name as text, 5 mm right padding.
-    $("label_enabled").checked = true;
-    $("label_border").checked = true;
-    $("label_text").value = (ibody.name + " " + ibody.icao).slice(0, 120);
-    $("label_pad_right_mm").value = 5;
+    // A newly chosen airport stamps its own title block (label on,
+    // bordered, airport name, 5 mm right padding); slider-only refreshes
+    // must not clobber a hand-edited label.
+    if (ibody.icao !== lastPlottedIcao) {
+      lastPlottedIcao = ibody.icao;
+      $("label_enabled").checked = true;
+      $("label_border").checked = true;
+      $("label_text").value = (ibody.name + " " + ibody.icao).slice(0, 120);
+      $("label_pad_right_mm").value = 5;
+    }
     syncOutputs();
     await convert(false);
   } catch (e) { setStatus(String(e), "error"); }
@@ -179,7 +176,10 @@ $("aptSearchBtn").addEventListener("click", () => {
 });
 $("apt_candidate").addEventListener("change", (e) => {
   const icao = aptCandidates[e.target.value];
-  if (icao) $("icao_code").value = icao;
+  if (icao) {
+    $("icao_code").value = icao;
+    renderAirport().catch((err) => setStatus(String(err), "error"));
+  }
 });
 $("apt_search").addEventListener("input", () => {
   // Typed text no longer matches the listed candidates — hide the picker.
@@ -188,25 +188,23 @@ $("apt_search").addEventListener("input", () => {
   $("apt_candidate").hidden = true;
 });
 $("aptBtn").addEventListener("click", () => {
-  renderAirport(true).catch((e) => setStatus(String(e), "error"));
+  renderAirport().catch((e) => setStatus(String(e), "error"));
 });
-$("aptPreviewBtn").addEventListener("click", () => {
-  renderAirport(false).catch((e) => setStatus(String(e), "error"));
-});
-// Sliders/flag refresh the lightweight preview (render-only, no
-// import/convert) after a short pause — dragging never hammers Overpass.
-let aptPreviewTimer = null;
-function schedulePreview() {
-  if (aptPreviewTimer) clearTimeout(aptPreviewTimer);
-  aptPreviewTimer = setTimeout(() => {
-    aptPreviewTimer = null;
-    renderAirport(false).catch((e) => setStatus(String(e), "error"));
-  }, 900);
+// Every control re-renders (debounced so dragging never hammers
+// Overpass); typing an ICAO waits a beat longer for the full code.
+let aptRenderTimer = null;
+function scheduleRender(delayMs) {
+  if (aptRenderTimer) clearTimeout(aptRenderTimer);
+  aptRenderTimer = setTimeout(() => {
+    aptRenderTimer = null;
+    renderAirport().catch((e) => setStatus(String(e), "error"));
+  }, delayMs);
 }
 for (const [id, out] of [["apt_radius", "apt_radius_val"], ["apt_minlen", "apt_minlen_val"]]) {
-  $("" + id).addEventListener("input", (e) => { $("" + out).value = e.target.value; schedulePreview(); });
+  $("" + id).addEventListener("input", (e) => { $("" + out).value = e.target.value; scheduleRender(900); });
 }
-$("apt_context").addEventListener("change", schedulePreview);
+$("apt_context").addEventListener("change", () => scheduleRender(400));
+$("icao_code").addEventListener("input", () => scheduleRender(1200));
 </script>
 </body>
 </html>

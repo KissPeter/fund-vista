@@ -447,10 +447,13 @@ def test_airports_page_renders_search_and_convert_sections(http_client):
     assert 'id="aptSearchBtn"' in html
     assert 'id="apt_candidate"' in html
     assert "/v1/airports/search" in html
-    # Preview (render-only) vs Render & plot (import+convert).
-    assert 'id="aptPreviewBtn"' in html
+    # Single flow: every control auto-renders (no manual preview button,
+    # no second raw-SVG preview — the convert panel is the only preview).
     assert 'id="aptBtn"' in html
-    assert "schedulePreview" in html
+    assert 'id="aptPreviewBtn"' not in html
+    assert 'id="diagram_preview"' not in html
+    assert "scheduleRender" in html
+    assert "lastPlottedIcao" in html
 
 
 def test_airports_page_negative(http_client):
