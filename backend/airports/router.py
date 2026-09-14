@@ -59,11 +59,13 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
     )
 
 
-def render_diagram_version() -> int:
-    """Layout version baked into the SVG cache key (kills stale renders)."""
-    from backend.airports.render import RENDER_VERSION
+def render_diagram_version() -> str:
+    """Layout version baked into the SVG cache key (kills stale renders).
 
-    return RENDER_VERSION
+    Content hash of the renderer source — automatic on every change."""
+    from backend.airports.render import render_source_version
+
+    return render_source_version()
 
 
 def _fnum(value: object) -> float | None:

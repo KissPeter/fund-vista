@@ -19,7 +19,11 @@ blocks for the other product lines.
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import math
+import sys
+from functools import lru_cache
 from xml.sax.saxutils import escape as _xml_escape
 
 from backend.airports.geometry import (
@@ -30,9 +34,14 @@ from backend.airports.geometry import (
 )
 from backend.airports.ourairports import FT_TO_M, heading_from_ident
 
-# Bump on any output-affecting change: the rendered-SVG cache key includes
-# it, so clients never see a stale layout after an upgrade.
-RENDER_VERSION = 5
+# Version of the rendered output, baked into the SVG cache key so clients
+# never see a stale layout. Derived from this file's own source: EVERY code
+# change busts the cache automatically, no manual bump to forget.
+@lru_cache(maxsize=1)
+def render_source_version() -> str:
+    return hashlib.sha1(
+        inspect.getsource(sys.modules[__name__]).encode("utf-8")
+    ).hexdigest()[:12]
 
 # A4 portrait in user units at 1000 wide → height set by content; the plotter
 # scales the viewBox to the page with margin (iDraw working area 210×297mm).
@@ -346,22 +355,22 @@ def render_diagram(
             label = f"{freq['type']} {freq['description']}".strip().upper()
             parts.append(
                 f'<text x="{col_x:.1f}" y="{strip_y + 30:.1f}" text-anchor="middle" '
-                f'font-family="monospace" font-size="{freq_small:.1f}" '
+                f'font-family="monospace" data-stroke-font="hershey" font-size="{freq_small:.1f}" '
                 f'stroke="none" fill="#000000">{_esc(label)}</text>'
                 f'<text x="{col_x:.1f}" y="{strip_y + 30 + freq_big + 8:.1f}" text-anchor="middle" '
-                f'font-family="monospace" font-size="{freq_big:.1f}" '
+                f'font-family="monospace" data-stroke-font="hershey" font-size="{freq_big:.1f}" '
                 f'stroke="none" fill="#000000">{freq["frequency_mhz"]:.3f}</text>'
             )
         if len(frequencies) > _MAX_FREQ_COLS:
             parts.append(
                 f'<text x="{width - 8:.1f}" y="{strip_y + _STRIP_H - 10:.1f}" '
-                f'text-anchor="end" font-family="monospace" font-size="{freq_small:.1f}" '
+                f'text-anchor="end" font-family="monospace" data-stroke-font="hershey" font-size="{freq_small:.1f}" '
                 f'stroke="none" fill="#000000">+{len(frequencies) - _MAX_FREQ_COLS} more</text>'
             )
     else:
         parts.append(
             f'<text x="{width / 2:.1f}" y="{strip_y + _STRIP_H / 2 + freq_small / 2:.1f}" '
-            f'text-anchor="middle" font-family="monospace" font-size="{freq_small:.1f}" '
+            f'text-anchor="middle" font-family="monospace" data-stroke-font="hershey" font-size="{freq_small:.1f}" '
             f'stroke="none" fill="#000000">No published frequencies</text>'
         )
         warnings.append("no_frequencies")
@@ -492,7 +501,7 @@ def render_diagram(
             ix, iy = px + ux * end_sign * off_ident, py + uy * end_sign * off_ident
             parts.append(
                 f'<text x="{ix:.2f}" y="{iy + text_h * 0.35:.2f}" text-anchor="middle" '
-                f'font-family="monospace" font-size="{text_h * 1.4:.1f}" '
+                f'font-family="monospace" data-stroke-font="hershey" font-size="{text_h * 1.4:.1f}" '
                 f'stroke="none" fill="#000000">{_esc(ident)}</text>'
             )
             # … and the degree oval beyond it.
@@ -503,7 +512,7 @@ def render_diagram(
             parts.append(
                 f'<ellipse cx="{bx:.2f}" cy="{by:.2f}" rx="{rx:.2f}" ry="{ry:.2f}"/>'
                 f'<text x="{bx:.2f}" y="{by + text_h * 0.32:.2f}" text-anchor="middle" '
-                f'font-family="monospace" font-size="{text_h * 0.9:.1f}" '
+                f'font-family="monospace" data-stroke-font="hershey" font-size="{text_h * 0.9:.1f}" '
                 f'stroke="none" fill="#000000">{_esc(deg_txt)}</text>'
             )
     parts.append("</g>")
@@ -528,7 +537,7 @@ def render_diagram(
         f"L {ex - north[0] * text_h * 0.9 - px_ * text_h * 0.45:.2f} "
         f"{ey + north[1] * text_h * 0.9 - py_ * text_h * 0.45:.2f} Z\"/>"
         f'<text x="{ex + north[0] * text_h:.2f}" y="{ey - north[1] * text_h + text_h * 0.35:.2f}" '
-        f'text-anchor="middle" font-family="monospace" font-size="{text_h:.1f}" '
+        f'text-anchor="middle" font-family="monospace" data-stroke-font="hershey" font-size="{text_h:.1f}" '
         f'stroke="none" fill="#000000">N</text>'
         "</g>"
     )
@@ -552,10 +561,10 @@ def render_diagram(
     parts.append(
         f'<g id="footer" fill="none" stroke="#000000" stroke-width="{thin_w:.2f}">'
         f'<text x="{_MARGIN:.1f}" y="{fy:.1f}" '
-        f'font-family="monospace" font-size="{footer_fs:.1f}" '
+        f'font-family="monospace" data-stroke-font="hershey" font-size="{footer_fs:.1f}" '
         f'stroke="none" fill="#000000">{_esc(left)}</text>'
         f'<text x="{_MARGIN + diagram_w:.1f}" y="{fy:.1f}" text-anchor="end" '
-        f'font-family="monospace" font-size="{footer_fs:.1f}" '
+        f'font-family="monospace" data-stroke-font="hershey" font-size="{footer_fs:.1f}" '
         f'stroke="none" fill="#000000">{_esc(right)}</text>'
         "</g>"
     )

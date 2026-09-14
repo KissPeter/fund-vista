@@ -207,6 +207,8 @@ def test_render_blueprint_groups_and_badges():
     # No in-SVG title: name/country live as fixed page labels, never plot.
     assert 'id="title"' not in svg
     assert "BUDAPEST" not in svg
+    # All labels are crisp single-stroke (never raster-traced outlines).
+    assert svg.count('data-stroke-font="hershey"') >= 5
     assert "13L" in svg and "31R" in svg  # ident badges
     assert "130°" in svg and "310°" in svg  # degree ovals
     assert "118.100" in svg and "TWR" in svg  # frequency column
@@ -380,17 +382,26 @@ def test_zoomed_content_is_cut_at_the_frame():
 
 
 def test_render_version_busts_stale_svg_cache():
-    """Layout changes must invalidate cached SVGs (the inset-strip bug:
-    same params served the pre-fix render for 24h)."""
-    from backend.airports.render import RENDER_VERSION
+    """The cache key tracks the renderer source hash: EVERY code change
+    busts stale SVGs automatically (the old manual integer was forgotten
+    once already — same params served a stale layout for 24h)."""
+    import hashlib
+    import os
+
+    from backend.airports.render import render_source_version
     from backend.airports.router import render_diagram_version
 
-    assert render_diagram_version() == RENDER_VERSION >= 1
+    assert render_diagram_version() == render_source_version()
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "..", "airports", "render.py"), "rb") as fh:
+        expected = hashlib.sha1(fh.read()).hexdigest()[:12]
+    assert render_source_version() == expected
     from backend.airports.cache import airports_cache_key
 
-    old_key = airports_cache_key("svg", "LHBP", "r=3000")
-    new_key = airports_cache_key("svg", "LHBP", "r=3000", f"v={RENDER_VERSION}")
-    assert old_key != new_key
+    # The version is mixed into the digest: any source change re-keys.
+    keyed = airports_cache_key("svg", "LHBP", "r=3000", f"v={expected}")
+    assert airports_cache_key("svg", "LHBP", "r=3000") != keyed
+    assert airports_cache_key("svg", "LHBP", "r=3000", "v=deadbeef") != keyed
 
 
 def test_render_request_zoom_defaults_and_rejects(http_client):

@@ -47,6 +47,12 @@ Credit line (footer + response `attribution`): `Runway/frequency data: OurAirpor
 9. Compass/declination arrow at rotation-adjusted angle (true north; WMM magnetic = TODO).
 10. Footer: elevation ft, ICAO/IATA, credit line.
 11. Single SVG, strokes only, `fill="none"`, A4 portrait viewBox with iDraw 2.0 margin.
+12. Labels: all `<text>` carries `data-stroke-font="hershey"` — import lays
+    them in crisp Hershey single-stroke (title-block faces; `°`/`•`
+    synthesized, `©`→`(C)`), never raster-traced outlines. Vector input
+    bypasses the section-2 Method controls by construction. SVG cache key
+    carries a source-content hash — every renderer change busts it
+    automatically, no manual version to forget.
 
 ## API (independent, mirrors citymap conventions)
 

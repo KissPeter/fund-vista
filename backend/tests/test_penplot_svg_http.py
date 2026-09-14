@@ -119,6 +119,33 @@ def test_arc_smooth_and_relative_commands(http_client):
     assert body["stats"]["pen_down_mm"] > 0
 
 
+def test_text_hershey_single_stroke(http_client):
+    inner = (
+        '<text x="105" y="100" font-size="40" text-anchor="middle" '
+        'data-stroke-font="hershey">Hi</text>'
+    )
+    body = _convert_ok(http_client, _svg_bytes(inner))
+    assert body["stats"]["strokes"] >= 2
+    # Single stems plot once: strictly less pen-down than traced outlines.
+    ref = _convert_ok(
+        http_client,
+        _svg_bytes(
+            '<text x="105" y="100" font-size="40" text-anchor="middle">Hi</text>'
+        ),
+    )
+    assert body["stats"]["pen_down_mm"] < ref["stats"]["pen_down_mm"]
+    # Airport marks outside the face set still draw (synthesized ° •, ©→(C)).
+    body = _convert_ok(
+        http_client,
+        _svg_bytes(
+            '<text x="105" y="100" font-size="40" text-anchor="middle" '
+            'data-stroke-font="hershey">130° A•B ©</text>'
+        ),
+    )
+    assert body["stats"]["strokes"] >= 4
+    assert "<path" in _fetch_svg(http_client, body)
+
+
 def test_text_outlines(http_client):
     body = _convert_ok(
         http_client,

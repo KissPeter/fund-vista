@@ -988,6 +988,11 @@ def _text_to_polylines(el: ET.Element) -> list[list[tuple[float, float]]]:
     if font_size <= 0:
         return []
     anchor = (a.get("text-anchor") or decls.get("text-anchor") or "start").strip().lower()
+    if (a.get("data-stroke-font") or "").strip().lower() == "hershey":
+        # Crisp single-stroke plotter text (airport diagram labels): the
+        # same Hershey faces as the title block — never raster-traced
+        # outlines, and like all vector input untouched by Method controls.
+        return _hershey_text_to_polylines(el, font_size, anchor)
     weight = (a.get("font-weight") or decls.get("font-weight") or "").strip().lower()
     faux_bold = weight in ("bold", "bolder", "700", "800", "900")
     stroke_width = 1 if faux_bold else 0
@@ -1035,4 +1040,59 @@ def _text_to_polylines(el: ET.Element) -> list[list[tuple[float, float]]]:
                 (x + (float(px) - pad) * uppx, y + (float(py) - baseline) * uppx)
                 for px, py in seq
             ])
+    return out
+
+
+def _hershey_text_to_polylines(
+    el: ET.Element, font_size: float, anchor: str
+) -> list[list[tuple[float, float]]]:
+    """Single-stroke Hershey layout for one SVG <text> (y-down == y-down).
+
+    Same faces/advance model as the title block (see labels.render_label):
+    each stem plots exactly once. Covers the futural ASCII set plus three
+    synthesized marks the face lacks: ``°`` (ring), ``•`` (dot dash);
+    ``©`` expands to ``(C)``. Anything else is skipped (no tofu boxes).
+    """
+    from backend.penplot.labels import _resolve_face
+
+    runs = _text_runs(el)
+    chars = [ch for s, _, _ in runs for ch in s.replace("©", "(C)")]
+    cap_height, space_advance, glyphs = _resolve_face("futural", chars)
+    unit = max(cap_height, 1e-9)
+    s = font_size / unit
+
+    def synth_ring() -> dict:
+        r, cy = unit * 0.16, -unit * 0.78
+        ring = [
+            (r * math.cos(math.radians(a)), cy + r * math.sin(math.radians(a)))
+            for a in range(0, 360, 45)
+        ]
+        ring.append(ring[0])
+        return {"advance": unit * 0.55, "lines": [ring]}
+
+    def synth_dot() -> dict:
+        r, cy = unit * 0.06, -unit * 0.32
+        return {"advance": unit * 0.45, "lines": [[(-r, cy), (r, cy)]]}
+
+    extra = {"°": synth_ring(), "•": synth_dot()}
+    out: list[list[tuple[float, float]]] = []
+    for text, x, y in runs:
+        text = text.replace("©", "(C)")
+        adv = sum(
+            (space_advance if ch == " " else
+             (glyphs.get(ch) or extra.get(ch) or {"advance": 0.0})["advance"])
+            for ch in text
+        )
+        cursor = x - (adv * s / 2.0 if anchor == "middle"
+                      else adv * s if anchor == "end" else 0.0)
+        for ch in text:
+            if ch == " ":
+                cursor += space_advance * s
+                continue
+            glyph = glyphs.get(ch) or extra.get(ch)
+            if glyph is None:
+                continue
+            for stroke in glyph["lines"]:
+                out.append([(cursor + gx * s, y + gy * s) for gx, gy in stroke])
+            cursor += glyph["advance"] * s
     return out
