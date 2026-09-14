@@ -18,6 +18,9 @@ from redis.exceptions import RedisError
 from backend.citymap.cache import configure_citymap_redis
 from backend.citymap.router import router as citymap_router
 from backend.citymap.ui import ui_router as citymap_ui_router
+from backend.airports.cache import configure_airports_redis
+from backend.airports.router import router as airports_router
+from backend.airports.ui import ui_router as airports_ui_router
 from backend.penplot.errors import PenPlotError
 from backend.penplot.ratelimit import configure_redis
 from backend.penplot.router import (
@@ -100,6 +103,9 @@ app.include_router(penplot_ui_router)
 # City maps next: versioned routes must win over the catch-all proxy below.
 app.include_router(citymap_router)
 app.include_router(citymap_ui_router)
+# Airport diagrams last: same versioned-before-catch-all rule.
+app.include_router(airports_router)
+app.include_router(airports_ui_router)
 app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
 
@@ -136,10 +142,12 @@ async def _startup() -> None:
         await redis_client.ping()
         configure_redis(redis_client)
         configure_citymap_redis(redis_client)
+        configure_airports_redis(redis_client)
     except Exception as exc:
         redis_client = None
         configure_redis(None)
         configure_citymap_redis(None)
+        configure_airports_redis(None)
         print(f"Redis unavailable, continuing without cache: {exc}")
 
 

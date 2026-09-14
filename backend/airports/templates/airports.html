@@ -1,0 +1,141 @@
+{% include "partials/_head.html" %}
+</head>
+<body>
+<h1>Airport Diagram — open-data blueprint SVG <span class="meta">(v1 API demo)</span></h1>
+
+<div class="layout">
+<div>
+  <form id="params" action="javascript:void(0)">
+  <fieldset>
+    <legend>1. Airport (ICAO)</legend>
+    <label>icao <input type="text" id="icao_code" maxlength="4" placeholder="LHBP" value="LHBP" style="text-transform:uppercase"></label>
+    <button type="button" id="icaoLookupBtn">Look up</button>
+    <div id="airport_meta" class="meta"></div>
+    <div id="diagram_preview" hidden>
+      <img id="diagram_img" alt="Airport diagram preview" style="max-width:100%; border:1px solid #ccc">
+      <p class="meta" id="diagram_caption"></p>
+    </div>
+    <label>detail radius (m) <input type="range" id="apt_radius" min="500" max="6000" step="250" value="3000"><output id="apt_radius_val">3000</output></label>
+    <label>min detail (m) <input type="range" id="apt_minlen" min="0" max="50" step="1" value="5"><output id="apt_minlen_val">5</output></label>
+    <button type="button" id="aptBtn">Render diagram</button>
+    <p class="meta" id="meta">Looks up runway/frequency data (OurAirports, CC0), pulls ground polygons via <code>/v1/airports/render</code>, and plots the blueprint with the settings below (vector input: shading sliders don't apply; pen, page, label and display do). First render can take a minute; repeats are served from cache. Runway/frequency data: OurAirports.com (CC0). Ground layout: © OpenStreetMap contributors (ODbL). Spot-check small fields against a real map — OSM detail varies.</p>
+  </fieldset>
+
+  {% with legend_method="2. Method" %}{% include "partials/_method.html" %}{% endwith %}
+
+  {% with legend_cleanup="3. Cleanup (vpype chain)" %}{% include "partials/_cleanup.html" %}{% endwith %}
+
+  {% with legend_page_pen="4. Page & pen" %}{% include "partials/_page_pen.html" %}{% endwith %}
+
+  {% with legend_label="5. Label (title block)" %}{% include "partials/_label.html" %}{% endwith %}
+  {% with legend_display="6. Display (pen + background, independent)" %}{% include "partials/_display.html" %}{% endwith %}
+  <button type="button" id="resetBtn">Reset to defaults</button>
+  </form>
+</div>
+
+{% include "partials/_result_panel.html" %}
+</div>
+
+<script>
+{% include "partials/_convert.html" %}
+
+function icaoCode() {
+  return $("icao_code").value.trim().toUpperCase();
+}
+
+async function lookupAirport() {
+  const code = icaoCode();
+  if (!code) { setStatus("Enter an ICAO code (e.g. LHBP)."); return null; }
+  setBusy(true);
+  setStatus("Looking up " + code + "…");
+  try {
+    const resp = await fetch("/v1/airports/lookup?icao=" + encodeURIComponent(code));
+    const body = await resp.json();
+    if (!resp.ok) {
+      setStatus("Lookup failed (" + (body.error ? body.error.code : resp.status) + "): " + (body.error ? body.error.message : ""), "error");
+      return null;
+    }
+    const rwy = (body.runways || []).map((r) => r.le_ident + "/" + r.he_ident).join(", ");
+    const frq = (body.frequencies || []).slice(0, 4).map((f) => f.type + " " + f.frequency_mhz.toFixed(3)).join(" · ");
+    $("airport_meta").textContent =
+      body.name + " (" + body.icao + ") — " + body.municipality + ", " + body.iso_country +
+      " | runways: " + (rwy || "none listed") +
+      (frq ? " | " + frq : "");
+    setStatus("Found " + body.name + " — Render diagram to preview.");
+    return body;
+  } catch (e) { setStatus(String(e), "error"); return null; }
+  finally { if (depth === 0) drain(); }
+}
+
+async function renderAirport(andImport) {
+  const code = icaoCode();
+  if (!code) { setStatus("Enter an ICAO code (e.g. LHBP)."); return; }
+  const payload = {
+    icao: code,
+    radius_m: parseFloat($("apt_radius").value),
+    min_path_len_m: parseFloat($("apt_minlen").value),
+    width: 1000,
+  };
+  setBusy(true);
+  setStatus((andImport ? "Loading" : "Rendering") + " diagram for " + code + "… (first render can take a minute)");
+  try {
+    // Preview render (cheap to show) …
+    const rresp = await fetch("/v1/airports/render", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const rbody = await rresp.json();
+    if (!rresp.ok) {
+      if (rresp.status === 429) { setStatus("Rate limited — retry in a few seconds.", "error"); return; }
+      setStatus("Render failed (" + (rbody.error ? rbody.error.code : rresp.status) + "): " + (rbody.error ? rbody.error.message : ""), "error");
+      return;
+    }
+    $("diagram_img").src = rbody.svg_url;
+    $("diagram_preview").hidden = false;
+    const total = Object.values(rbody.path_counts).reduce((a, b) => a + b, 0);
+    $("diagram_caption").textContent =
+      rbody.name + " — rotation " + rbody.rotation_deg.toFixed(1) + "° (" + total + " paths)" +
+      ((rbody.warnings && rbody.warnings.length) ? " ⚠ " + rbody.warnings.join(", ") : "");
+    if (!andImport) { setStatus("Preview ready — Render & load plots it below."); return; }
+    // … then register as a penplot image and convert like an uploaded SVG.
+    const iresp = await fetch("/v1/airports/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const ibody = await iresp.json();
+    if (!iresp.ok) {
+      if (iresp.status === 429) { setStatus("Rate limited — retry in a few seconds.", "error"); return; }
+      setStatus("Load failed (" + (ibody.error ? ibody.error.code : iresp.status) + "): " + (ibody.error ? ibody.error.message : ""), "error");
+      return;
+    }
+    imageId = ibody.image_id;
+    currentFile = null; // imports have no local file: on cache expiry just re-import
+    $("meta").textContent =
+      ibody.name + " (" + ibody.icao + ") — rotation " + ibody.rotation_deg.toFixed(1) + "°" +
+      ((ibody.warnings && ibody.warnings.length) ? " ⚠ " + ibody.warnings.join(", ") : "");
+    // A loaded diagram stamps its own title block: label on, bordered,
+    // airport name as text, 5 mm right padding.
+    $("label_enabled").checked = true;
+    $("label_border").checked = true;
+    $("label_text").value = (ibody.name + " " + ibody.icao).slice(0, 120);
+    $("label_pad_right_mm").value = 5;
+    syncOutputs();
+    await convert(false);
+  } catch (e) { setStatus(String(e), "error"); }
+  finally { if (depth === 0) drain(); }
+}
+
+$("icaoLookupBtn").addEventListener("click", () => {
+  lookupAirport().catch((e) => setStatus(String(e), "error"));
+});
+$("aptBtn").addEventListener("click", () => {
+  renderAirport(true).catch((e) => setStatus(String(e), "error"));
+});
+for (const [id, out] of [["apt_radius", "apt_radius_val"], ["apt_minlen", "apt_minlen_val"]]) {
+  $("" + id).addEventListener("input", (e) => { $("" + out).value = e.target.value; });
+}
+</script>
+</body>
+</html>
