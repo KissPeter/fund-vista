@@ -1,10 +1,9 @@
 """Blueprint-style SVG rendering for airport ground diagrams.
 
-Layout (client-approved reference): title header, column frequency strip
-with rule, diagram area, footer — all strokes, ``fill="none"`` (except the
-arrowhead marker, structurally needed). Stays black-on-paper: the plotter
-draws lines, not fills — the white-on-navy look of the reference mock is a
-display style, available via the page's Display background picker.
+Layout: pure diagram area on a fixed A4-portrait frame — all strokes,
+``fill="none"``. Stays black-on-paper: the plotter draws lines, not
+fills — the white-on-navy look of the reference mock is a display style,
+available via the page's Display background picker.
 
 Runway boldness is GEOMETRY, not ``stroke-width``: each strip is drawn as
 a solid band of nine parallel longitudinal paths across twice the true
@@ -48,12 +47,18 @@ def render_source_version() -> str:
         inspect.getsource(sys.modules[__name__]).encode("utf-8")
     ).hexdigest()[:12]
 
-# A4 portrait in user units at 1000 wide → height set by content; the plotter
-# scales the viewBox to the page with margin (iDraw working area 210×297mm).
-# NOTE: no title, no frequency strip, no footer in the artwork — the SVG is
-# pure diagram geometry (runways, ground, badges, compass). Names,
-# frequencies and credits live on the page / API responses, never plotted.
+# Fixed A4-portrait frame in user units at 1000 wide; the plotter scales
+# the viewBox to the page with margin (iDraw working area 210×297mm).
+# Fixed aspect is what makes zoom fill the page: downstream layout does
+# a contain-fit, so a content-sized frame could never fill the page on
+# the other axis no matter the zoom. Here zoom=1 contains all content
+# and zoom>1 covers (crops) toward a full-bleed page.
+# NOTE: no title, no frequency strip, no footer, no compass in the
+# artwork — the SVG is pure diagram geometry (runways, ground, badges).
+# Names, frequencies and credits live on the page / API responses, never
+# plotted.
 _MARGIN = 40.0
+_PAGE_ASPECT = 297.0 / 210.0  # A4 portrait h/w
 
 # Runway strip treatment: schematic 2× width exaggeration + 9 longitudinal
 # infill lines. True-width strips vanish at poster scale; the exaggerated
@@ -226,20 +231,21 @@ def render_diagram(
     max_y += pad_m
 
     header_h = 0.0
+    total_h = width * _PAGE_ASPECT
     diagram_w = width - 2 * _MARGIN
-    # Fixed frame: the page rect is sized by the zoom=1.0 fit and never
-    # grows with zoom. Zoom only scales content about the center, so
-    # zoom>1 crops ALL sides evenly (it used to grow diagram_h with the
-    # scale, cropping left/right only and letterboxing tall SVGs into a
-    # thin middle band downstream).
-    base_scale = diagram_w / max(max_x - min_x, 1e-9)
+    diagram_h = total_h - _MARGIN - header_h - _MARGIN / 2 - _MARGIN
+    # Fixed A4-portrait frame (matches the default convert page aspect, so
+    # downstream contain-fit never letterboxes the SVG itself). Zoom=1
+    # contains all content; zoom only scales content about the center, so
+    # zoom>1 covers — cropping ALL sides evenly toward a full-bleed page.
+    span_x = max(max_x - min_x, 1e-9)
+    span_y = max(max_y - min_y, 1e-9)
+    base_scale = min(diagram_w / span_x, diagram_h / span_y)
     scale = base_scale * zoom
-    # Centered mapping (identical to corner fit at zoom=1.0): zooming
-    # crops/expands about the content center so the page fills evenly.
+    # Centered mapping: zooming crops/expands about the content center so
+    # the page fills evenly.
     cx = (min_x + max_x) / 2.0
     cy = (min_y + max_y) / 2.0
-    diagram_h = (max_y - min_y) * base_scale
-    total_h = _MARGIN + header_h + _MARGIN / 2 + diagram_h + _MARGIN
     origin_y = _MARGIN + header_h + _MARGIN / 2
 
     def W2S(x: float, y: float) -> tuple[float, float]:
@@ -367,7 +373,6 @@ def render_diagram(
         f'height="{total_h:.1f}" viewBox="0 0 {width} {total_h:.1f}">',
         f"<!-- {_esc(airport.get('name', ''))} "
         f"({_esc(airport.get('ident', ''))}) — rotation {rotation:.1f}deg CCW; "
-        "north arrow shows true north on the rotated page; "
         "runway edges are geometry (plotter-safe), not stroke-width -->",
     ]
     counts = {"runway": 0, "taxiway": 0, "apron": 0, "terminal": 0,
@@ -552,30 +557,7 @@ def render_diagram(
     if show_runway:
         parts.append("</g>")
 
-    # -- compass: true north rotated by the SAME scene rotation -------------
-    # World north (0,1) through rotate_point => consistent by construction.
-    north = rotate_point(0.0, 1.0, rotation)
-    ax = _MARGIN + diagram_w - text_h * 3.0
-    ay = origin_y + text_h * 4.0
-    arrow_len = text_h * 3.2
-    # World→SVG flips y; apply the same flip to the rotated north vector.
-    ex = ax + north[0] * arrow_len
-    ey = ay - north[1] * arrow_len
-    px_, py_ = -north[1], -north[0]  # perpendicular in SVG space
-    parts.append(
-        f'<g id="compass" fill="none" stroke="#000000" stroke-width="{taxi_w:.2f}">'
-        f"<circle cx=\"{ax:.2f}\" cy=\"{ay:.2f}\" r=\"{arrow_len * 1.25:.2f}\"/>"
-        f"<path d=\"M {ax:.2f} {ay:.2f} L {ex:.2f} {ey:.2f}\"/>"
-        f"<path d=\"M {ex:.2f} {ey:.2f} "
-        f"L {ex - north[0] * text_h * 0.9 + px_ * text_h * 0.45:.2f} "
-        f"{ey + north[1] * text_h * 0.9 + py_ * text_h * 0.45:.2f} "
-        f"L {ex - north[0] * text_h * 0.9 - px_ * text_h * 0.45:.2f} "
-        f"{ey + north[1] * text_h * 0.9 - py_ * text_h * 0.45:.2f} Z\"/>"
-        f'<text x="{ex + north[0] * text_h:.2f}" y="{ey - north[1] * text_h + text_h * 0.35:.2f}" '
-        f'text-anchor="middle" font-family="monospace" data-stroke-font="hershey" font-size="{text_h:.1f}" '
-        f'stroke="none" fill="#000000">N</text>'
-        "</g>"
-    )
+    # NOTE: no compass — client decision, removed from the artwork.
 
     parts.append("</svg>")
     return "\n".join(parts) + "\n", counts, rotation, warnings

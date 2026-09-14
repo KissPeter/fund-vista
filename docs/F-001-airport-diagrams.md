@@ -50,7 +50,7 @@ Credit line (footer + response `attribution`): `Runway/frequency data: OurAirpor
    Taxiway designators (OSM way `ref`: A1, B3, …) are opt-in via the
    `taxiway_labels` tick — one label per designator on its longest surviving
    way, hidden with the taxiway layer.
-9. Compass/declination arrow at rotation-adjusted angle (true north; WMM magnetic = TODO).
+9. No compass in the artwork (removed on client request).
 10. Single SVG, strokes only, `fill="none"`, A4 portrait viewBox with iDraw 2.0 margin.
 12. Labels: all `<text>` carries `data-stroke-font="hershey"` — import lays
     them in crisp Hershey single-stroke (title-block faces; `°`/`•`

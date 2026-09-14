@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 #: Selectable diagram layers (airfield always fetched; context needs the
-#: second Overpass query). Labels/badges/compass are annotations, not layers.
+#: second Overpass query). Labels/badges are annotations, not layers.
 LayerName = Literal[
     "runway",
     "taxiway",

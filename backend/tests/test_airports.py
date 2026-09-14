@@ -202,8 +202,11 @@ def test_render_blueprint_groups_and_badges():
     # Primary 130° runway stands vertical via the minimal −50° turn.
     assert abs(rotation - rotation_for_heading(130.0)) < 5.0
     for marker in ("osm-taxiways", "osm-aprons",
-                   "runways", "runway-marks", "compass"):
+                   "runways", "runway-marks"):
         assert f'id="{marker}"' in svg, marker
+    # No compass: removed from the artwork on client request.
+    assert 'id="compass"' not in svg
+    assert ">N<" not in svg
     # No top strip either: frequencies live in responses/page, never plot.
     assert 'id="freq-strip"' not in svg
     assert "118.100" not in svg and "TWR" not in svg
@@ -215,7 +218,7 @@ def test_render_blueprint_groups_and_badges():
     assert 'id="title"' not in svg
     assert "BUDAPEST" not in svg
     # All labels are crisp single-stroke (never raster-traced outlines).
-    assert svg.count('data-stroke-font="hershey"') >= 3
+    assert svg.count('data-stroke-font="hershey"') >= 2
     assert "13L" in svg and "31R" in svg  # ident badges
     # No degree ovals: the ident already encodes the heading.
     assert "<ellipse" not in svg
@@ -471,12 +474,14 @@ def test_render_zoom_scales_about_center():
         airport=_airport(), runways=[_runway_row()], frequencies=[],
         osm_geoms=osm, width=1000, zoom=0.5)
     assert abs(runway_len(svg2) / runway_len(svg1) - 0.5) < 0.01
-    # Fixed frame: zoom scales content inside the same page rect, so the
-    # document height is identical (zoom used to grow it, letterboxing
-    # tall SVGs into a thin middle band downstream).
+    # Fixed A4-portrait frame (matches the default convert page aspect so
+    # downstream contain-fit never letterboxes the SVG itself): zoom scales
+    # content inside the same page rect, so the document dims are identical
+    # at any zoom and always 1000 x 1000*297/210.
     h1 = float(re.search(r'height="([\d.]+)"', svg1).group(1))
     h2 = float(re.search(r'height="([\d.]+)"', svg2).group(1))
     assert abs(h1 - h2) < 0.05
+    assert abs(h1 - 1000 * 297.0 / 210.0) < 0.5
 
 
 def test_geometry_independent_of_frequency_strip():
