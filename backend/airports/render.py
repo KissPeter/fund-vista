@@ -62,6 +62,7 @@ def render_diagram(
     context_geoms: dict[str, list[list[tuple[float, float]]]] | None = None,
     width: int = 1000,
     min_path_len_m: float = 5.0,
+    zoom: float = 1.0,
 ) -> tuple[str, dict[str, int], float, list[str]]:
     """Render the full blueprint SVG.
 
@@ -174,14 +175,19 @@ def render_diagram(
 
     header_h = _TITLE_H + _STRIP_H
     diagram_w = width - 2 * _MARGIN
-    scale = diagram_w / max(max_x - min_x, 1e-9)
+    scale = diagram_w / max(max_x - min_x, 1e-9) * zoom
+    # Centered mapping (identical to corner fit at zoom=1.0): zooming
+    # crops/expands about the content center so the page fills evenly.
+    cx = (min_x + max_x) / 2.0
+    cy = (min_y + max_y) / 2.0
     diagram_h = (max_y - min_y) * scale
     total_h = _MARGIN + header_h + _MARGIN / 2 + diagram_h + _MARGIN / 2 + _FOOTER_H + _MARGIN
     origin_y = _MARGIN + header_h + _MARGIN / 2
 
     def W2S(x: float, y: float) -> tuple[float, float]:
         # World (+x east, +y north) → SVG (+x right, +y down).
-        return (_MARGIN + (x - min_x) * scale, origin_y + (max_y - y) * scale)
+        return (_MARGIN + diagram_w / 2 + (x - cx) * scale,
+                origin_y + diagram_h / 2 - (y - cy) * scale)
 
     # -- stroke weights (preview only; hierarchy survives via geometry) ----
     runway_w = max(6.0, width / 130.0)

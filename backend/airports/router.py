@@ -162,6 +162,7 @@ def _build_svg(
     width: int,
     min_path_len_m: float,
     context_elements: list[dict] | None = None,
+    zoom: float = 1.0,
 ) -> tuple[str, dict[str, int], dict[str, int], float, list[str]]:
     from backend.airports.overpass import split_context
 
@@ -184,6 +185,7 @@ def _build_svg(
         context_geoms=ctx_geoms,
         width=width,
         min_path_len_m=min_path_len_m,
+        zoom=zoom,
     )
     return svg, path_counts, raw_counts, rotation, warnings
 
@@ -256,7 +258,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     svg_key = airports_cache_key(
         "svg", icao, f"r={body.radius_m:.0f}",
         f"minlen={body.min_path_len_m}", f"width={body.width}",
-        f"ctx={body.context}",
+        f"ctx={body.context}", f"zoom={body.zoom}",
     )
     cached_svg = await cache_get(svg_key)
     if cached_svg is not None:
@@ -283,6 +285,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
             "osm_geoms": geoms,
             "width": body.width,
             "min_path_len_m": body.min_path_len_m,
+            "zoom": body.zoom,
         }
         if ctx_elements:
             from backend.airports.overpass import split_context
@@ -307,7 +310,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         svg_text, path_counts, raw_counts, rotation, render_warnings = (
             await asyncio.to_thread(
                 _build_svg, airport, runway_rows, freq_rows, elements,
-                body.width, body.min_path_len_m, ctx_elements,
+                body.width, body.min_path_len_m, ctx_elements, body.zoom,
             )
         )
         warnings.extend(render_warnings)
@@ -359,7 +362,7 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
     svg_text, path_counts, raw_counts, rotation, render_warnings = (
         await asyncio.to_thread(
             _build_svg, airport, runway_rows, freq_rows, elements,
-            body.width, body.min_path_len_m, ctx_elements,
+            body.width, body.min_path_len_m, ctx_elements, body.zoom,
         )
     )
     warnings.extend(render_warnings)

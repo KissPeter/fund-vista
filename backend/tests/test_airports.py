@@ -309,6 +309,45 @@ def test_render_stands_stopways_and_context_groups():
     assert "no_context_data" in warnings3
 
 
+def test_render_zoom_scales_about_center():
+    """Zoom fills the page: geometry distances scale, labels don't."""
+    import re
+
+    osm = {"runway": [], "taxiway": [[(19.252, 47.438), (19.259, 47.435)]],
+           "apron": [], "terminal": [], "hangar": []}
+
+    def runway_len(svg):
+        group = svg.split('id="runways"')[1].split("</g>")[0]
+        x1, y1, x2, y2 = map(float, re.findall(
+            r"M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)", group)[0])
+        import math as _math
+        return _math.hypot(x2 - x1, y2 - y1)
+
+    svg1, _, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=[],
+        osm_geoms=osm, width=1000, zoom=1.0)
+    svg2, _, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=[],
+        osm_geoms=osm, width=1000, zoom=2.0)
+    assert abs(runway_len(svg2) / runway_len(svg1) - 2.0) < 0.01
+    # Same document height grows (page fills vertically too).
+    h1 = float(re.search(r'height="([\d.]+)"', svg1).group(1))
+    h2 = float(re.search(r'height="([\d.]+)"', svg2).group(1))
+    assert h2 > h1
+
+
+def test_render_request_zoom_defaults_and_rejects(http_client):
+    from backend.airports.schemas import RenderRequest
+
+    assert RenderRequest(icao="LHBP").zoom == 1.0
+    resp = http_client.post(
+        "/v1/airports/render", json={"icao": "LHBP", "zoom": 0})
+    assert resp.status_code == 422
+    resp = http_client.post(
+        "/v1/airports/render", json={"icao": "LHBP", "zoom": 99})
+    assert resp.status_code == 422
+
+
 def test_render_request_context_defaults_false(http_client):
     """Hermetic: schema default + passthrough without touching Upstreams."""
     from backend.airports.schemas import RenderRequest
@@ -454,6 +493,8 @@ def test_airports_page_renders_search_and_convert_sections(http_client):
     assert 'id="diagram_preview"' not in html
     assert "scheduleRender" in html
     assert "lastPlottedIcao" in html
+    # Zoom slider to fill the A4 page.
+    assert 'id="apt_zoom"' in html
 
 
 def test_airports_page_negative(http_client):

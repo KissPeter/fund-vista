@@ -15,6 +15,7 @@
     <button type="button" id="icaoLookupBtn">Look up</button>
     <div id="airport_meta" class="meta"></div>
     <label>detail radius (m) <input type="range" id="apt_radius" min="500" max="6000" step="250" value="3000"><output id="apt_radius_val">3000</output></label>
+    <label>zoom (fill page) <input type="range" id="apt_zoom" min="0.5" max="2.5" step="0.1" value="1"><output id="apt_zoom_val">1.0</output></label>
     <label>min detail (m) <input type="range" id="apt_minlen" min="0" max="50" step="1" value="5"><output id="apt_minlen_val">5</output></label>
     <label><input type="checkbox" id="apt_context"> surrounding streets &amp; buildings (extra Overpass query, faint group)</label>
     <button type="button" id="aptBtn">Render diagram</button>
@@ -119,6 +120,7 @@ async function renderAirport() {
     min_path_len_m: parseFloat($("apt_minlen").value),
     width: 1000,
     context: $("apt_context").checked,
+    zoom: parseFloat($("apt_zoom").value),
   };
   setBusy(true);
   setStatus("Rendering diagram for " + code + "… (first render can take a minute)");
@@ -200,8 +202,11 @@ function scheduleRender(delayMs) {
     renderAirport().catch((e) => setStatus(String(e), "error"));
   }, delayMs);
 }
-for (const [id, out] of [["apt_radius", "apt_radius_val"], ["apt_minlen", "apt_minlen_val"]]) {
-  $("" + id).addEventListener("input", (e) => { $("" + out).value = e.target.value; scheduleRender(900); });
+for (const [id, out] of [["apt_radius", "apt_radius_val"], ["apt_minlen", "apt_minlen_val"], ["apt_zoom", "apt_zoom_val"]]) {
+  $("" + id).addEventListener("input", (e) => {
+    $("" + out).value = (id === "apt_zoom") ? parseFloat(e.target.value).toFixed(1) : e.target.value;
+    scheduleRender(900);
+  });
 }
 $("apt_context").addEventListener("change", () => scheduleRender(400));
 $("icao_code").addEventListener("input", () => scheduleRender(1200));

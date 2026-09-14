@@ -50,6 +50,11 @@ class RenderRequest(BaseModel):
         description="Also draw surrounding streets/buildings/water (second "
         "Overpass query, faintest group under the airfield geometry).",
     )
+    zoom: float = Field(
+        default=1.0, ge=0.25, le=4.0,
+        description="Zoom about the scene center (1.0 = fit all content; "
+        ">1 crops edges to fill the page, <1 adds margin).",
+    )
 
     _norm_icao = field_validator("icao", mode="before")(normalize_icao)
 
