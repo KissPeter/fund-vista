@@ -202,8 +202,12 @@ def test_render_blueprint_groups_and_badges():
     # Primary 130° runway stands vertical via the minimal −50° turn.
     assert abs(rotation - rotation_for_heading(130.0)) < 5.0
     for marker in ("freq-strip", "osm-taxiways", "osm-aprons",
-                   "runways", "runway-marks", "compass", "footer"):
+                   "runways", "runway-marks", "compass"):
         assert f'id="{marker}"' in svg, marker
+    # No footer: no elevation/credits plotted anywhere in the artwork.
+    assert 'id="footer"' not in svg
+    assert "Elev." not in svg
+    assert "OurAirports" not in svg and "OpenStreetMap" not in svg
     # No in-SVG title: name/country live as fixed page labels, never plot.
     assert 'id="title"' not in svg
     assert "BUDAPEST" not in svg
@@ -213,8 +217,6 @@ def test_render_blueprint_groups_and_badges():
     assert "130°" in svg and "310°" in svg  # degree ovals
     assert "118.100" in svg and "TWR" in svg  # frequency column
     assert '<rect x="0"' in svg  # strip runs full-bleed, border to border
-    assert "Elev. 495'" in svg and "LHBP / BUD" in svg  # footer left
-    assert "OurAirports" in svg and "OpenStreetMap" in svg  # footer credit
     # Geometry-bold: 1 OSM outline + 2 edges + 1 centerline per strip.
     assert counts == {"runway": 4, "taxiway": 1, "apron": 1,
                       "terminal": 0, "hangar": 0, "stands": 0,

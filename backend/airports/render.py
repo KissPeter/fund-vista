@@ -47,8 +47,6 @@ def render_source_version() -> str:
 # scales the viewBox to the page with margin (iDraw working area 210×297mm).
 _MARGIN = 40.0
 _STRIP_H = 96.0
-_STRIP_PAD = 14.0
-_FOOTER_H = 54.0
 _MAX_FREQ_COLS = 5
 
 
@@ -193,7 +191,7 @@ def render_diagram(
     cx = (min_x + max_x) / 2.0
     cy = (min_y + max_y) / 2.0
     diagram_h = (max_y - min_y) * scale
-    total_h = _MARGIN + header_h + _MARGIN / 2 + diagram_h + _MARGIN / 2 + _FOOTER_H + _MARGIN
+    total_h = _MARGIN + header_h + _MARGIN / 2 + diagram_h + _MARGIN
     origin_y = _MARGIN + header_h + _MARGIN / 2
 
     def W2S(x: float, y: float) -> tuple[float, float]:
@@ -542,32 +540,6 @@ def render_diagram(
         "</g>"
     )
 
-    # -- footer: elevation + idents left, data credit right --------------------
-    fy = origin_y + diagram_h + _MARGIN / 2 + _FOOTER_H / 2
-    footer_fs = max(9.0, width / 90.0)
-    elev = airport.get("elevation_ft") or ""
-    try:
-        elev_txt = f"Elev. {float(elev):.0f}'" if str(elev).strip() else "elev unknown"
-    except ValueError:
-        elev_txt = "elev unknown"
-    left = (
-        f"{elev_txt} • {airport.get('ident', '')}"
-        + (f" / {airport.get('iata_code', '')}" if (airport.get("iata_code") or "").strip() else "")
-    )
-    right = (
-        "Runway/frequency data: OurAirports.com (CC0). "
-        "Ground layout: © OpenStreetMap contributors (ODbL)."
-    )
-    parts.append(
-        f'<g id="footer" fill="none" stroke="#000000" stroke-width="{thin_w:.2f}">'
-        f'<text x="{_MARGIN:.1f}" y="{fy:.1f}" '
-        f'font-family="monospace" data-stroke-font="hershey" font-size="{footer_fs:.1f}" '
-        f'stroke="none" fill="#000000">{_esc(left)}</text>'
-        f'<text x="{_MARGIN + diagram_w:.1f}" y="{fy:.1f}" text-anchor="end" '
-        f'font-family="monospace" data-stroke-font="hershey" font-size="{footer_fs:.1f}" '
-        f'stroke="none" fill="#000000">{_esc(right)}</text>'
-        "</g>"
-    )
     parts.append("</svg>")
     return "\n".join(parts) + "\n", counts, rotation, warnings
 
