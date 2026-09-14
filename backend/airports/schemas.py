@@ -45,6 +45,11 @@ class RenderRequest(BaseModel):
         default=1000, ge=100, le=4000,
         description="SVG width in user units (plane meters scaled to fit).",
     )
+    context: bool = Field(
+        default=False,
+        description="Also draw surrounding streets/buildings/water (second "
+        "Overpass query, faintest group under the airfield geometry).",
+    )
 
     _norm_icao = field_validator("icao", mode="before")(normalize_icao)
 

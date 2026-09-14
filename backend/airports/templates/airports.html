@@ -17,6 +17,7 @@
     </div>
     <label>detail radius (m) <input type="range" id="apt_radius" min="500" max="6000" step="250" value="3000"><output id="apt_radius_val">3000</output></label>
     <label>min detail (m) <input type="range" id="apt_minlen" min="0" max="50" step="1" value="5"><output id="apt_minlen_val">5</output></label>
+    <label><input type="checkbox" id="apt_context"> surrounding streets &amp; buildings (extra Overpass query, faint group)</label>
     <button type="button" id="aptBtn">Render diagram</button>
     <p class="meta" id="meta">Looks up runway/frequency data (OurAirports, CC0), pulls ground polygons via <code>/v1/airports/render</code>, and plots the blueprint with the settings below (vector input: shading sliders don't apply; pen, page, label and display do). First render can take a minute; repeats are served from cache. Runway/frequency data: OurAirports.com (CC0). Ground layout: © OpenStreetMap contributors (ODbL). Spot-check small fields against a real map — OSM detail varies.</p>
   </fieldset>
@@ -75,6 +76,7 @@ async function renderAirport(andImport) {
     radius_m: parseFloat($("apt_radius").value),
     min_path_len_m: parseFloat($("apt_minlen").value),
     width: 1000,
+    context: $("apt_context").checked,
   };
   setBusy(true);
   setStatus((andImport ? "Loading" : "Rendering") + " diagram for " + code + "… (first render can take a minute)");

@@ -112,12 +112,17 @@ def _runway_infos(runway_rows: list[dict]) -> list[dict]:
 
 
 async def _load_polygons(
-    lat: float, lon: float, radius_m: float, warnings: list[str]
+    lat: float, lon: float, radius_m: float, warnings: list[str],
+    kind: str = "overpass",
 ) -> tuple[list[dict] | None, JSONResponse | None]:
     """Redis-first Overpass ``around`` fetch. Returns (elements, None) or
-    (None, error response) when every mirror fails."""
+    (None, error response) when every mirror fails. ``kind`` namespaces the
+    cache key (``overpass`` vs ``overpass-ctx``). Context outages degrade to
+    an empty layer (warning) instead of failing the whole render."""
+    from backend.airports.overpass import build_context_query
+
     key = cache_mod.airports_cache_key(
-        "overpass", f"{lat:.5f},{lon:.5f}", f"r={radius_m:.0f}"
+        kind, f"{lat:.5f},{lon:.5f}", f"r={radius_m:.0f}"
     )
     raw_json = await cache_get(key)
     if raw_json is not None:
@@ -126,11 +131,17 @@ async def _load_polygons(
             return json.loads(raw_json), None
         except ValueError:
             pass
+    query = (
+        build_airport_query(lat, lon, radius_m)
+        if kind == "overpass"
+        else build_context_query(lat, lon, radius_m)
+    )
     try:
-        elements = await fetch_airport_polygons(
-            build_airport_query(lat, lon, radius_m)
-        )
+        elements = await fetch_airport_polygons(query)
     except AirportOverpassError as exc:
+        if kind != "overpass":
+            warnings.append("context_unavailable")
+            return [], None
         return None, _error(
             502,
             "overpass_unavailable",
@@ -148,8 +159,14 @@ def _build_svg(
     elements: list[dict],
     width: int,
     min_path_len_m: float,
+    context_elements: list[dict] | None = None,
 ) -> tuple[str, dict[str, int], dict[str, int], float, list[str]]:
+    from backend.airports.overpass import split_context
+
     geoms, raw_counts = split_aeroway(elements)
+    ctx_geoms = split_context(context_elements or []) if context_elements else {}
+    if context_elements:
+        raw_counts = {**raw_counts, "context_ways": sum(len(v) for v in ctx_geoms.values())}
     svg, path_counts, rotation, warnings = render_diagram(
         airport=airport,
         runways=runway_rows,
@@ -162,6 +179,7 @@ def _build_svg(
             for r in freq_rows
         ],
         osm_geoms=geoms,
+        context_geoms=ctx_geoms,
         width=width,
         min_path_len_m=min_path_len_m,
     )
@@ -212,6 +230,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     svg_key = airports_cache_key(
         "svg", body.icao, f"r={body.radius_m:.0f}",
         f"minlen={body.min_path_len_m}", f"width={body.width}",
+        f"ctx={body.context}",
     )
     cached_svg = await cache_get(svg_key)
     if cached_svg is not None:
@@ -221,29 +240,48 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         elements, err = await _load_polygons(lat, lon, body.radius_m, warnings)
         if err is not None or elements is None:
             return err  # type: ignore[return-value]
+        ctx_elements: list[dict] | None = None
+        if body.context:
+            ctx_elements, _ = await _load_polygons(
+                lat, lon, body.radius_m, warnings, kind="overpass-ctx")
+            warnings.append("context_enabled")
         geoms, raw_counts = await asyncio.to_thread(split_aeroway, elements)
         path_counts = {cls: len(geoms.get(cls, [])) for cls in geoms}
-        _, _, rotation, _ = await asyncio.to_thread(
-            render_diagram,
-            airport=airport,
-            runways=runway_rows,
-            frequencies=[
+        render_kwargs: dict = {
+            "airport": airport,
+            "runways": runway_rows,
+            "frequencies": [
                 {"type": r["type"], "description": r["description"],
                  "frequency_mhz": r["frequency_mhz"]} for r in freq_rows
             ],
-            osm_geoms=geoms,
-            width=body.width,
-            min_path_len_m=body.min_path_len_m,
-        )
+            "osm_geoms": geoms,
+            "width": body.width,
+            "min_path_len_m": body.min_path_len_m,
+        }
+        if ctx_elements:
+            from backend.airports.overpass import split_context
+
+            ctx_geoms = await asyncio.to_thread(split_context, ctx_elements)
+            render_kwargs["context_geoms"] = ctx_geoms
+            path_counts["context"] = sum(len(v) for v in ctx_geoms.values())
+        else:
+            path_counts["context"] = 0
+        _, _, rotation, _ = await asyncio.to_thread(
+            render_diagram, **render_kwargs)
     else:
         cache_hit = False
         elements, err = await _load_polygons(lat, lon, body.radius_m, warnings)
         if err is not None or elements is None:
             return err  # type: ignore[return-value]
+        ctx_elements = None
+        if body.context:
+            ctx_elements, _ = await _load_polygons(
+                lat, lon, body.radius_m, warnings, kind="overpass-ctx")
+            warnings.append("context_enabled")
         svg_text, path_counts, raw_counts, rotation, render_warnings = (
             await asyncio.to_thread(
                 _build_svg, airport, runway_rows, freq_rows, elements,
-                body.width, body.min_path_len_m,
+                body.width, body.min_path_len_m, ctx_elements,
             )
         )
         warnings.extend(render_warnings)
@@ -286,10 +324,15 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
     elements, err = await _load_polygons(lat, lon, body.radius_m, warnings)
     if err is not None or elements is None:
         return err  # type: ignore[return-value]
+    ctx_elements = None
+    if body.context:
+        ctx_elements, _ = await _load_polygons(
+            lat, lon, body.radius_m, warnings, kind="overpass-ctx")
+        warnings.append("context_enabled")
     svg_text, path_counts, raw_counts, rotation, render_warnings = (
         await asyncio.to_thread(
             _build_svg, airport, runway_rows, freq_rows, elements,
-            body.width, body.min_path_len_m,
+            body.width, body.min_path_len_m, ctx_elements,
         )
     )
     warnings.extend(render_warnings)

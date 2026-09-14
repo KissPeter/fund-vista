@@ -158,7 +158,8 @@ def test_split_aeroway_classes_and_ignores_rest():
     assert len(geoms["taxiway"]) == 1
     assert len(geoms["apron"]) == 1
     assert geoms["runway"] == [] and geoms["hangar"] == []
-    assert counts == {"ways": 3, "relations": 0}  # helipad + untagged excluded
+    assert geoms["stands"] == [] and geoms["stopways"] == []
+    assert counts == {"nodes": 0, "ways": 3, "relations": 0}  # helipad + untagged excluded
 
 
 def _airport():
@@ -211,10 +212,112 @@ def test_render_blueprint_groups_and_badges():
     assert "OurAirports" in svg and "OpenStreetMap" in svg  # footer credit
     # Geometry-bold: 1 OSM outline + 2 edges + 1 centerline per strip.
     assert counts == {"runway": 4, "taxiway": 1, "apron": 1,
-                      "terminal": 0, "hangar": 0}
+                      "terminal": 0, "hangar": 0, "stands": 0,
+                      "stopways": 0, "context": 0}
     # Strokes only: no fills except the structurally-needed arrowhead.
     assert svg.count('fill="#000000"') <= 10
     assert 'fill="none"' in svg
+
+
+def test_split_folds_taxilane_stands_stopway():
+    from backend.airports.overpass import build_context_query, split_context
+
+    elements = [
+        {"type": "way", "id": 1, "tags": {"aeroway": "taxilane"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43}]},
+        {"type": "way", "id": 2, "tags": {"aeroway": "parking_position"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.251, "lat": 47.43},
+                      {"lon": 19.251, "lat": 47.431}, {"lon": 19.25, "lat": 47.431},
+                      {"lon": 19.25, "lat": 47.43}]},
+        {"type": "node", "id": 3, "lon": 19.26, "lat": 47.43,
+         "tags": {"aeroway": "parking_position"}},
+        {"type": "way", "id": 4, "tags": {"aeroway": "stopway"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43}]},
+        {"type": "way", "id": 5, "tags": {"aeroway": "jet_bridge"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43}]},
+        {"type": "way", "id": 6, "tags": {"aeroway": "helipad"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43}]},
+    ]
+    geoms, counts = split_aeroway(elements)
+    assert len(geoms["taxiway"]) == 1  # taxilane folded in
+    assert len(geoms["stands"]) == 2  # way ring + node diamond
+    assert len(geoms["stopways"]) == 1
+    # jet_bridge / helipad stay excluded (poster-scale clutter).
+    assert sum(len(v) for v in geoms.values()) == 4
+    assert counts == {"nodes": 1, "ways": 3, "relations": 0}  # excluded ids uncounted
+
+    # Node diamond is a tiny closed ring around the node.
+    diamond = geoms["stands"][1]
+    assert len(diamond) == 5 and diamond[0] == diamond[-1]
+    assert max(abs(x - 19.26) for x, _ in diamond) < 0.001
+
+    # Context query shape + split (opt-in surrounding streets).
+    query = build_context_query(47.4369, 19.2556, 3000.0)
+    assert "around:3000,47.436900,19.255600" in query
+    assert 'way["highway"' in query and 'way["building"]' in query
+    assert 'way["natural"="water"]' in query and "out geom;" in query
+    ctx = split_context([
+        {"type": "way", "id": 10, "tags": {"highway": "service"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43}]},
+        {"type": "way", "id": 11, "tags": {"building": "yes"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43},
+                      {"lon": 19.26, "lat": 47.431}, {"lon": 19.25, "lat": 47.43}]},
+        {"type": "way", "id": 12, "tags": {"shop": "bakery"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43}]},
+    ])
+    assert len(ctx["roads"]) == 1 and len(ctx["buildings"]) == 1
+    assert ctx["water"] == []
+
+
+def test_render_stands_stopways_and_context_groups():
+    osm = {
+        "runway": [], "taxiway": [], "apron": [], "terminal": [],
+        "hangar": [],
+        "stands": [[(19.255, 47.437), (19.256, 47.437), (19.256, 47.4368),
+                    (19.255, 47.4368), (19.255, 47.437)]],
+        "stopways": [[(19.251, 47.4395), (19.252, 47.4395),
+                      (19.252, 47.4393), (19.251, 47.4393),
+                      (19.251, 47.4395)]],
+    }
+    ctx = {
+        "roads": [[(19.24, 47.43), (19.27, 47.43)]],
+        "buildings": [[(19.24, 47.432), (19.241, 47.432), (19.241, 47.4318),
+                       (19.24, 47.4318), (19.24, 47.432)]],
+        "water": [],
+    }
+    svg, counts, _, warnings = render_diagram(
+        airport=_airport(), runways=[], frequencies=[],
+        osm_geoms=osm, context_geoms=ctx, width=1000,
+    )
+    assert 'id="osm-stands"' in svg and 'id="osm-stopways"' in svg
+    assert 'id="context"' in svg
+    assert counts["stands"] == 1 and counts["stopways"] == 1
+    assert counts["context"] == 2
+    assert "no_context_data" not in warnings
+    # Empty context warns instead of failing.
+    _, _, _, warnings2 = render_diagram(
+        airport=_airport(), runways=[], frequencies=[],
+        osm_geoms={k: [] for k in osm}, context_geoms={}, width=1000,
+    )
+    assert "no_context_data" not in warnings2  # flag-equivalent: no ctx given
+    _, _, _, warnings3 = render_diagram(
+        airport=_airport(), runways=[], frequencies=[],
+        osm_geoms={k: [] for k in osm},
+        context_geoms={"roads": [], "buildings": [], "water": []}, width=1000,
+    )
+    assert "no_context_data" in warnings3
+
+
+def test_render_request_context_defaults_false(http_client):
+    """Hermetic: schema default + passthrough without touching Upstreams."""
+    from backend.airports.schemas import RenderRequest
+
+    assert RenderRequest(icao="LHBP").context is False
+    assert RenderRequest(icao="LHBP", context=True).context is True
+    # Unknown fields still rejected (extra=forbid).
+    resp = http_client.post(
+        "/v1/airports/render", json={"icao": "LHBP", "contex": True})
+    assert resp.status_code == 422
 
 
 def test_render_runway_edges_are_parallel_at_true_width():

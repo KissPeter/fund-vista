@@ -59,6 +59,7 @@ def render_diagram(
     runways: list[dict],
     frequencies: list[dict],
     osm_geoms: dict[str, list[list[tuple[float, float]]]],
+    context_geoms: dict[str, list[list[tuple[float, float]]]] | None = None,
     width: int = 1000,
     min_path_len_m: float = 5.0,
 ) -> tuple[str, dict[str, int], float, list[str]]:
@@ -124,8 +125,10 @@ def render_diagram(
         {**s, "le": rotate_point(*s["le"], rotation), "he": rotate_point(*s["he"], rotation)}
         for s in strips
     ]
-    osm_r: dict[str, list[list[tuple[float, float]]]] = {}
-    for cls, polys in osm_geoms.items():
+
+    def _project_polys(
+        polys: list[list[tuple[float, float]]],
+    ) -> list[list[tuple[float, float]]]:
         kept: list[list[tuple[float, float]]] = []
         for lonlat in polys:
             pts = [proj(ll) for ll in lonlat]
@@ -136,15 +139,25 @@ def render_diagram(
             if length < min_path_len_m:
                 continue
             kept.append([rotate_point(x, y, rotation) for x, y in pts])
-        osm_r[cls] = kept
+        return kept
+
+    osm_r: dict[str, list[list[tuple[float, float]]]] = {}
+    for cls, polys in osm_geoms.items():
+        osm_r[cls] = _project_polys(polys)
     if not any(osm_r.values()):
         warnings.append("no_osm_aeroway")
+    ctx_r: dict[str, list[list[tuple[float, float]]]] = {}
+    if context_geoms:
+        for cls, polys in context_geoms.items():
+            ctx_r[cls] = _project_polys(polys)
+        if not any(ctx_r.values()):
+            warnings.append("no_context_data")
 
     # -- fit rotated world → diagram area ---------------------------------
     all_pts: list[tuple[float, float]] = []
     for s in strips_r:
         all_pts += [s["le"], s["he"]]
-    for polys in osm_r.values():
+    for polys in list(osm_r.values()) + list(ctx_r.values()):
         for poly in polys:
             all_pts += poly
     if not all_pts:
@@ -189,7 +202,8 @@ def render_diagram(
         "north arrow shows true north on the rotated page; "
         "runway edges are geometry (plotter-safe), not stroke-width -->",
     ]
-    counts = {"runway": 0, "taxiway": 0, "apron": 0, "terminal": 0, "hangar": 0}
+    counts = {"runway": 0, "taxiway": 0, "apron": 0, "terminal": 0,
+              "hangar": 0, "stands": 0, "stopways": 0, "context": 0}
 
     # -- title header --------------------------------------------------------
     title_y = _MARGIN + _TITLE_H * 0.7
@@ -248,7 +262,7 @@ def render_diagram(
     )
     parts.append("</g>")
 
-    # -- OSM ground: taxiway centerlines; apron/terminal/hangar outlines ---
+    # -- surrounding context first (faintest, under the airfield) ---------
     def path_d(poly: list[tuple[float, float]], close: bool) -> str:
         pts = [W2S(x, y) for x, y in poly]
         d = f"M {pts[0][0]:.2f} {pts[0][1]:.2f} " + " ".join(
@@ -260,11 +274,25 @@ def render_diagram(
                 d += " Z"
         return d
 
+    faint_w = max(0.5, width / 1600.0)
+    parts.append(
+        f'<g id="context" fill="none" stroke="#000000" '
+        f'stroke-width="{faint_w:.2f}" stroke-linecap="round" stroke-linejoin="round">'
+    )
+    for cls in ("roads", "buildings", "water"):
+        for poly in ctx_r.get(cls, []):
+            parts.append(f"<path d=\"{path_d(poly, cls != 'roads')}\"/>")
+            counts["context"] += 1
+    parts.append("</g>")
+
+    # -- OSM ground: taxiway centerlines; apron/terminal/hangar outlines ---
     for cls, gid, w, closed in (
         ("taxiway", "taxiways", taxi_w, False),
         ("apron", "aprons", thin_w, True),
         ("terminal", "terminals", thin_w, True),
         ("hangar", "hangars", thin_w, True),
+        ("stands", "stands", thin_w, True),
+        ("stopways", "stopways", thin_w, True),
     ):
         parts.append(
             f'<g id="osm-{gid}" fill="none" stroke="#000000" '

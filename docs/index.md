@@ -9,6 +9,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 |----|------|-------|--------|--------------|
 | CR-001 | change request | Split citymap out of `/penplot` into `/citymap` | done | 2026-09-13 |
 | F-001 | feature | Airport ground-diagram blueprint generator (`/airports`) | done | 2026-09-13 |
+| F-002 | feature | Dropped aeroway elements (stands/stopways) + surrounding context | done | 2026-09-14 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/F-001-airport-diagrams.md`.
