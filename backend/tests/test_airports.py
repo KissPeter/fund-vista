@@ -336,6 +336,20 @@ def test_render_zoom_scales_about_center():
     assert h2 > h1
 
 
+def test_render_version_busts_stale_svg_cache():
+    """Layout changes must invalidate cached SVGs (the inset-strip bug:
+    same params served the pre-fix render for 24h)."""
+    from backend.airports.render import RENDER_VERSION
+    from backend.airports.router import render_diagram_version
+
+    assert render_diagram_version() == RENDER_VERSION >= 1
+    from backend.airports.cache import airports_cache_key
+
+    old_key = airports_cache_key("svg", "LHBP", "r=3000")
+    new_key = airports_cache_key("svg", "LHBP", "r=3000", f"v={RENDER_VERSION}")
+    assert old_key != new_key
+
+
 def test_render_request_zoom_defaults_and_rejects(http_client):
     from backend.airports.schemas import RenderRequest
 

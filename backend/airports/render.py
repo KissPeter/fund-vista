@@ -30,6 +30,10 @@ from backend.airports.geometry import (
 )
 from backend.airports.ourairports import FT_TO_M, heading_from_ident
 
+# Bump on any output-affecting change: the rendered-SVG cache key includes
+# it, so clients never see a stale layout after an upgrade.
+RENDER_VERSION = 3
+
 # A4 portrait in user units at 1000 wide → height set by content; the plotter
 # scales the viewBox to the page with margin (iDraw working area 210×297mm).
 _MARGIN = 40.0

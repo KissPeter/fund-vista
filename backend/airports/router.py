@@ -59,6 +59,13 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
     )
 
 
+def render_diagram_version() -> int:
+    """Layout version baked into the SVG cache key (kills stale renders)."""
+    from backend.airports.render import RENDER_VERSION
+
+    return RENDER_VERSION
+
+
 def _fnum(value: object) -> float | None:
     try:
         if value is None or (isinstance(value, str) and not value.strip()):
@@ -259,6 +266,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         "svg", icao, f"r={body.radius_m:.0f}",
         f"minlen={body.min_path_len_m}", f"width={body.width}",
         f"ctx={body.context}", f"zoom={body.zoom}",
+        f"v={render_diagram_version()}",
     )
     cached_svg = await cache_get(svg_key)
     if cached_svg is not None:
