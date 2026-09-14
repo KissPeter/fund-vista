@@ -45,9 +45,10 @@ def render_source_version() -> str:
 
 # A4 portrait in user units at 1000 wide → height set by content; the plotter
 # scales the viewBox to the page with margin (iDraw working area 210×297mm).
+# NOTE: no title, no frequency strip, no footer in the artwork — the SVG is
+# pure diagram geometry (runways, ground, badges, compass). Names,
+# frequencies and credits live on the page / API responses, never plotted.
 _MARGIN = 40.0
-_STRIP_H = 96.0
-_MAX_FREQ_COLS = 5
 
 
 def _esc(text: object) -> str:
@@ -74,13 +75,14 @@ def render_diagram(
     min_path_len_m: float = 5.0,
     zoom: float = 1.0,
 ) -> tuple[str, dict[str, int], float, list[str]]:
-    """Render the full blueprint SVG.
+    """Render the pure-diagram SVG (no title/strip/footer — those live on
+    the page and in API responses, never plotted).
 
     Returns ``(svg_text, path_counts, rotation_deg, warnings)``. ``airport``
-    needs ``latitude_deg/longitude_deg`` (+ name/elevation/idents for the
-    header/footer). ``runways`` are raw ``runways.csv`` rows; endpoints come
-    from :func:`runway_endpoints` (authoritative coords or ident-heading
-    fallback).
+    needs ``latitude_deg/longitude_deg``. ``runways`` are raw ``runways.csv``
+    rows; endpoints come from :func:`runway_endpoints` (authoritative coords
+    or ident-heading fallback). ``frequencies`` is accepted for signature
+    stability but not drawn.
     """
     from backend.airports.ourairports import runway_endpoints
 
@@ -183,7 +185,7 @@ def render_diagram(
     min_y -= pad_m
     max_y += pad_m
 
-    header_h = _STRIP_H
+    header_h = 0.0
     diagram_w = width - 2 * _MARGIN
     scale = diagram_w / max(max_x - min_x, 1e-9) * zoom
     # Centered mapping (identical to corner fit at zoom=1.0): zooming
@@ -312,8 +314,6 @@ def render_diagram(
     runway_w = max(6.0, width / 130.0)
     taxi_w = max(1.2, width / 700.0)
     thin_w = max(0.8, width / 1100.0)
-    freq_big = max(20.0, width / 42.0)
-    freq_small = max(11.0, width / 72.0)
     text_h = max(11.0, width / 72.0)
 
     parts = [
@@ -329,54 +329,8 @@ def render_diagram(
 
     # NOTE: no in-SVG title — name/country live as fixed labels at the top
     # of the /airports page (and the convert title block), never plotted.
-
-    # -- frequency strip: full-bleed columns (label small, freq large) ----
-    strip_y = _MARGIN
-    cols = frequencies[:_MAX_FREQ_COLS]
-    ncols = max(len(cols), 1)
-    parts.append(
-        f'<g id="freq-strip" fill="none" stroke="#000000" stroke-width="{thin_w:.2f}">'
-        f'<rect x="0" y="{strip_y:.1f}" width="{width}" '
-        f'height="{_STRIP_H:.1f}"/>'
-    )
-    if cols:
-        for i, freq in enumerate(cols):
-            # NOTE: never reuse the names cx/cy here — W2S closes over the
-            # fit center and rebinding it shifts all geometry out of frame.
-            col_x = width * (i + 0.5) / ncols
-            if i > 0:
-                div_x = width * i / ncols
-                parts.append(
-                    f"<path d=\"M {div_x:.1f} {strip_y + 8:.1f} "
-                    f"L {div_x:.1f} {strip_y + _STRIP_H - 8:.1f}\"/>"
-                )
-            label = f"{freq['type']} {freq['description']}".strip().upper()
-            parts.append(
-                f'<text x="{col_x:.1f}" y="{strip_y + 30:.1f}" text-anchor="middle" '
-                f'font-family="monospace" data-stroke-font="hershey" font-size="{freq_small:.1f}" '
-                f'stroke="none" fill="#000000">{_esc(label)}</text>'
-                f'<text x="{col_x:.1f}" y="{strip_y + 30 + freq_big + 8:.1f}" text-anchor="middle" '
-                f'font-family="monospace" data-stroke-font="hershey" font-size="{freq_big:.1f}" '
-                f'stroke="none" fill="#000000">{freq["frequency_mhz"]:.3f}</text>'
-            )
-        if len(frequencies) > _MAX_FREQ_COLS:
-            parts.append(
-                f'<text x="{width - 8:.1f}" y="{strip_y + _STRIP_H - 10:.1f}" '
-                f'text-anchor="end" font-family="monospace" data-stroke-font="hershey" font-size="{freq_small:.1f}" '
-                f'stroke="none" fill="#000000">+{len(frequencies) - _MAX_FREQ_COLS} more</text>'
-            )
-    else:
-        parts.append(
-            f'<text x="{width / 2:.1f}" y="{strip_y + _STRIP_H / 2 + freq_small / 2:.1f}" '
-            f'text-anchor="middle" font-family="monospace" data-stroke-font="hershey" font-size="{freq_small:.1f}" '
-            f'stroke="none" fill="#000000">No published frequencies</text>'
-        )
-        warnings.append("no_frequencies")
-    rule_y = strip_y + _STRIP_H
-    parts.append(
-        f"<path d=\"M 0 {rule_y:.1f} L {width} {rule_y:.1f}\"/>"
-    )
-    parts.append("</g>")
+    # NOTE: no frequency strip either — frequencies travel in the API
+    # responses and page copy; the artwork is pure diagram geometry.
 
     # -- surrounding context first (faintest, under the airfield) ---------
     def clipped_d(world_poly: list[tuple[float, float]], close: bool) -> list[str]:

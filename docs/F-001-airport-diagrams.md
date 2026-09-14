@@ -37,16 +37,13 @@ Credit line (footer + response `attribution`): `Runway/frequency data: OurAirpor
      import→convert; edges survive vpype + plot as a doubled-line strip).
      Heavy `stroke-width` kept on the group for raw-SVG preview only.
    - Taxiways: thin centerlines. Aprons/terminals/hangars: thin closed outlines, `fill="none"`.
-7. Header + frequency strip (client-approved reference mock, LHBP):
-   title `MUNICIPALITY, ISO` + up to 5 frequency columns (small
-   `TYPE description`, large `nnn.nnn`) with dividers and rule; overflow as
-   `+N more`. Stays black-on-paper (fills are not plottable) — the
-   white-on-navy look is a display style via the page's Display picker.
+7. No title / frequency strip / footer in the artwork (client decision):
+   the SVG is pure diagram geometry — name, frequencies and credits live
+   on the page, in API responses and the convert title block, never plotted.
 8. Heading badges: ident label past each threshold + oval with `NNN°`
    (per-end `le_/he_heading_degT`, else ident × 10) beyond it; displaced-threshold ticks where `> 0`.
 9. Compass/declination arrow at rotation-adjusted angle (true north; WMM magnetic = TODO).
-10. Footer: elevation ft, ICAO/IATA, credit line.
-11. Single SVG, strokes only, `fill="none"`, A4 portrait viewBox with iDraw 2.0 margin.
+10. Single SVG, strokes only, `fill="none"`, A4 portrait viewBox with iDraw 2.0 margin.
 12. Labels: all `<text>` carries `data-stroke-font="hershey"` — import lays
     them in crisp Hershey single-stroke (title-block faces; `°`/`•`
     synthesized, `©`→`(C)`), never raster-traced outlines. Vector input

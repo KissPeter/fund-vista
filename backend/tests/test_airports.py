@@ -201,9 +201,12 @@ def test_render_blueprint_groups_and_badges():
     assert warnings == []
     # Primary 130° runway stands vertical via the minimal −50° turn.
     assert abs(rotation - rotation_for_heading(130.0)) < 5.0
-    for marker in ("freq-strip", "osm-taxiways", "osm-aprons",
+    for marker in ("osm-taxiways", "osm-aprons",
                    "runways", "runway-marks", "compass"):
         assert f'id="{marker}"' in svg, marker
+    # No top strip either: frequencies live in responses/page, never plot.
+    assert 'id="freq-strip"' not in svg
+    assert "118.100" not in svg and "TWR" not in svg
     # No footer: no elevation/credits plotted anywhere in the artwork.
     assert 'id="footer"' not in svg
     assert "Elev." not in svg
@@ -215,8 +218,6 @@ def test_render_blueprint_groups_and_badges():
     assert svg.count('data-stroke-font="hershey"') >= 5
     assert "13L" in svg and "31R" in svg  # ident badges
     assert "130°" in svg and "310°" in svg  # degree ovals
-    assert "118.100" in svg and "TWR" in svg  # frequency column
-    assert '<rect x="0"' in svg  # strip runs full-bleed, border to border
     # Geometry-bold: 1 OSM outline + 2 edges + 1 centerline per strip.
     assert counts == {"runway": 4, "taxiway": 1, "apron": 1,
                       "terminal": 0, "hangar": 0, "stands": 0,
@@ -453,20 +454,6 @@ def test_render_runway_edges_are_parallel_at_true_width():
     assert edge_gap > 0  # true scaled width apart, not a triple-drawn line
 
 
-def test_render_frequency_columns_capped_at_five():
-    osm = {"runway": [], "taxiway": [], "apron": [],
-           "terminal": [], "hangar": []}
-    freqs = [{"type": f"T{i}", "description": "Test", "frequency_mhz": 118.0 + i}
-             for i in range(8)]
-    svg, _, _, warnings = render_diagram(
-        airport=_airport(), runways=[], frequencies=freqs,
-        osm_geoms=osm, width=1000,
-    )
-    assert "123.000" not in svg  # 6th+ frequency not a column …
-    assert "+3 more" in svg  # … but counted
-    assert "no_frequencies" not in warnings
-
-
 def test_render_no_runway_data_warns_but_draws_osm():
     svg, counts, rotation, warnings = render_diagram(
         airport=_airport(), runways=[], frequencies=[],
@@ -476,9 +463,10 @@ def test_render_no_runway_data_warns_but_draws_osm():
     )
     assert rotation == 0.0
     assert "no_runway_data" in warnings
-    assert "no_frequencies" in warnings
     assert counts["taxiway"] == 1
-    assert "No published frequencies" in svg
+    # Frequencies never plot (no strip, no warning either way).
+    assert "no_frequencies" not in warnings
+    assert "frequency" not in svg.lower()
 
 
 def test_render_svg_parses_as_plottable_vectors():
