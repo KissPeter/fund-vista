@@ -7,7 +7,35 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+#: Selectable diagram layers (airfield always fetched; context needs the
+#: second Overpass query). Labels/badges/compass are annotations, not layers.
+LayerName = Literal[
+    "runway",
+    "taxiway",
+    "apron",
+    "terminal",
+    "hangar",
+    "stands",
+    "stopways",
+    "highways",
+    "roads",
+    "paths",
+    "rails",
+    "waterway",
+    "water",
+    "buildings",
+]
+
+AIRFIELD_LAYERS: tuple[str, ...] = (
+    "runway", "taxiway", "apron", "terminal", "hangar", "stands", "stopways",
+)
+CONTEXT_LAYERS: tuple[str, ...] = (
+    "highways", "roads", "paths", "rails", "waterway", "water", "buildings",
+)
 
 _ICAO_RE = re.compile(r"^[A-Z0-9]{3,4}$")
 
@@ -45,18 +73,38 @@ class RenderRequest(BaseModel):
         default=1000, ge=100, le=4000,
         description="SVG width in user units (plane meters scaled to fit).",
     )
-    context: bool = Field(
-        default=False,
-        description="Also draw surrounding streets/buildings/water (second "
-        "Overpass query, faintest group under the airfield geometry).",
-    )
     zoom: float = Field(
         default=1.0, ge=0.25, le=4.0,
         description="Zoom about the scene center (1.0 = fit all content; "
         ">1 crops edges to fill the page, <1 adds margin).",
     )
+    layers: list[LayerName] | None = Field(
+        default=None,
+        description="Diagram layers to draw (omit = airfield default). "
+        "Context layers fire the second Overpass query.",
+    )
 
     _norm_icao = field_validator("icao", mode="before")(normalize_icao)
+
+    @model_validator(mode="after")
+    def _dedupe_layers(self) -> RenderRequest:
+        if self.layers is not None:
+            if not self.layers:
+                raise ValueError("'layers' must not be empty (omit for default).")
+            seen: list[str] = []
+            for layer in self.layers:
+                if layer not in seen:
+                    seen.append(layer)
+            self.layers = seen  # type: ignore[assignment]
+        return self
+
+    def effective_layers(self) -> list[str]:
+        """Selected layers, or the airfield default when omitted."""
+        return list(self.layers) if self.layers is not None else list(AIRFIELD_LAYERS)
+
+    def needs_context(self) -> bool:
+        """True when any selected layer needs the second Overpass query."""
+        return any(layer in CONTEXT_LAYERS for layer in self.effective_layers())
 
 
 class RunwayInfo(BaseModel):

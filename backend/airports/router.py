@@ -172,6 +172,7 @@ def _build_svg(
     min_path_len_m: float,
     context_elements: list[dict] | None = None,
     zoom: float = 1.0,
+    layers: list[str] | None = None,
 ) -> tuple[str, dict[str, int], dict[str, int], float, list[str]]:
     from backend.airports.overpass import split_context
 
@@ -195,6 +196,7 @@ def _build_svg(
         width=width,
         min_path_len_m=min_path_len_m,
         zoom=zoom,
+        layers=layers,
     )
     return svg, path_counts, raw_counts, rotation, warnings
 
@@ -267,7 +269,8 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     svg_key = airports_cache_key(
         "svg", icao, f"r={body.radius_m:.0f}",
         f"minlen={body.min_path_len_m}", f"width={body.width}",
-        f"ctx={body.context}", f"zoom={body.zoom}",
+        f"layers={','.join(sorted(body.effective_layers()))}",
+        f"zoom={body.zoom}",
         f"v={render_diagram_version()}",
     )
     cached_svg = await cache_get(svg_key)
@@ -279,12 +282,16 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         if err is not None or elements is None:
             return err  # type: ignore[return-value]
         ctx_elements: list[dict] | None = None
-        if body.context:
+        if body.needs_context():
             ctx_elements, _ = await _load_polygons(
                 lat, lon, body.radius_m, warnings, kind="overpass-ctx")
             warnings.append("context_enabled")
         geoms, raw_counts = await asyncio.to_thread(split_aeroway, elements)
-        path_counts = {cls: len(geoms.get(cls, [])) for cls in geoms}
+        selected = set(body.effective_layers())
+        path_counts = {
+            cls: (len(geoms.get(cls, [])) if cls in selected else 0)
+            for cls in geoms
+        }
         render_kwargs: dict = {
             "airport": airport,
             "runways": runway_rows,
@@ -296,15 +303,15 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
             "width": body.width,
             "min_path_len_m": body.min_path_len_m,
             "zoom": body.zoom,
+            "layers": body.effective_layers(),
         }
         if ctx_elements:
             from backend.airports.overpass import split_context
 
             ctx_geoms = await asyncio.to_thread(split_context, ctx_elements)
             render_kwargs["context_geoms"] = ctx_geoms
-            path_counts["context"] = sum(len(v) for v in ctx_geoms.values())
-        else:
-            path_counts["context"] = 0
+            for cls, polys in ctx_geoms.items():
+                path_counts[cls] = len(polys) if cls in selected else 0
         _, _, rotation, _ = await asyncio.to_thread(
             render_diagram, **render_kwargs)
     else:
@@ -313,7 +320,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         if err is not None or elements is None:
             return err  # type: ignore[return-value]
         ctx_elements = None
-        if body.context:
+        if body.needs_context():
             ctx_elements, _ = await _load_polygons(
                 lat, lon, body.radius_m, warnings, kind="overpass-ctx")
             warnings.append("context_enabled")
@@ -321,6 +328,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
             await asyncio.to_thread(
                 _build_svg, airport, runway_rows, freq_rows, elements,
                 body.width, body.min_path_len_m, ctx_elements, body.zoom,
+                body.effective_layers(),
             )
         )
         warnings.extend(render_warnings)
@@ -367,7 +375,7 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
     if err is not None or elements is None:
         return err  # type: ignore[return-value]
     ctx_elements = None
-    if body.context:
+    if body.needs_context():
         ctx_elements, _ = await _load_polygons(
             lat, lon, body.radius_m, warnings, kind="overpass-ctx")
         warnings.append("context_enabled")
@@ -375,6 +383,7 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
         await asyncio.to_thread(
             _build_svg, airport, runway_rows, freq_rows, elements,
             body.width, body.min_path_len_m, ctx_elements, body.zoom,
+            body.effective_layers(),
         )
     )
     warnings.extend(render_warnings)

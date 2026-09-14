@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from jinja2 import ChoiceLoader, FileSystemLoader
 
+from backend.airports.schemas import AIRFIELD_LAYERS, CONTEXT_LAYERS
 from backend.penplot.backgrounds import BACKGROUNDS, LINE_COLORS
 from backend.penplot.config import PAGE_SIZES_MM
 from backend.penplot.labels import LABEL_FONTS
@@ -43,6 +44,24 @@ _templates.env.loader = ChoiceLoader(
 )
 
 
+_LAYER_LABELS = {
+    "runway": "Runways",
+    "taxiway": "Taxiways",
+    "apron": "Aprons",
+    "terminal": "Terminals",
+    "hangar": "Hangars",
+    "stands": "Stands",
+    "stopways": "Stopways",
+    "highways": "Highways",
+    "roads": "Roads",
+    "paths": "Paths",
+    "rails": "Rails",
+    "waterway": "Rivers & streams",
+    "water": "Water",
+    "buildings": "Buildings",
+}
+
+
 @ui_router.get("/airports", response_class=HTMLResponse)
 async def airports_ui(request: Request) -> HTMLResponse:
     """Render the airport-diagram page with code-accurate defaults."""
@@ -60,6 +79,12 @@ async def airports_ui(request: Request) -> HTMLResponse:
             "backgrounds": [
                 {"id": bid, "label": info["label"]}
                 for bid, info in BACKGROUNDS.items()
+            ],
+            "airfield_layers": [
+                {"id": lid, "label": _LAYER_LABELS[lid]} for lid in AIRFIELD_LAYERS
+            ],
+            "context_layers": [
+                {"id": lid, "label": _LAYER_LABELS[lid]} for lid in CONTEXT_LAYERS
             ],
         },
     )

@@ -33,6 +33,8 @@ from backend.airports.geometry import (
     runway_heading_deg,
 )
 from backend.airports.ourairports import FT_TO_M, heading_from_ident
+from backend.airports.overpass import CONTEXT_CLASSES
+from backend.airports.schemas import AIRFIELD_LAYERS
 
 # Version of the rendered output, baked into the SVG cache key so clients
 # never see a stale layout. Derived from this file's own source: EVERY code
@@ -74,6 +76,7 @@ def render_diagram(
     width: int = 1000,
     min_path_len_m: float = 5.0,
     zoom: float = 1.0,
+    layers: list[str] | None = None,
 ) -> tuple[str, dict[str, int], float, list[str]]:
     """Render the pure-diagram SVG (no title/strip/footer — those live on
     the page and in API responses, never plotted).
@@ -87,6 +90,7 @@ def render_diagram(
     from backend.airports.ourairports import runway_endpoints
 
     warnings: list[str] = []
+    selected = set(layers) if layers is not None else set(AIRFIELD_LAYERS)
     lat0 = float(airport["latitude_deg"])
     lon0 = float(airport["longitude_deg"])
 
@@ -166,13 +170,19 @@ def render_diagram(
         if not any(ctx_r.values()):
             warnings.append("no_context_data")
 
-    # -- fit rotated world → diagram area ---------------------------------
+    # -- fit rotated world → diagram area (SELECTED layers only) ---------
     all_pts: list[tuple[float, float]] = []
-    for s in strips_r:
-        all_pts += [s["le"], s["he"]]
-    for polys in list(osm_r.values()) + list(ctx_r.values()):
-        for poly in polys:
-            all_pts += poly
+    if "runway" in selected:
+        for s in strips_r:
+            all_pts += [s["le"], s["he"]]
+    for cls, polys in list(osm_r.items()):
+        if cls in selected:
+            for poly in polys:
+                all_pts += poly
+    for cls, polys in list(ctx_r.items()):
+        if cls in selected:
+            for poly in polys:
+                all_pts += poly
     if not all_pts:
         all_pts = [(-500.0, -500.0), (500.0, 500.0)]
     min_x = min(p[0] for p in all_pts)
@@ -325,7 +335,8 @@ def render_diagram(
         "runway edges are geometry (plotter-safe), not stroke-width -->",
     ]
     counts = {"runway": 0, "taxiway": 0, "apron": 0, "terminal": 0,
-              "hangar": 0, "stands": 0, "stopways": 0, "context": 0}
+              "hangar": 0, "stands": 0, "stopways": 0,
+              **{cls: 0 for cls in CONTEXT_CLASSES}}
 
     # NOTE: no in-SVG title — name/country live as fixed labels at the top
     # of the /airports page (and the convert title block), never plotted.
@@ -352,16 +363,18 @@ def render_diagram(
         return out
 
     faint_w = max(0.5, width / 1600.0)
-    parts.append(
-        f'<g id="context" fill="none" stroke="#000000" '
-        f'stroke-width="{faint_w:.2f}" stroke-linecap="round" stroke-linejoin="round">'
-    )
-    for cls in ("roads", "buildings", "water"):
+    for cls in CONTEXT_CLASSES:
+        if cls not in selected:
+            continue
+        parts.append(
+            f'<g id="context-{cls}" fill="none" stroke="#000000" '
+            f'stroke-width="{faint_w:.2f}" stroke-linecap="round" stroke-linejoin="round">'
+        )
         for poly in ctx_r.get(cls, []):
-            for d in clipped_d(poly, cls != "roads"):
+            for d in clipped_d(poly, cls not in ("highways", "roads", "paths", "rails")):
                 parts.append(f"<path d=\"{d}\"/>")
-                counts["context"] += 1
-    parts.append("</g>")
+                counts[cls] += 1
+        parts.append("</g>")
 
     # -- OSM ground: taxiway centerlines; apron/terminal/hangar outlines ---
     for cls, gid, w, closed in (
@@ -372,6 +385,8 @@ def render_diagram(
         ("stands", "stands", thin_w, True),
         ("stopways", "stopways", thin_w, True),
     ):
+        if cls not in selected:
+            continue
         parts.append(
             f'<g id="osm-{gid}" fill="none" stroke="#000000" '
             f'stroke-width="{w:.2f}" stroke-linecap="round" stroke-linejoin="round">'
@@ -382,44 +397,49 @@ def render_diagram(
                 counts[cls] += 1
         parts.append("</g>")
 
+    show_runway = "runway" in selected
     # -- OSM runway outlines (thin, under the authoritative strip) ----------
-    parts.append(
-        f'<g id="osm-runways" fill="none" stroke="#000000" '
-        f'stroke-width="{thin_w:.2f}" stroke-linecap="round" stroke-linejoin="round">'
-    )
-    for poly in osm_r.get("runway", []):
-        for d in clipped_d(poly, True):
-            parts.append(f"<path d=\"{d}\"/>")
-            counts["runway"] += 1
-    parts.append("</g>")
-
-    # -- authoritative strips: 2 edges + centerline (geometry-bold) ---------
-    parts.append(
-        f'<g id="runways" fill="none" stroke="#000000" '
-        f'stroke-width="{runway_w:.2f}" stroke-linecap="butt">'
-    )
-    for s in strips_r:
-        dx, dy = s["he"][0] - s["le"][0], s["he"][1] - s["le"][1]
-        seg = math.hypot(dx, dy) or 1.0
-        nx, ny = -dy / seg, dx / seg  # world-space normal
-        hw = s["width_m"] / 2.0
-        strips_world = [
-            [(s["le"][0] + nx * hw * side, s["le"][1] + ny * hw * side),
-             (s["he"][0] + nx * hw * side, s["he"][1] + ny * hw * side)]
-            for side in (-1.0, 1.0)
-        ] + [[s["le"], s["he"]]]
-        for world_seg in strips_world:
-            for d in clipped_d(world_seg, False):
+    if show_runway:
+        parts.append(
+            f'<g id="osm-runways" fill="none" stroke="#000000" '
+            f'stroke-width="{thin_w:.2f}" stroke-linecap="round" stroke-linejoin="round">'
+        )
+        for poly in osm_r.get("runway", []):
+            for d in clipped_d(poly, True):
                 parts.append(f"<path d=\"{d}\"/>")
                 counts["runway"] += 1
-    parts.append("</g>")
+        parts.append("</g>")
 
-    # -- badges (ident) + degree ovals + displaced-threshold ticks -----------
-    parts.append(
-        f'<g id="runway-marks" fill="none" stroke="#000000" '
-        f'stroke-width="{thin_w:.2f}">'
-    )
-    for s in strips_r:
+    # -- authoritative strips: 2 edges + centerline (geometry-bold) ---------
+    if show_runway:
+        parts.append(
+            f'<g id="runways" fill="none" stroke="#000000" '
+            f'stroke-width="{runway_w:.2f}" stroke-linecap="butt">'
+        )
+        for s in strips_r:
+            dx, dy = s["he"][0] - s["le"][0], s["he"][1] - s["le"][1]
+            seg = math.hypot(dx, dy) or 1.0
+            nx, ny = -dy / seg, dx / seg  # world-space normal
+            hw = s["width_m"] / 2.0
+            strips_world = [
+                [(s["le"][0] + nx * hw * side, s["le"][1] + ny * hw * side),
+                 (s["he"][0] + nx * hw * side, s["he"][1] + ny * hw * side)]
+                for side in (-1.0, 1.0)
+            ] + [[s["le"], s["he"]]]
+            for world_seg in strips_world:
+                for d in clipped_d(world_seg, False):
+                    parts.append(f"<path d=\"{d}\"/>")
+                    counts["runway"] += 1
+        parts.append("</g>")
+
+    # -- badges (ident) + degree ovals + displaced-threshold ticks ---------
+    # Annotations of the runway layer: hidden with it.
+    if show_runway:
+        parts.append(
+            f'<g id="runway-marks" fill="none" stroke="#000000" '
+            f'stroke-width="{thin_w:.2f}">'
+        )
+    for s in (strips_r if show_runway else []):
         x1, y1 = W2S(*s["le"])
         x2, y2 = W2S(*s["he"])
         dx, dy = x2 - x1, y2 - y1
@@ -467,7 +487,8 @@ def render_diagram(
                 f'font-family="monospace" data-stroke-font="hershey" font-size="{text_h * 0.9:.1f}" '
                 f'stroke="none" fill="#000000">{_esc(deg_txt)}</text>'
             )
-    parts.append("</g>")
+    if show_runway:
+        parts.append("</g>")
 
     # -- compass: true north rotated by the SAME scene rotation -------------
     # World north (0,1) through rotate_point => consistent by construction.

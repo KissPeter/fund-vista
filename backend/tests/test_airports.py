@@ -221,7 +221,9 @@ def test_render_blueprint_groups_and_badges():
     # Geometry-bold: 1 OSM outline + 2 edges + 1 centerline per strip.
     assert counts == {"runway": 4, "taxiway": 1, "apron": 1,
                       "terminal": 0, "hangar": 0, "stands": 0,
-                      "stopways": 0, "context": 0}
+                      "stopways": 0, "highways": 0, "roads": 0,
+                      "paths": 0, "rails": 0, "waterway": 0,
+                      "water": 0, "buildings": 0}
     # Strokes only: no fills except the structurally-needed arrowhead.
     assert svg.count('fill="#000000"') <= 10
     assert 'fill="none"' in svg
@@ -272,8 +274,18 @@ def test_split_folds_taxilane_stands_stopway():
                       {"lon": 19.26, "lat": 47.431}, {"lon": 19.25, "lat": 47.43}]},
         {"type": "way", "id": 12, "tags": {"shop": "bakery"},
          "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43}]},
+        {"type": "way", "id": 13, "tags": {"highway": "motorway"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43}]},
+        {"type": "way", "id": 14, "tags": {"highway": "footway"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43}]},
+        {"type": "way", "id": 15, "tags": {"railway": "rail"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43}]},
+        {"type": "way", "id": 16, "tags": {"waterway": "stream"},
+         "geometry": [{"lon": 19.25, "lat": 47.43}, {"lon": 19.26, "lat": 47.43}]},
     ])
     assert len(ctx["roads"]) == 1 and len(ctx["buildings"]) == 1
+    assert len(ctx["highways"]) == 1 and len(ctx["paths"]) == 1
+    assert len(ctx["rails"]) == 1 and len(ctx["waterway"]) == 1
     assert ctx["water"] == []
 
 
@@ -288,32 +300,58 @@ def test_render_stands_stopways_and_context_groups():
                       (19.251, 47.4395)]],
     }
     ctx = {
-        "roads": [[(19.24, 47.43), (19.27, 47.43)]],
+        "highways": [], "roads": [[(19.24, 47.43), (19.27, 47.43)]],
+        "paths": [], "rails": [],
+        "waterway": [[(19.245, 47.431), (19.265, 47.431)]],
         "buildings": [[(19.24, 47.432), (19.241, 47.432), (19.241, 47.4318),
                        (19.24, 47.4318), (19.24, 47.432)]],
         "water": [],
     }
+    layers = ["stands", "stopways", "roads", "waterway", "buildings"]
     svg, counts, _, warnings = render_diagram(
         airport=_airport(), runways=[], frequencies=[],
-        osm_geoms=osm, context_geoms=ctx, width=1000,
+        osm_geoms=osm, context_geoms=ctx, width=1000, layers=layers,
     )
     assert 'id="osm-stands"' in svg and 'id="osm-stopways"' in svg
-    assert 'id="context"' in svg
+    assert 'id="context-roads"' in svg and 'id="context-waterway"' in svg
+    assert 'id="context-railways"' not in svg and 'id="context-rail"' not in svg
     assert counts["stands"] == 1 and counts["stopways"] == 1
-    assert counts["context"] == 2
+    assert counts["roads"] == 1 and counts["waterway"] == 1
+    assert counts["buildings"] == 1 and counts["runway"] == 0
     assert "no_context_data" not in warnings
     # Empty context warns instead of failing.
     _, _, _, warnings2 = render_diagram(
         airport=_airport(), runways=[], frequencies=[],
         osm_geoms={k: [] for k in osm}, context_geoms={}, width=1000,
+        layers=layers,
     )
-    assert "no_context_data" not in warnings2  # flag-equivalent: no ctx given
+    assert "no_context_data" not in warnings2  # nothing requested, nothing given
     _, _, _, warnings3 = render_diagram(
         airport=_airport(), runways=[], frequencies=[],
         osm_geoms={k: [] for k in osm},
-        context_geoms={"roads": [], "buildings": [], "water": []}, width=1000,
+        context_geoms={k: [] for k in ctx}, width=1000, layers=layers,
     )
     assert "no_context_data" in warnings3
+
+
+def test_render_layers_filter_draw_fit_and_counts():
+    """layers=[taxiway]: only taxiways draw, count, and frame the fit."""
+    osm = {
+        "runway": [[(19.251, 47.4395), (19.2602, 47.4342)]],
+        "taxiway": [[(19.252, 47.438), (19.259, 47.435)]],
+        "apron": [[(19.255, 47.437), (19.257, 47.437), (19.257, 47.436),
+                   (19.255, 47.436), (19.255, 47.437)]],
+        "terminal": [], "hangar": [], "stands": [], "stopways": [],
+    }
+    svg, counts, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=[],
+        osm_geoms=osm, width=1000, layers=["taxiway"],
+    )
+    assert 'id="osm-taxiways"' in svg
+    assert 'id="runways"' not in svg and 'id="runway-marks"' not in svg
+    assert 'id="osm-runways"' not in svg and 'id="osm-aprons"' not in svg
+    assert counts["taxiway"] == 1 and counts["runway"] == 0
+    assert sum(counts.values()) == 1
 
 
 def test_render_zoom_scales_about_center():
@@ -419,15 +457,78 @@ def test_render_request_zoom_defaults_and_rejects(http_client):
     assert resp.status_code == 422
 
 
-def test_render_request_context_defaults_false(http_client):
-    """Hermetic: schema default + passthrough without touching Upstreams."""
+def test_render_endpoint_wires_layers_without_network():
+    """Regression (F-004): a leftover body.context in the render branch
+    500'd every live render — unit tests calling render_diagram directly
+    never touch router wiring, so exercise it here with stubbed I/O."""
+    import asyncio
+    from unittest.mock import patch
+
+    from starlette.requests import Request
+
+    import backend.airports.router as router_mod
     from backend.airports.schemas import RenderRequest
 
-    assert RenderRequest(icao="LHBP").context is False
-    assert RenderRequest(icao="LHBP", context=True).context is True
-    # Unknown fields still rejected (extra=forbid).
+    airport = {
+        "ident": "LHBP", "name": "Budapest", "municipality": "Budapest",
+        "iso_country": "HU", "latitude_deg": 47.4369, "longitude_deg": 19.2556,
+    }
+
+    async def fake_lookup(icao):
+        return airport, [], [], [], False
+
+    async def fake_polygons(lat, lon, radius_m, warnings, kind="overpass"):
+        return [], None
+
+    async def scenario():
+        with (
+            patch.object(router_mod, "_lookup", fake_lookup),
+            patch.object(router_mod, "_load_polygons", fake_polygons),
+        ):
+            scope = {
+                "type": "http", "headers": [], "query_string": b"",
+                "server": ("testserver", 80), "scheme": "http", "path": "/",
+            }
+            return await router_mod.render(
+                RenderRequest(icao="LHBP", layers=["taxiway"]), Request(scope))
+
+    resp = asyncio.run(scenario())
+    assert resp.icao == "LHBP"
+    assert resp.rotation_deg == 0.0
+    assert resp.path_counts["taxiway"] == 0
+    assert "no_osm_aeroway" in resp.warnings
+
+
+def test_render_request_layers_defaults_and_rejects(http_client):
+    """Hermetic: airfield default, unknown/empty layers 422, no Upstreams."""
+    from backend.airports.schemas import (
+        AIRFIELD_LAYERS,
+        CONTEXT_LAYERS,
+        RenderRequest,
+    )
+
+    req = RenderRequest(icao="LHBP")
+    assert req.layers is None
+    assert req.effective_layers() == list(AIRFIELD_LAYERS)
+    assert req.needs_context() is False
+    assert RenderRequest(icao="LHBP", layers=["roads", "roads"]).layers == ["roads"]
+    assert RenderRequest(
+        icao="LHBP", layers=["roads"]).needs_context() is True
+    assert set(AIRFIELD_LAYERS) | set(CONTEXT_LAYERS) == {
+        "runway", "taxiway", "apron", "terminal", "hangar", "stands",
+        "stopways", "highways", "roads", "paths", "rails", "waterway",
+        "water", "buildings",
+    }
     resp = http_client.post(
-        "/v1/airports/render", json={"icao": "LHBP", "contex": True})
+        "/v1/airports/render", json={"icao": "LHBP", "layers": ["motorways"]})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "invalid_params"
+    resp = http_client.post(
+        "/v1/airports/render", json={"icao": "LHBP", "layers": []})
+    assert resp.status_code == 422
+    # The old F-002 flag is gone (layers subsume it).
+    resp = http_client.post(
+        "/v1/airports/render", json={"icao": "LHBP", "context": True})
     assert resp.status_code == 422
 
 
@@ -553,6 +654,11 @@ def test_airports_page_renders_search_and_convert_sections(http_client):
     assert "lastPlottedIcao" in html
     # Zoom slider to fill the A4 page.
     assert 'id="apt_zoom"' in html
+    # Layer checkboxes (airfield ticked, context unticked by default).
+    for layer in ("runway", "taxiway", "apron", "stands", "highways",
+                  "roads", "water", "buildings", "rails"):
+        assert f'value="{layer}"' in html, layer
+    assert 'id="apt_context"' not in html
     # Fixed top labels (name/country live on the page, not in the SVG).
     assert 'id="apt_title"' in html
     assert "setAirportTitle" in html

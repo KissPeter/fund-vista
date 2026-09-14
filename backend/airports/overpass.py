@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 
 import httpx
 
@@ -116,45 +117,71 @@ def split_aeroway(
     return geoms, {"nodes": n_nodes, "ways": n_ways, "relations": n_relations}
 
 
-# Surrounding street context (F-002, opt-in via RenderRequest.context):
-# service/access roads + buildings + standing water around the center,
-# drawn faintest underneath the airfield geometry.
-CONTEXT_CLASSES = ("roads", "buildings", "water")
+# Surrounding street context (F-004, opt-in per layer): same tag split as
+# citymap — drawn faintest underneath the airfield geometry.
+CONTEXT_CLASSES = ("highways", "roads", "paths", "rails", "waterway",
+                   "water", "buildings")
+
+_HIGHWAY_MAJOR = re.compile(r"^(motorway|trunk|primary)(_link)?$")
+_HIGHWAY_MINOR = re.compile(
+    r"^(secondary|tertiary|unclassified|residential|living_street|"
+    r"pedestrian|service|track|road)(_link)?$"
+)
+_HIGHWAY_PATH = re.compile(r"^(footway|path|cycleway|steps|bridleway|corridor)$")
+_RAIL_TRACK = re.compile(r"^(rail|light_rail|subway|tram|narrow_gauge|monorail|preserved)$")
+_WATERWAY_FLOW = re.compile(r"^(river|stream|canal|ditch|drain)$")
 
 
 def build_context_query(lat: float, lon: float, radius_m: float) -> str:
-    """Overpass QL: streets, buildings and water around the airport center."""
+    """Overpass QL: streets, rails, buildings and water around the center."""
     r = int(radius_m)
     at = f"(around:{r},{lat:.6f},{lon:.6f})"
     return (
         "[out:json][timeout:25];\n"
         "(\n"
-        f'  way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|track|road)(_link)?$"]{at};\n'
+        f'  way["highway"]{at};\n'
+        f'  way["railway"]{at};\n'
         f'  way["building"]{at};\n'
         f'  way["natural"="water"]{at};\n'
+        f'  way["water"]{at};\n'
+        f'  way["waterway"]{at};\n'
         ");\n"
         "out geom;"
     )
 
 
+def _match_context(tags: dict) -> str | None:
+    """Citymap-compatible layer for one context way's tags."""
+    if _RAIL_TRACK.match(tags.get("railway", "")):
+        return "rails"
+    highway = tags.get("highway", "")
+    if _HIGHWAY_MAJOR.match(highway):
+        return "highways"
+    if _HIGHWAY_MINOR.match(highway):
+        return "roads"
+    if _HIGHWAY_PATH.match(highway):
+        return "paths"
+    if _WATERWAY_FLOW.match(tags.get("waterway", "")):
+        return "waterway"
+    if tags.get("natural") == "water" or "water" in tags:
+        return "water"
+    if "building" in tags:
+        return "buildings"
+    return None
+
+
 def split_context(
     elements: list[dict],
 ) -> dict[str, list[list[tuple[float, float]]]]:
-    """Group ``out geom`` context elements into roads/buildings/water rings."""
+    """Group ``out geom`` context elements into per-layer rings/lines."""
     geoms: dict[str, list[list[tuple[float, float]]]] = {
         cls: [] for cls in CONTEXT_CLASSES
     }
     for el in elements:
         if el.get("type") != "way":
             continue
-        tags = el.get("tags", {}) or {}
-        if "highway" in tags:
-            cls = "roads"
-        elif "building" in tags:
-            cls = "buildings"
-        elif tags.get("natural") == "water" or "water" in tags:
-            cls = "water"
-        else:
+        cls = _match_context(el.get("tags", {}) or {})
+        if cls is None:
             continue
         pts = [
             (pt["lon"], pt["lat"])
