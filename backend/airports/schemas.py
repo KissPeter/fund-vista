@@ -117,3 +117,24 @@ class ImportResponse(BaseModel):
     raw_counts: dict[str, int]
     attribution: str = ATTRIBUTION
     warnings: list[str] = Field(default_factory=list)
+
+
+class SearchCandidate(BaseModel):
+    """One OurAirports match for a freeform query."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    icao: str
+    iata: str = ""
+    name: str
+    municipality: str = ""
+    iso_country: str = ""
+    lat: float | None = None
+    lon: float | None = None
+    type: str = ""
+
+
+class SearchResponse(BaseModel):
+    query: str
+    candidates: list[SearchCandidate]
+    cache_hit: bool = False

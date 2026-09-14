@@ -441,9 +441,63 @@ def test_airports_page_renders_search_and_convert_sections(http_client):
         "/v1/convert",
     ):
         assert marker in html, marker
+    # Airport search picker (F-003).
+    assert 'id="apt_search"' in html
+    assert 'id="aptSearchBtn"' in html
+    assert 'id="apt_candidate"' in html
+    assert "/v1/airports/search" in html
 
 
 def test_airports_page_negative(http_client):
     """Unknown /airports sub-paths must not 5xx."""
     resp = http_client.get("/airports/__nope__")
     assert resp.status_code == 404
+
+
+def _search_rows():
+    return [
+        {"ident": "LHBP", "gps_code": "LHBP", "iata_code": "BUD",
+         "name": "Budapest Liszt Ferenc International Airport",
+         "municipality": "Budapest", "iso_country": "HU",
+         "type": "large_airport", "latitude_deg": "47.43", "longitude_deg": "19.26"},
+        {"ident": "LHDC", "gps_code": "", "iata_code": "",
+         "name": "Bekescsaba Airport", "municipality": "Bekescsaba",
+         "iso_country": "HU", "type": "small_airport",
+         "latitude_deg": "46.6", "longitude_deg": "21.0"},
+        {"ident": "LHXX", "gps_code": "", "iata_code": "",
+         "name": "Old Budapest Field", "municipality": "Budapest",
+         "iso_country": "HU", "type": "closed",
+         "latitude_deg": "47.0", "longitude_deg": "19.0"},
+    ]
+
+
+def test_rank_exact_iata_beats_name_substring():
+    from backend.airports.ourairports import rank_candidates
+
+    top = rank_candidates(_search_rows(), "BUD")
+    assert [c["icao"] for c in top] == ["LHBP"]
+    assert top[0]["iata"] == "BUD"
+
+
+def test_rank_prefix_then_size_then_limit():
+    from backend.airports.ourairports import rank_candidates
+
+    ordered = rank_candidates(_search_rows(), "LH")
+    assert [c["icao"] for c in ordered] == ["LHBP", "LHDC"]  # large first
+    assert [c["icao"] for c in rank_candidates(_search_rows(), "LH", limit=1)] == ["LHBP"]
+    # Closed rows never surface, even on name match.
+    assert all(c["icao"] != "LHXX" for c in rank_candidates(_search_rows(), "budapest"))
+    assert rank_candidates(_search_rows(), "xyz") == []
+    assert rank_candidates(_search_rows(), "  ") == []
+
+
+def test_search_validation_without_network(http_client):
+    """Hermetic: 422 comes from validation, OurAirports is never touched."""
+    resp = http_client.get("/v1/airports/search?q=x")
+    assert resp.status_code == 422
+    resp = http_client.get("/v1/airports/search")
+    assert resp.status_code == 422
+    resp = http_client.get("/v1/airports/search?q=Budapest&limit=99")
+    assert resp.status_code == 422
+    resp = http_client.get("/v1/airports/search?q=Budapest&limit=0")
+    assert resp.status_code == 422

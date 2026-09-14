@@ -8,6 +8,9 @@
   <form id="params" action="javascript:void(0)">
   <fieldset>
     <legend>1. Airport (ICAO)</legend>
+    <label>find <input type="text" id="apt_search" maxlength="60" placeholder="Budapest, BUD, EGLL…"></label>
+    <button type="button" id="aptSearchBtn">Find airports</button>
+    <label>match <select id="apt_candidate" hidden></select></label>
     <label>icao <input type="text" id="icao_code" maxlength="4" placeholder="LHBP" value="LHBP" style="text-transform:uppercase"></label>
     <button type="button" id="icaoLookupBtn">Look up</button>
     <div id="airport_meta" class="meta"></div>
@@ -42,6 +45,44 @@
 
 function icaoCode() {
   return $("icao_code").value.trim().toUpperCase();
+}
+
+// Same-named places: "Find airports" lists OurAirports candidates (city,
+// ICAO or IATA); picking one fills the ICAO field for lookup/render.
+let aptCandidates = {}; // select-index -> icao
+async function searchAirports() {
+  const q = $("apt_search").value.trim();
+  if (q.length < 2) { setStatus("Type at least 2 characters to search."); return; }
+  const sel = $("apt_candidate");
+  setBusy(true);
+  setStatus("Searching airports…");
+  try {
+    const resp = await fetch("/v1/airports/search?q=" + encodeURIComponent(q) + "&limit=5");
+    const body = await resp.json();
+    if (!resp.ok) {
+      setStatus("Airport search failed (" + (body.error ? body.error.code : resp.status) + ")", "error");
+      return;
+    }
+    aptCandidates = {};
+    sel.innerHTML = "";
+    (body.candidates || []).forEach((c, i) => {
+      aptCandidates[String(i)] = c.icao;
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = c.name + " (" + c.icao + (c.iata ? "/" + c.iata : "") + ") — " + c.municipality;
+      sel.appendChild(opt);
+    });
+    sel.hidden = false;
+    if (body.candidates.length) {
+      $("icao_code").value = body.candidates[0].icao;
+      setStatus(body.candidates.length > 1
+        ? "Pick a match below (ICAO filled in), then Look up or Render."
+        : "One match found — ICAO filled in.");
+    } else {
+      setStatus("No airports match — try a city, ICAO or IATA code.");
+    }
+  } catch (e) { setStatus(String(e), "error"); }
+  finally { if (depth === 0) drain(); }
 }
 
 async function lookupAirport() {
@@ -131,6 +172,19 @@ async function renderAirport(andImport) {
 
 $("icaoLookupBtn").addEventListener("click", () => {
   lookupAirport().catch((e) => setStatus(String(e), "error"));
+});
+$("aptSearchBtn").addEventListener("click", () => {
+  searchAirports().catch((e) => setStatus(String(e), "error"));
+});
+$("apt_candidate").addEventListener("change", (e) => {
+  const icao = aptCandidates[e.target.value];
+  if (icao) $("icao_code").value = icao;
+});
+$("apt_search").addEventListener("input", () => {
+  // Typed text no longer matches the listed candidates — hide the picker.
+  aptCandidates = {};
+  $("apt_candidate").innerHTML = "";
+  $("apt_candidate").hidden = true;
 });
 $("aptBtn").addEventListener("click", () => {
   renderAirport(true).catch((e) => setStatus(String(e), "error"));

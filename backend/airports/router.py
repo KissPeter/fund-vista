@@ -27,6 +27,7 @@ from backend.airports.ourairports import (
     airport_frequencies,
     airport_runways,
     resolve_airport,
+    search_airports,
 )
 from backend.airports.overpass import (
     AirportOverpassError,
@@ -40,6 +41,7 @@ from backend.airports.schemas import (
     LookupResponse,
     RenderRequest,
     RenderResponse,
+    SearchResponse,
 )
 from backend.penplot import imaging
 from backend.penplot.errors import ErrorCode, PenPlotError
@@ -186,11 +188,33 @@ def _build_svg(
     return svg, path_counts, raw_counts, rotation, warnings
 
 
+@router.get("/search", response_model=SearchResponse)
+async def search(
+    q: str = Query(min_length=2, max_length=60),
+    limit: int = Query(default=5, ge=1, le=10),
+) -> SearchResponse | JSONResponse:
+    """Freeform airport search over names, places, ICAO and IATA codes.
+
+    Same-named places come back as a ranked list; feed the chosen
+    candidate's ``icao`` to lookup/render/import.
+    """
+    try:
+        candidates, hit = await search_airports(q, limit)
+    except OurAirportsError as exc:
+        return _error(
+            502, "ourairports_unavailable",
+            f"Airport search failed: {exc.detail}",
+        )
+    return SearchResponse(
+        query=q.strip(), candidates=candidates,  # type: ignore[arg-type]
+        cache_hit=hit)
+
+
 @router.get("/lookup", response_model=LookupResponse)
 async def lookup(
     icao: str = Query(min_length=3, max_length=4),
 ) -> LookupResponse | JSONResponse:
-    """Resolve an ICAO code to airport/runway/frequency metadata (no OSM)."""
+    """Resolve an ICAO (or IATA) code to airport/runway/frequency metadata (no OSM)."""
     from backend.airports.schemas import normalize_icao
 
     try:
@@ -201,8 +225,9 @@ async def lookup(
     if isinstance(resolved, JSONResponse):
         return resolved
     airport, runway_rows, freq_rows, warnings, cache_hit = resolved
+    canonical = (airport.get("ident") or code).strip().upper()
     return LookupResponse(
-        icao=code,
+        icao=canonical,
         name=airport.get("name", ""),
         municipality=airport.get("municipality", ""),
         iso_country=airport.get("iso_country", ""),
@@ -226,9 +251,10 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         return resolved
     airport, runway_rows, freq_rows, warnings, lookup_hit = resolved
     lat, lon = float(airport["latitude_deg"]), float(airport["longitude_deg"])
+    icao = (airport.get("ident") or body.icao).strip().upper()
 
     svg_key = airports_cache_key(
-        "svg", body.icao, f"r={body.radius_m:.0f}",
+        "svg", icao, f"r={body.radius_m:.0f}",
         f"minlen={body.min_path_len_m}", f"width={body.width}",
         f"ctx={body.context}",
     )
@@ -291,10 +317,10 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     token = svg_key.rsplit(":", 1)[-1]
     log.info(
         "airports.render icao=%r paths=%d cache_hit=%s",
-        body.icao, sum(path_counts.values()), cache_hit,
+        icao, sum(path_counts.values()), cache_hit,
     )
     return RenderResponse(
-        icao=body.icao,
+        icao=icao,
         name=airport.get("name", ""),
         runways=_runway_infos(runway_rows),  # type: ignore[arg-type]
         frequencies=freq_rows,  # type: ignore[arg-type]
@@ -321,6 +347,7 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
         return resolved
     airport, runway_rows, freq_rows, warnings, _ = resolved
     lat, lon = float(airport["latitude_deg"]), float(airport["longitude_deg"])
+    icao = (airport.get("ident") or body.icao).strip().upper()
     elements, err = await _load_polygons(lat, lon, body.radius_m, warnings)
     if err is not None or elements is None:
         return err  # type: ignore[return-value]
@@ -339,7 +366,7 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
     if sum(path_counts.values()) == 0 and not runway_rows:
         return _error(
             422, ErrorCode.INVALID_PARAMS,
-            f"No diagram features found for '{body.icao}' — "
+            f"No diagram features found for '{icao}' — "
             "unknown field or empty OSM coverage.",
         )
     try:
@@ -349,11 +376,11 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
     image_id = penplot_store.put_image_bytes(svg_text.encode("utf-8"), "svg")
     log.info(
         "airports.import icao=%r paths=%d image=%s",
-        body.icao, sum(path_counts.values()), image_id[:12],
+        icao, sum(path_counts.values()), image_id[:12],
     )
     return ImportResponse(
         image_id=image_id,
-        icao=body.icao,
+        icao=icao,
         name=airport.get("name", ""),
         rotation_deg=rotation,
         path_counts=path_counts,

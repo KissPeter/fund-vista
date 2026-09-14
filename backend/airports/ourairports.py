@@ -107,11 +107,13 @@ async def resolve_airport(icao: str) -> tuple[dict, bool]:
     """Find the airport row for ``icao`` (upper-cased). Returns (row, cache_hit).
 
     Matches ``ident`` first, then ``gps_code`` (some fields are filed under
-    a local ident with the ICAO in ``gps_code``).
+    a local ident with the ICAO in ``gps_code``), then ``iata_code`` so
+    three-letter IATA codes resolve to their airport too.
     """
     text, hit = await _fetch_csv("airports")
     wanted = icao.strip().upper()
     fallback: dict | None = None
+    iata_match: dict | None = None
     cache_hit = hit
     for row in _rows(text):
         ident = (row.get("ident") or "").strip().upper()
@@ -119,9 +121,80 @@ async def resolve_airport(icao: str) -> tuple[dict, bool]:
             return row, cache_hit
         if fallback is None and (row.get("gps_code") or "").strip().upper() == wanted:
             fallback = row
+        if iata_match is None and (row.get("iata_code") or "").strip().upper() == wanted:
+            iata_match = row
     if fallback is not None:
         return fallback, cache_hit
+    if iata_match is not None:
+        return iata_match, cache_hit
     raise AirportNotFoundError(f"No airport found for ICAO '{wanted}'.")
+
+
+_TYPE_RANK = {
+    "large_airport": 0,
+    "medium_airport": 1,
+    "small_airport": 2,
+    "seaplane_base": 3,
+    "heliport": 4,
+    "balloonport": 5,
+}
+
+
+def rank_candidates(
+    rows: list[dict[str, str]], query: str, limit: int = 5
+) -> list[dict]:
+    """Rank airport rows against a freeform query (pure, no I/O).
+
+    Score: exact ident/iata/gps (0) > ident/iata prefix (1) >
+    name/municipality substring (2); ties break by airport size, then name.
+    ``closed`` rows are excluded. Returns at most ``limit`` candidate dicts.
+    """
+    q = query.strip().upper()
+    if not q:
+        return []
+    scored: list[tuple[tuple, dict]] = []
+    for row in rows:
+        if (row.get("type") or "") == "closed":
+            continue
+        ident = (row.get("ident") or "").strip().upper()
+        iata = (row.get("iata_code") or "").strip().upper()
+        gps = (row.get("gps_code") or "").strip().upper()
+        name = (row.get("name") or "").strip()
+        muni = (row.get("municipality") or "").strip()
+        if q in (ident, iata, gps):
+            score = 0
+        elif ident.startswith(q) or (iata and iata.startswith(q)):
+            score = 1
+        elif q in name.upper() or (muni and q in muni.upper()):
+            score = 2
+        else:
+            continue
+        key = (score, _TYPE_RANK.get(row.get("type") or "", 9), name)
+        scored.append((key, {
+            "icao": ident,
+            "iata": (row.get("iata_code") or "").strip(),
+            "name": name,
+            "municipality": muni,
+            "iso_country": (row.get("iso_country") or "").strip(),
+            "lat": _fnum(row.get("latitude_deg")),
+            "lon": _fnum(row.get("longitude_deg")),
+            "type": row.get("type") or "",
+        }))
+    scored.sort(key=lambda item: item[0])
+    return [candidate for _, candidate in scored[: max(limit, 0)]]
+
+
+async def search_airports(query: str, limit: int = 5) -> tuple[list[dict], bool]:
+    """Freeform search over the cached ``airports.csv``.
+
+    Returns ``(candidates, cache_hit)``. CSV parsing runs off the event
+    loop (the file is ~12 MB).
+    """
+    import asyncio as _asyncio
+
+    text, hit = await _fetch_csv("airports")
+    rows = await _asyncio.to_thread(_rows, text)
+    return rank_candidates(rows, query, limit), hit
 
 
 async def airport_runways(airport_ident: str) -> tuple[list[dict], bool]:
