@@ -23,6 +23,7 @@ class ErrorCode:
     BAD_IMAGE = "bad_image"
     IMAGE_TOO_LARGE = "image_too_large"
     RATE_LIMITED = "rate_limited"
+    TOKEN_SIGNING_UNAVAILABLE = "token_signing_unavailable"
 
 
 class PenPlotError(Exception):

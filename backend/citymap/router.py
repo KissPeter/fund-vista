@@ -59,6 +59,7 @@ from backend.citymap.schemas import (
 from backend.penplot import imaging
 from backend.penplot.errors import ErrorCode, PenPlotError
 from backend.penplot.router import require_rate_limit
+from backend.penplot.router import resolve_public_base
 from backend.penplot.router import store as penplot_store
 
 log = logging.getLogger(__name__)
@@ -287,7 +288,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         svg_text, path_counts, raw_counts = await asyncio.to_thread(_build)
         await cache_set(svg_key, svg_text)
 
-    base = str(request.base_url).rstrip("/")
+    base = resolve_public_base(request)
     token = svg_key.rsplit(":", 1)[-1]
     log.info(
         "citymap.render city=%r layers=%s paths=%d cache_hit=%s",

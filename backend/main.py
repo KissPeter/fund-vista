@@ -51,7 +51,13 @@ class Settings(BaseSettings):
     redis_cloud_url: str = "redis://localhost:6379/0"
     # NoDecode: skip source-side JSON decode so the raw comma-separated list
     # reaches the split validator (a list is a "complex" env type).
-    cors_allow_origins: Annotated[list[str], NoDecode] = ["http://localhost:8080"]
+    # Shop work order §1: the TanStack frontend runs on another origin, so
+    # the shop domain ships by default; the future own domain (and any other
+    # origin) goes through the same CORS_ALLOW_ORIGINS env var.
+    cors_allow_origins: Annotated[list[str], NoDecode] = [
+        "http://localhost:8080",
+        "https://penplot.linuxadm.hu",
+    ]
     cors_allow_origin_regex: str = r"(https?://[^/]+:8080|https://[^/]+\.github\.io)"
 
     @field_validator("cors_allow_origins", mode="before")
@@ -81,7 +87,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allow_origins,
     allow_origin_regex=settings.cors_allow_origin_regex,
-    allow_credentials=True,
+    # Shop work order §1: no credentials mode — all shop-facing endpoints
+    # stay unauthenticated, abuse-controlled by rate limits.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

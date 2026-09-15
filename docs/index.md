@@ -26,3 +26,4 @@ Doc: `docs/F-001-airport-diagrams.md`.
 - `docs/ui-penplot-image.md` — `/penplot` Jinja page: controls, JS, backend.
 - `docs/ui-citymap.md` — `/citymap` Jinja page: controls, JS, backend.
 - `docs/ui-airports.md` — `/airports` Jinja page: controls, JS, backend.
+- `docs/python-service-shop-changes.md` — pen-pixel work-order §§1–8 implementation record.

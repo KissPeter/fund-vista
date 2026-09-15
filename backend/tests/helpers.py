@@ -71,3 +71,9 @@ def default_params(method: str = "hatch") -> dict:
 
 def upload(http, data: bytes, filename: str = "test.png"):
     return http.post("/v1/images", files={"file": (filename, data, "application/octet-stream")})
+
+
+# Shared HMAC secret for the session live-server (conftest) and the shop
+# integration tests below. Any string works for HMAC; production uses a
+# 256-bit value via PENPIXEL_HMAC_SECRET.
+TEST_HMAC_SECRET = "test-penpixel-hmac-secret-0123456789abcdef"

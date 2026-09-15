@@ -39,6 +39,11 @@ def configure_redis(client: Optional[Redis]) -> None:
         _degraded = False
 
 
+def get_redis() -> Optional[Redis]:
+    """Return the configured Redis client (or None when memory fallback)."""
+    return _redis
+
+
 class RateLimiter:
     """Fixed-window per-IP counter: Redis-backed, memory-degrading on failure."""
 

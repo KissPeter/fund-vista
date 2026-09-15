@@ -35,10 +35,22 @@ class StoredImage:
 
 
 class ImageStore:
-    def __init__(self, *, images_dir: str, results_dir: str, ttl_hours: int = 48) -> None:
+    def __init__(
+        self,
+        *,
+        images_dir: str,
+        results_dir: str,
+        ttl_hours: int = 48,
+        retained_ttl_hours: int = 90 * 24,
+    ) -> None:
         self.images_dir = images_dir
         self.results_dir = results_dir
         self.ttl = timedelta(hours=ttl_hours)
+        # Purchased designs (POST /v1/images/{id}/retain) live this long.
+        # Anonymous previews keep ``ttl``. Marker files (``{id}.{ext}.retained``)
+        # next to the image record the promotion; they survive restarts and
+        # need no Redis.
+        self.retained_ttl = timedelta(hours=retained_ttl_hours)
         self._lock = threading.Lock()
         os.makedirs(self.images_dir, exist_ok=True)
         os.makedirs(self.results_dir, exist_ok=True)
@@ -57,7 +69,36 @@ class ImageStore:
             mtime = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
         except OSError:
             return True
-        return datetime.now(tz=timezone.utc) - mtime > self.ttl
+        return datetime.now(tz=timezone.utc) - mtime > self._ttl_for(path)
+
+    @staticmethod
+    def _retained_marker(path: str) -> str:
+        return path + ".retained"
+
+    def _ttl_for(self, path: str) -> timedelta:
+        if os.path.exists(self._retained_marker(path)):
+            return self.retained_ttl
+        return self.ttl
+
+    def is_retained(self, path: str) -> bool:
+        return os.path.exists(self._retained_marker(path))
+
+    def retain_image(self, image_id: str) -> tuple[str, datetime] | None:
+        """Promote an image to the retained (purchased-design) TTL.
+
+        Returns ``(path, expires_at)`` or ``None`` when the image is
+        missing/expired. Idempotent — re-retaining is a no-op.
+        """
+        path = self.find_image(image_id)
+        if path is None:
+            return None
+        with self._lock:
+            marker = self._retained_marker(path)
+            if not os.path.exists(marker):
+                with open(marker, "w", encoding="utf-8") as fh:
+                    fh.write(datetime.now(tz=timezone.utc).isoformat())
+                log.info("image %s retained", image_id[:12])
+        return path, self.expires_at_for(path)
 
     def put_image_bytes(self, data: bytes, ext: str) -> str:
         """Persist raw bytes if new; return the canonical image_id (sha256)."""
@@ -82,6 +123,8 @@ class ImageStore:
         """Return the on-disk path, or None if missing/expired."""
         with self._lock:
             for name in os.listdir(self.images_dir):
+                if name.endswith(".retained") or name.endswith(".tmp"):
+                    continue
                 if name.startswith(image_id + "."):
                     path = os.path.join(self.images_dir, name)
                     if self._is_expired(path):
@@ -99,7 +142,7 @@ class ImageStore:
             mtime = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
         except OSError:
             mtime = datetime.now(tz=timezone.utc)
-        return mtime + self.ttl
+        return mtime + self._ttl_for(path)
 
     # -- results --------------------------------------------------------
 

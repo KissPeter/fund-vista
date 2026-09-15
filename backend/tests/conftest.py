@@ -19,6 +19,8 @@ import time
 import httpx
 import pytest
 
+from backend.tests.helpers import TEST_HMAC_SECRET
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -64,6 +66,9 @@ def live_server(tmp_path_factory: pytest.TempPathFactory):
     # off so tests never trip 429 accidentally (see test_penplot_ratelimit.py
     # for a dedicated low-limit server exercising the 429 path).
     env["PENPLOT_RATE_LIMIT"] = "100000"
+    # Shop bridge signing key so token endpoints exercise the real HMAC path
+    # (see backend/tests/helpers.py TEST_HMAC_SECRET).
+    env["PENPIXEL_HMAC_SECRET"] = TEST_HMAC_SECRET
     # The subprocess must import the same repo checkout.
     env["PYTHONPATH"] = REPO_ROOT + os.pathsep + env.get("PYTHONPATH", "")
     proc = subprocess.Popen(

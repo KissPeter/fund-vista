@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
+import tempfile
+import time
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette.status import (
@@ -20,14 +24,20 @@ from starlette.status import (
 )
 
 from backend.penplot import imaging
+from backend.penplot import tokens as design_tokens
 from backend.penplot.config import ALLOWED_RASTER_EXTS, Settings
 from backend.penplot.errors import ErrorCode, PenPlotError, image_not_found, rate_limited
 from backend.penplot.pipeline import run_convert
-from backend.penplot.ratelimit import RateLimiter
+from backend.penplot.ratelimit import RateLimiter, get_redis
 from backend.penplot.schemas import (
     ConvertRequest,
     ConvertResponse,
+    HealthResponse,
     ImageMetaResponse,
+    RetainResponse,
+    TokenRequest,
+    TokenResponse,
+    TokenVerifyResponse,
 )
 from backend.penplot.store import ImageStore
 
@@ -40,6 +50,7 @@ store = ImageStore(
     images_dir=_settings.images_dir,
     results_dir=_settings.results_dir,
     ttl_hours=_settings.image_ttl_hours,
+    retained_ttl_hours=_settings.retained_ttl_hours,
 )
 
 # CPU-exposed endpoints (spec §5 rate limit, review C.2.2) are throttled per
@@ -56,6 +67,19 @@ def get_store() -> ImageStore:
 
 def get_settings() -> Settings:
     return _settings
+
+
+def resolve_public_base(request: Request) -> str:
+    """Absolute origin for result links (shop work order §3).
+
+    ``PENPLOT_PUBLIC_BASE_URL`` wins when set (production behind a proxy);
+    otherwise the request's own origin is used. Always absolute — the shop
+    frontend runs on a different origin and cannot use relative links.
+    """
+    override = _settings.public_base_url.strip().rstrip("/")
+    if override:
+        return override
+    return str(request.base_url).rstrip("/")
 
 
 def _client_ip(request: Request) -> str:
@@ -257,8 +281,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
         return _error_response(exc.status, exc.code, exc.message)
 
     store.put_result(result.filename, result.svg_text)
-    base = str(request.base_url).rstrip("/")
-    svg_url = f"{base}/v1/results/{result.filename}"
+    svg_url = f"{resolve_public_base(request)}/v1/results/{result.filename}"
     log.info(
         "convert.ok id=%s method=%s strokes=%d pen_down=%.1fmm",
         image_id[:12], "+".join(body.params.methods or ["hatch"]),
@@ -295,3 +318,125 @@ async def get_result(filename: str) -> Response:
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
         )
     return Response(content=svg, media_type="image/svg+xml")
+
+
+@router.post("/tokens", response_model=TokenResponse,
+             dependencies=[Depends(require_rate_limit)])
+async def mint_token(body: TokenRequest) -> TokenResponse | JSONResponse:
+    """Mint a signed design token for a known image (shop bridge, §2).
+
+    ``design_id`` reuses the content-addressed ``image_id``; ``sig`` is
+    ``hex(HMAC_SHA256(secret, design_id + "|" + exp))`` with a 24 h ``exp``.
+    503 ``token_signing_unavailable`` until ``PENPIXEL_HMAC_SECRET`` is set.
+    """
+    image_id = body.image_id.lower()
+    if store.find_image(image_id) is None:
+        exc = image_not_found(image_id)
+        return _error_response(exc.status, exc.code, exc.message)
+    if not _settings.hmac_secret:
+        return _error_response(
+            503,
+            ErrorCode.TOKEN_SIGNING_UNAVAILABLE,
+            "Design-token signing is not configured (PENPIXEL_HMAC_SECRET).",
+        )
+    exp = int(time.time()) + _settings.token_ttl_hours * 3600
+    sig = design_tokens.sign_design_token(
+        design_id=image_id, exp=exp, secret=_settings.hmac_secret
+    )
+    log.info("tokens.mint design=%s exp=%d", image_id[:12], exp)
+    return TokenResponse(design_id=image_id, exp=exp, sig=sig)
+
+
+@router.get("/tokens/verify", response_model=TokenVerifyResponse)
+async def verify_token(
+    design_id: str = Query(min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$"),
+    exp: int = Query(gt=0),
+    sig: str = Query(min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$"),
+) -> TokenVerifyResponse:
+    """Verify a design-token triple (cheap HMAC check, unthrottled).
+
+    Lets Woo/ops confirm a token without minting a new one; ``reason`` is
+    ``ok``, ``ok_previous_secret`` (rotation window), or a failure code.
+    """
+    valid, reason = design_tokens.verify_design_token(
+        design_id=design_id.lower(),
+        exp=exp,
+        sig=sig,
+        secret=_settings.hmac_secret,
+        previous_secret=_settings.hmac_previous_secret,
+    )
+    if not valid:
+        log.warning(
+            "tokens.verify design=%s failed: %s", design_id[:12], reason
+        )
+    return TokenVerifyResponse(
+        design_id=design_id.lower(), exp=exp, valid=valid, reason=reason
+    )
+
+
+@router.post("/images/{image_id}/retain", response_model=RetainResponse,
+             dependencies=[Depends(require_rate_limit)])
+async def retain_image(image_id: str) -> RetainResponse | JSONResponse:
+    """Promote a purchased design to the retained TTL (§4, option a).
+
+    Called after order-paid (server-to-cloud) so the design stays fetchable
+    at fulfillment time, days later. Anonymous previews keep the short TTL.
+    Idempotent.
+    """
+    if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id.lower()):
+        return _error_response(404, ErrorCode.IMAGE_NOT_FOUND, "Unknown image id.")
+    retained = store.retain_image(image_id.lower())
+    if retained is None:
+        exc = image_not_found(image_id)
+        return _error_response(exc.status, exc.code, exc.message)
+    _path, expires_at = retained
+    log.info("images.retain id=%s expires=%s", image_id[:12], expires_at.isoformat())
+    return RetainResponse(
+        image_id=image_id.lower(), retained=True, expires_at=expires_at
+    )
+
+
+@router.get("/health", response_model=HealthResponse)
+async def health() -> HealthResponse | JSONResponse:
+    """Dependency status for uptime monitoring (§6). Anonymous, unthrottled.
+
+    200 ``ok`` when the store is writable and disk is free (Redis reports
+    honestly but never fails the check — memory fallback is a supported
+    mode); 503 ``down`` when designs cannot be persisted.
+    """
+    store_writable = True
+    try:
+        fd, tmp = tempfile.mkstemp(dir=store.images_dir, prefix=".health-")
+        with open(fd, "wb") as fh:
+            fh.write(b"ok")
+        os.remove(tmp)
+    except OSError:
+        store_writable = False
+    try:
+        disk_free_mb = shutil.disk_usage(store.images_dir).free / (1024 * 1024)
+    except OSError:
+        disk_free_mb = 0.0
+    redis_client = get_redis()
+    if redis_client is None:
+        redis_state = "unconfigured"
+    else:
+        try:
+            await asyncio.wait_for(redis_client.ping(), timeout=2.0)
+            redis_state = "reachable"
+        except Exception:
+            redis_state = "unreachable"
+    if not store_writable or disk_free_mb < 100.0:
+        status = "down"
+    elif redis_state == "unreachable":
+        status = "degraded"
+    else:
+        status = "ok"
+    body: HealthResponse = HealthResponse(
+        status=status,
+        redis=redis_state,
+        disk_free_mb=round(disk_free_mb, 1),
+        store_writable=store_writable,
+    )
+    if status == "down":
+        return JSONResponse(status_code=503, content=body.model_dump(mode="json"))
+    return body

@@ -254,3 +254,45 @@ class ConvertResponse(BaseModel):
     vpype_command: str
     stats: ConvertStats
     warnings: list[str] = Field(default_factory=list)
+
+
+class TokenRequest(BaseModel):
+    """Mint a signed design token for a known image (shop bridge, §2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    image_id: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$")
+
+
+class TokenResponse(BaseModel):
+    # design_id reuses the content-addressed image_id (no new id scheme).
+    design_id: str
+    # Unix epoch seconds (now + token_ttl_hours).
+    exp: int
+    # hex(HMAC_SHA256(secret, design_id + "|" + exp)).
+    sig: str
+
+
+class TokenVerifyResponse(BaseModel):
+    design_id: str
+    exp: int
+    valid: bool
+    # ok | ok_previous_secret | bad_design_id | bad_expiry | expired |
+    # bad_signature | signing_unconfigured.
+    reason: str
+
+
+class RetainResponse(BaseModel):
+    """A purchased design promoted to the retained TTL (§4, option a)."""
+
+    image_id: str
+    retained: bool = True
+    expires_at: datetime
+
+
+class HealthResponse(BaseModel):
+    status: str  # ok | degraded | down
+    # reachable | unreachable | unconfigured (no Redis client configured).
+    redis: str
+    disk_free_mb: float
+    store_writable: bool

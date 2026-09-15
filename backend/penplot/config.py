@@ -60,6 +60,27 @@ class Settings(BaseSettings):
     )
     # A4 width in mm — the reference for the DPI pre-check (spec §4.1).
     a4_width_mm: float = 210.0
+    # Absolute public base URL for result links (shop work order §3). When
+    # set, svg_url values use this origin instead of the request Host, so
+    # links stay absolute + publicly fetchable even behind a proxy that
+    # rewrites Host. Empty = derive from the incoming request.
+    public_base_url: str = ""
+    # Purchased-design retention window (§4, option a): POST
+    # /v1/images/{id}/retain promotes an image to this TTL (default 90 d).
+    # Anonymous previews keep image_ttl_hours.
+    retained_ttl_hours: int = 90 * 24
+    # Signed design tokens for the shop bridge (§2). Env names carry the
+    # PENPIXEL_ prefix (shared with Woo), hence the explicit aliases —
+    # field-by-name would read PENPLOT_HMAC_SECRET instead. Empty secret =
+    # signing disabled; POST /v1/tokens answers 503 until one is set.
+    hmac_secret: str = Field(default="", validation_alias="PENPIXEL_HMAC_SECRET")
+    # Previous secret, accepted during the 24 h rotation dual-accept window.
+    hmac_previous_secret: str = Field(
+        default="", validation_alias="PENPIXEL_HMAC_SECRET_PREVIOUS"
+    )
+    # Token lifetime in hours (unix exp = now + ttl). Matches the Woo
+    # attach bridge's 24 h expectation.
+    token_ttl_hours: int = 24
     # Mirrors `read --quantization` in the vpype chain (spec §3.3): every
     # coordinate is snapped to this grid (mm) right after layout, so the
     # vpype_command string in convert responses describes what really ran.
