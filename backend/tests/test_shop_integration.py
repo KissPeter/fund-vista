@@ -23,6 +23,8 @@ from backend.tests.helpers import (
 )
 
 SHOP_ORIGIN = "https://penplot.linuxadm.hu"
+# Static GitHub Pages frontend (VITE_BACKEND_BASE_URL points here in prod).
+PAGES_ORIGIN = "https://kisspeter.github.io"
 
 
 # -- §2 algorithm (no server) ---------------------------------------------
@@ -92,6 +94,20 @@ def test_cors_allows_shop_get(http_client):
     resp = http_client.get("/v1/health", headers={"Origin": SHOP_ORIGIN})
     assert resp.status_code == 200, resp.text
     assert resp.headers["access-control-allow-origin"] == SHOP_ORIGIN
+
+
+def test_cors_preflight_passes_from_github_pages(http_client):
+    # The static frontend at kisspeter.github.io/fund-vista/ calls this API
+    # cross-origin; covered by the allow_origin_regex default, not the list.
+    resp = http_client.options(
+        "/v1/images",
+        headers={
+            "Origin": PAGES_ORIGIN,
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["access-control-allow-origin"] == PAGES_ORIGIN
 
 
 def test_token_mint_verify_roundtrip(http_client):
