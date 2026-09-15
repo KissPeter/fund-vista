@@ -23,3 +23,6 @@ Doc: `docs/F-001-airport-diagrams.md`.
 - `docs/hungary-europe-map-providers.md` — free HU/EU provider options.
 - `docs/drawscape-two-phase-rendering.md` — two-phase preview → render
   vs fund-vista static SVG.
+- `docs/ui-penplot-image.md` — `/penplot` Jinja page: controls, JS, backend.
+- `docs/ui-citymap.md` — `/citymap` Jinja page: controls, JS, backend.
+- `docs/ui-airports.md` — `/airports` Jinja page: controls, JS, backend.
