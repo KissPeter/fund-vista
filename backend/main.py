@@ -64,13 +64,32 @@ class Settings(BaseSettings):
     @classmethod
     def _split_origins(cls, value: object) -> object:
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            text = value.strip()
+            # Dashboards often store lists as JSON (["https://a", "https://b"]).
+            if text.startswith("["):
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        return [str(o).strip() for o in parsed if str(o).strip()]
+                except json.JSONDecodeError:
+                    pass
+                text = text.strip("[]")
+            return [
+                origin.strip().strip("'\"")
+                for origin in text.split(",")
+                if origin.strip().strip("'\"")
+            ]
         return value
 
 
 settings = Settings()
 
 logging.basicConfig(level=settings.log_level)
+logging.getLogger("fund-vista").info(
+    "CORS allow_origins=%s allow_origin_regex=%s",
+    settings.cors_allow_origins,
+    settings.cors_allow_origin_regex,
+)
 
 UPSTREAMS: Dict[str, str] = {
     "api": "https://www.kh.hu",

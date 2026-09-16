@@ -196,3 +196,36 @@ def test_health_reports_dependencies(http_client):
     assert body["redis"] in ("reachable", "unreachable", "unconfigured")
     assert body["disk_free_mb"] > 0
     assert body["store_writable"] is True
+
+
+# -- CORS env formats (2026-09-16: dashboards store the list as JSON) --------
+
+
+def test_cors_env_accepts_json_array_format():
+    from backend.main import Settings
+
+    assert Settings._split_origins(
+        '["https://kisspeter.github.io", "https://penplot.linuxadm.hu"]'
+    ) == ["https://kisspeter.github.io", "https://penplot.linuxadm.hu"]
+
+
+def test_cors_env_still_accepts_comma_separated():
+    from backend.main import Settings
+
+    assert Settings._split_origins("http://localhost:8080,https://penplot.linuxadm.hu") == [
+        "http://localhost:8080",
+        "https://penplot.linuxadm.hu",
+    ]
+
+
+def test_cors_env_json_array_reaches_settings(monkeypatch):
+    from backend.main import Settings
+
+    monkeypatch.setenv(
+        "CORS_ALLOW_ORIGINS",
+        '["https://kisspeter.github.io", "https://penplot.linuxadm.hu"]',
+    )
+    assert Settings().cors_allow_origins == [
+        "https://kisspeter.github.io",
+        "https://penplot.linuxadm.hu",
+    ]
