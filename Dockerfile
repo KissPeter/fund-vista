@@ -36,8 +36,9 @@ ENV PENPLOT_DATA_DIR=/data
 
 EXPOSE 8000
 
-# Production server: FastAPI CLI (uvicorn engine, no reload, prod defaults).
-# Long renders/imports/converts run up to ~300 s; the convert path offloads
-# to a worker thread so /healthz stays responsive. Always behind a proxy
-# that sets X-Forwarded-For/Proto (VPS nginx via reverse tunnel).
-CMD ["sh", "-c", "fastapi run main.py --host 0.0.0.0 --port ${PORT:-8000} --workers ${WORKERS:-4} --proxy-headers"]
+# Production server: plain uvicorn with workers. Do NOT use `fastapi run`
+# with --workers here: its multiprocess supervisor kills workers on
+# requests past ~60 s (long renders die mid-request with the connection
+# reset — observed 2026-09-19), while plain uvicorn serves 140 s+ renders
+# fine. Same engine, no supervisor in the way.
+CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WORKERS:-4} --proxy-headers"]
