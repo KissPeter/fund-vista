@@ -44,9 +44,12 @@ class AirportsSettings(BaseSettings):
     # Fixed-window cache TTL for OurAirports CSVs, raw Overpass payloads and
     # rendered SVGs (hours). Results are deterministically regenerable.
     cache_ttl_hours: int = 24
-    # Never cache values bigger than this in Redis; oversized values are
-    # served once and re-fetched next time.
-    max_cached_bytes: int = 8 * 1024 * 1024
+    # Rendered SVGs must be retrievable via GET /v1/airports/results/{token}:
+    # the render response carries only the URL, so an uncached SVG means a
+    # broken preview (404). Large-airport renders reach ~10 MB, so the cap
+    # must fit them — Redis strings allow up to 512 MB; oversized values
+    # are still served once and simply re-fetched next time.
+    max_cached_bytes: int = 32 * 1024 * 1024
     # Nominatim-style identification for upstream POSTs.
     user_agent: str = "fund-vista-airports/1.0 (pen-plot airport diagrams)"
 

@@ -67,10 +67,12 @@ class CitymapSettings(BaseSettings):
     # Nominatim usage policy requires a real User-Agent (and asks for a
     # referer/contact on heavy use). Ours identifies the app.
     user_agent: str = "fund-vista-citymap/1.0 (pen-plot city maps)"
-    # Never cache values bigger than this in Redis (big-city full-layer
-    # payloads can exceed tens of MB); oversized values are served once and
-    # simply re-fetched next time.
-    max_cached_bytes: int = 8 * 1024 * 1024
+    # Rendered SVGs must be retrievable via GET /v1/citymap/results/{token}:
+    # the render response carries only the URL, so an uncached SVG means a
+    # broken preview (404). Dense metro renders reach ~10 MB, so the cap
+    # must fit them — Redis strings allow up to 512 MB; oversized values
+    # are still served once and simply re-fetched next time.
+    max_cached_bytes: int = 32 * 1024 * 1024
 
 
 settings = CitymapSettings()
