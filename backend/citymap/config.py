@@ -62,7 +62,8 @@ class CitymapSettings(BaseSettings):
     cache_ttl_hours: int = 24
     # Refuse bboxes wider/taller than this (decimal degrees) — a whole
     # country would time out Overpass and OOM the renderer. ~0.8 deg is a
-    # large metro area; districts are much smaller.
+    # large metro area; districts are much smaller. Checked on the bbox as
+    # requested, before grid snapping nudges it outward.
     max_bbox_deg: float = 0.8
     # Nominatim usage policy requires a real User-Agent (and asks for a
     # referer/contact on heavy use). Ours identifies the app.
@@ -72,7 +73,33 @@ class CitymapSettings(BaseSettings):
     # broken preview (404). Dense metro renders reach ~10 MB, so the cap
     # must fit them — Redis strings allow up to 512 MB; oversized values
     # are still served once and simply re-fetched next time.
+    # Checked against the *stored* (deflated) size, so the cap now bites
+    # far less often than it did on raw bytes.
     max_cached_bytes: int = 32 * 1024 * 1024
+    # Values at or above this are zlib'd before storage. OSM JSON and SVG
+    # both deflate 6-10x, which is what pulled dense-metro payloads back
+    # under max_cached_bytes — Budapest with buildings was 38-40 MB raw and
+    # was silently never cached.
+    # Keep this well below a typical tile (~30 KB of JSON): tiles are the
+    # bulk of the key space, and leaving them uncompressed cost ~6x the
+    # Redis memory of the single blob they replaced. Deflating 30 KB is
+    # well under a millisecond, and tiles are written in one pipeline.
+    compress_min_bytes: int = 4 * 1024
+    # Raw OSM is cached per (grid tile, layer) so panning and layer toggles
+    # reuse what is already held (see citymap/tiles.py). A bbox picks the
+    # finest tile level that covers it in at most this many tiles: lower
+    # means coarser tiles and less reuse, higher means more Redis keys per
+    # render (they are read in one MGET, so the cost is mostly key count).
+    tile_max_tiles: int = 64
+    # The rendered bbox is snapped outward to this grid before it reaches
+    # the renderer and the SVG cache key. Raw viewport floats are unique per
+    # pan, so without snapping the SVG cache can only ever hit on an exact
+    # repeat. ~0.002 deg is ~220 m — invisible on a city-sized plot.
+    render_snap_deg: float = 0.002
+    # Raw OSM changes far more slowly than the parameters rendered from it,
+    # so tiles outlive SVGs. Keeping tiles a week makes a returning user's
+    # second session cheap even after every render has expired.
+    tile_cache_ttl_hours: int = 168
 
 
 settings = CitymapSettings()

@@ -12,6 +12,7 @@ center ± half the runway length along the ident heading (``"13L" → 130°``).
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import logging
 import re
@@ -99,8 +100,27 @@ async def _fetch_csv(
     return text, False
 
 
+# Parsed CSVs, keyed by a digest of the text. A single UI interaction hits
+# /render and /import, and each resolves airport + runways + frequencies, so
+# the three files were being re-parsed six times per interaction — ~83k rows
+# each, synchronously on the event loop. The text only changes when the
+# 24 h cache entry rolls over, so one entry per file is enough.
+_ROWS_CACHE: dict[str, list[dict[str, str]]] = {}
+_ROWS_CACHE_MAX = 4
+
+
 def _rows(csv_text: str) -> list[dict[str, str]]:
-    return list(csv.DictReader(io.StringIO(csv_text)))
+    digest = hashlib.sha1(csv_text.encode("utf-8")).hexdigest()
+    cached = _ROWS_CACHE.get(digest)
+    if cached is not None:
+        return cached
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    if len(_ROWS_CACHE) >= _ROWS_CACHE_MAX:
+        # Plain FIFO: entries only turn over when a CSV is refreshed, so
+        # there is nothing for a smarter policy to do.
+        _ROWS_CACHE.pop(next(iter(_ROWS_CACHE)))
+    _ROWS_CACHE[digest] = rows
+    return rows
 
 
 async def resolve_airport(icao: str) -> tuple[dict, bool]:

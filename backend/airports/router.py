@@ -20,7 +20,14 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from backend.airports import cache as cache_mod
-from backend.airports.cache import airports_cache_key, cache_get, cache_set
+from backend.airports.cache import (
+    KEY_PREFIX,
+    airports_cache_key,
+    cache_get,
+    cache_get_many,
+    cache_set,
+    cache_set_many,
+)
 from backend.airports.config import settings
 from backend.airports.ourairports import (
     AirportNotFoundError,
@@ -200,6 +207,106 @@ def _effective_radius_m(
     return requested_m
 
 
+def _bucket_radius_m(radius_m: float) -> float:
+    """Round the radius up to a cache bucket.
+
+    ``radius_m`` is a continuous UI slider and feeds both the Overpass and
+    the SVG key, so every tick used to cost its own upstream round-trip.
+    Rounding *up* is safe: ``_effective_radius_m`` already over-fetches by a
+    kilometre, so a larger radius never loses geometry — it only stops
+    neighbouring slider positions fragmenting the cache.
+    """
+    bucket = settings.radius_bucket_m
+    if bucket <= 0:
+        return radius_m
+    return math.ceil(radius_m / bucket) * bucket
+
+
+def _render_keys(icao: str, radius_m: float, body: RenderRequest) -> tuple[str, str]:
+    """``(svg key, metadata key)`` for one diagram.
+
+    The metadata sidecar holds the counts and rotation the response
+    reports. Without it an SVG hit had to re-fetch the Overpass payload and
+    run a full ``render_diagram`` just to recover ``rotation``, throwing the
+    rendered document away — the cache hit cost as much as a miss.
+    """
+    parts = (
+        icao, f"r={radius_m:.0f}",
+        f"minlen={body.min_path_len_m}", f"width={body.width}",
+        f"layers={','.join(sorted(body.effective_layers()))}",
+        f"zoom={body.zoom}",
+        f"tlabels={int(body.taxiway_labels)}",
+        f"v={render_diagram_version()}",
+    )
+    return airports_cache_key("svg", *parts), airports_cache_key("meta", *parts)
+
+
+async def _load_cached_render(
+    svg_key: str, meta_key: str, warnings: list[str]
+) -> tuple[str, dict[str, int], dict[str, int], float] | None:
+    """Cached SVG plus its metadata, or None when either is missing.
+
+    Both are required: the response cannot be built from the document
+    alone, and re-deriving the metadata costs a full render. A hit on the
+    SVG with no sidecar is therefore treated as a miss.
+    """
+    found = await cache_get_many([svg_key, meta_key])
+    svg_text, meta_json = found.get(svg_key), found.get(meta_key)
+    if svg_text is None or meta_json is None:
+        return None
+    try:
+        meta = json.loads(meta_json)
+        result = (
+            svg_text, meta["path_counts"], meta["raw_counts"], meta["rotation"],
+        )
+    except (ValueError, KeyError):
+        return None
+    warnings.append("svg_cache_hit")
+    return result
+
+
+async def _store_render(
+    svg_key: str, meta_key: str, svg_text: str,
+    path_counts: dict[str, int], raw_counts: dict[str, int], rotation: float,
+) -> None:
+    """Store the SVG and its metadata sidecar in one pipelined write."""
+    await cache_set_many({
+        svg_key: svg_text,
+        meta_key: json.dumps({
+            "path_counts": path_counts,
+            "raw_counts": raw_counts,
+            "rotation": rotation,
+        }),
+    })
+
+
+async def _render_uncached(
+    airport: dict, runway_rows: list[dict], freq_rows: list[dict],
+    lat: float, lon: float, radius_m: float,
+    body: RenderRequest, warnings: list[str],
+) -> tuple[str, dict[str, int], dict[str, int], float] | JSONResponse:
+    """Fetch polygons and render, off the event loop. Shared by render/import."""
+    elements, err = await _load_polygons(lat, lon, radius_m, warnings)
+    if err is not None or elements is None:
+        return err if err is not None else _error(
+            502, "overpass_unavailable", "Ground-layout fetch failed."
+        )
+    ctx_elements = None
+    if body.needs_context():
+        ctx_elements, _ = await _load_polygons(
+            lat, lon, radius_m, warnings, kind="overpass-ctx")
+        warnings.append("context_enabled")
+    svg_text, path_counts, raw_counts, rotation, render_warnings = (
+        await asyncio.to_thread(
+            _build_svg, airport, runway_rows, freq_rows, elements,
+            body.width, body.min_path_len_m, ctx_elements, body.zoom,
+            body.effective_layers(), body.taxiway_labels,
+        )
+    )
+    warnings.extend(render_warnings)
+    return svg_text, path_counts, raw_counts, rotation
+
+
 def _build_svg(
     airport: dict,
     runway_rows: list[dict],
@@ -306,78 +413,27 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     airport, runway_rows, freq_rows, warnings, lookup_hit = resolved
     lat, lon = float(airport["latitude_deg"]), float(airport["longitude_deg"])
     icao = (airport.get("ident") or body.icao).strip().upper()
-    radius_m = _effective_radius_m(airport, runway_rows, body.radius_m)
+    radius_m = _bucket_radius_m(
+        _effective_radius_m(airport, runway_rows, body.radius_m)
+    )
     if radius_m > body.radius_m:
         warnings.append("radius_expanded_to_cover_runways")
 
-    svg_key = airports_cache_key(
-        "svg", icao, f"r={radius_m:.0f}",
-        f"minlen={body.min_path_len_m}", f"width={body.width}",
-        f"layers={','.join(sorted(body.effective_layers()))}",
-        f"zoom={body.zoom}",
-        f"tlabels={int(body.taxiway_labels)}",
-        f"v={render_diagram_version()}",
-    )
-    cached_svg = await cache_get(svg_key)
-    if cached_svg is not None:
-        svg_text = cached_svg
+    svg_key, meta_key = _render_keys(icao, radius_m, body)
+    cached = await _load_cached_render(svg_key, meta_key, warnings)
+    if cached is not None:
+        svg_text, path_counts, raw_counts, rotation = cached
         cache_hit = True
-        warnings.append("svg_cache_hit")
-        elements, err = await _load_polygons(lat, lon, radius_m, warnings)
-        if err is not None or elements is None:
-            return err  # type: ignore[return-value]
-        ctx_elements: list[dict] | None = None
-        if body.needs_context():
-            ctx_elements, _ = await _load_polygons(
-                lat, lon, radius_m, warnings, kind="overpass-ctx")
-            warnings.append("context_enabled")
-        geoms, raw_counts = await asyncio.to_thread(split_aeroway, elements)
-        selected = set(body.effective_layers())
-        path_counts = {
-            cls: (len(geoms.get(cls, [])) if cls in selected else 0)
-            for cls in geoms
-        }
-        render_kwargs: dict = {
-            "airport": airport,
-            "runways": runway_rows,
-            "frequencies": [
-                {"type": r["type"], "description": r["description"],
-                 "frequency_mhz": r["frequency_mhz"]} for r in freq_rows
-            ],
-            "osm_geoms": geoms,
-            "width": body.width,
-            "min_path_len_m": body.min_path_len_m,
-            "zoom": body.zoom,
-            "layers": body.effective_layers(),
-        }
-        if ctx_elements:
-            from backend.airports.overpass import split_context
-
-            ctx_geoms = await asyncio.to_thread(split_context, ctx_elements)
-            render_kwargs["context_geoms"] = ctx_geoms
-            for cls, polys in ctx_geoms.items():
-                path_counts[cls] = len(polys) if cls in selected else 0
-        _, _, rotation, _ = await asyncio.to_thread(
-            render_diagram, **render_kwargs)
     else:
         cache_hit = False
-        elements, err = await _load_polygons(lat, lon, radius_m, warnings)
-        if err is not None or elements is None:
-            return err  # type: ignore[return-value]
-        ctx_elements = None
-        if body.needs_context():
-            ctx_elements, _ = await _load_polygons(
-                lat, lon, radius_m, warnings, kind="overpass-ctx")
-            warnings.append("context_enabled")
-        svg_text, path_counts, raw_counts, rotation, render_warnings = (
-            await asyncio.to_thread(
-                _build_svg, airport, runway_rows, freq_rows, elements,
-                body.width, body.min_path_len_m, ctx_elements, body.zoom,
-                body.effective_layers(), body.taxiway_labels,
-            )
+        built = await _render_uncached(
+            airport, runway_rows, freq_rows, lat, lon, radius_m, body, warnings
         )
-        warnings.extend(render_warnings)
-        await cache_set(svg_key, svg_text)
+        if isinstance(built, JSONResponse):
+            return built
+        svg_text, path_counts, raw_counts, rotation = built
+        await _store_render(svg_key, meta_key, svg_text, path_counts,
+                            raw_counts, rotation)
 
     base = resolve_public_base(request)
     token = svg_key.rsplit(":", 1)[-1]
@@ -416,25 +472,28 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
     airport, runway_rows, freq_rows, warnings, _ = resolved
     lat, lon = float(airport["latitude_deg"]), float(airport["longitude_deg"])
     icao = (airport.get("ident") or body.icao).strip().upper()
-    radius_m = _effective_radius_m(airport, runway_rows, body.radius_m)
+    radius_m = _bucket_radius_m(
+        _effective_radius_m(airport, runway_rows, body.radius_m)
+    )
     if radius_m > body.radius_m:
         warnings.append("radius_expanded_to_cover_runways")
-    elements, err = await _load_polygons(lat, lon, radius_m, warnings)
-    if err is not None or elements is None:
-        return err  # type: ignore[return-value]
-    ctx_elements = None
-    if body.needs_context():
-        ctx_elements, _ = await _load_polygons(
-            lat, lon, radius_m, warnings, kind="overpass-ctx")
-        warnings.append("context_enabled")
-    svg_text, path_counts, raw_counts, rotation, render_warnings = (
-        await asyncio.to_thread(
-            _build_svg, airport, runway_rows, freq_rows, elements,
-            body.width, body.min_path_len_m, ctx_elements, body.zoom,
-            body.effective_layers(), body.taxiway_labels,
+
+    # The UI fires /render and then /import with the same payload on every
+    # control change, so this is almost always the diagram just rendered.
+    svg_key, meta_key = _render_keys(icao, radius_m, body)
+    cached = await _load_cached_render(svg_key, meta_key, warnings)
+    if cached is not None:
+        svg_text, path_counts, raw_counts, rotation = cached
+    else:
+        built = await _render_uncached(
+            airport, runway_rows, freq_rows, lat, lon, radius_m, body, warnings
         )
-    )
-    warnings.extend(render_warnings)
+        if isinstance(built, JSONResponse):
+            return built
+        svg_text, path_counts, raw_counts, rotation = built
+        await _store_render(svg_key, meta_key, svg_text, path_counts,
+                            raw_counts, rotation)
+
     if sum(path_counts.values()) == 0 and not runway_rows:
         return _error(
             422, ErrorCode.INVALID_PARAMS,
@@ -468,7 +527,7 @@ async def get_result(token: str) -> Response:
     """Serve a cached rendered SVG (sha1 token from ``svg_url``)."""
     if len(token) != 40 or any(c not in "0123456789abcdef" for c in token.lower()):
         return _error(404, "result_not_found", "Unknown diagram result.")
-    svg_text = await cache_get(f"fund-vista:airports:v1:svg:{token.lower()}")
+    svg_text = await cache_get(f"{KEY_PREFIX}:svg:{token.lower()}")
     if svg_text is None:
         return _error(
             404, "result_not_found",

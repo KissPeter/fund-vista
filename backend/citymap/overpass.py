@@ -44,17 +44,23 @@ def bbox_str(bbox: BBox) -> str:
     return f"{south:.5f},{west:.5f},{north:.5f},{east:.5f}"
 
 
-def build_overpass_query(bbox: BBox, layers: list[str], timeout_s: int = 25) -> str:
-    """Render the Overpass QL union for ``layers`` inside ``bbox``.
+def union_members(bbox: BBox, layers: list[str]) -> list[str]:
+    """Overpass QL union members for ``layers`` inside ``bbox``.
 
-    Every union member gets exactly one trailing ``;`` — Overpass rejects
-    the whole query (400/406) when a member is unterminated.
+    Every member gets exactly one trailing ``;`` — Overpass rejects the
+    whole query (400/406) when a member is unterminated. Split out from
+    :func:`build_overpass_query` so the tile loader can union members from
+    several bboxes into a single query.
     """
     ways, relations = selectors_for(layers)
-    members = [
+    return [
         s.format(bbox=bbox_str(bbox)).rstrip().rstrip(";") + ";"
         for s in ways + relations
     ]
+
+
+def wrap_query(members: list[str], timeout_s: int = 25) -> str:
+    """Wrap union members in the standard recursing-out envelope."""
     block = "\n  ".join(members)
     return (
         f"[out:json][timeout:{timeout_s}];\n"
@@ -63,6 +69,11 @@ def build_overpass_query(bbox: BBox, layers: list[str], timeout_s: int = 25) -> 
         ">;\n"
         "out skel qt;"
     )
+
+
+def build_overpass_query(bbox: BBox, layers: list[str], timeout_s: int = 25) -> str:
+    """Render the Overpass QL union for ``layers`` inside ``bbox``."""
+    return wrap_query(union_members(bbox, layers), timeout_s)
 
 
 def match_way_layer(tags: dict, layers: list[str]) -> str | None:

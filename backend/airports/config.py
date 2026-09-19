@@ -49,7 +49,18 @@ class AirportsSettings(BaseSettings):
     # broken preview (404). Large-airport renders reach ~10 MB, so the cap
     # must fit them — Redis strings allow up to 512 MB; oversized values
     # are still served once and simply re-fetched next time.
+    # Checked against the *stored* (deflated) size.
     max_cached_bytes: int = 32 * 1024 * 1024
+    # Values at or above this are zlib'd before storage. The OurAirports
+    # CSVs and the Overpass payloads both deflate several-fold (airports.csv
+    # alone is ~12 MB of highly repetitive text).
+    compress_min_bytes: int = 4 * 1024
+    # The Overpass radius is rounded *up* to a multiple of this before it
+    # reaches the cache key. radius_m is a continuous UI slider, so every
+    # tick used to be its own Overpass round-trip; _effective_radius_m
+    # already over-fetches by a 1 km margin, so rounding up never drops
+    # geometry — it only stops near-identical radii fragmenting the cache.
+    radius_bucket_m: float = 500.0
     # Nominatim-style identification for upstream POSTs.
     user_agent: str = "fund-vista-airports/1.0 (pen-plot airport diagrams)"
 

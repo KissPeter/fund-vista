@@ -20,8 +20,10 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from backend.citymap.cache import (
+    KEY_PREFIX,
     cache_get,
-    cache_set,
+    cache_get_many,
+    cache_set_many,
     citymap_cache_key,
 )
 from backend.citymap.config import settings
@@ -38,12 +40,23 @@ from backend.citymap.overpass import (
     BBox,
     OverpassError,
     bbox_str,
-    build_overpass_query,
     fetch_overpass,
     split_elements,
+    union_members,
+    wrap_query,
 )
-from backend.citymap.osm_api import OsmApiError, fetch_osm_api
+from backend.citymap.osm_api import OsmApiError, fetch_osm_api, merge_elements
 from backend.citymap.render import render_svg
+from backend.citymap.tiles import (
+    assign_to_tiles,
+    clip_elements,
+    covering_rects,
+    rect_bbox,
+    snap_bbox,
+    tile_deg_for_bbox,
+    tile_ref,
+    tiles_for_bbox,
+)
 from backend.citymap.schemas import (
     ATTRIBUTION,
     BBox as BBoxSchema,
@@ -65,10 +78,6 @@ from backend.penplot.router import store as penplot_store
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/citymap", tags=["citymap-v1"])
-
-
-def _ttl_s() -> int:
-    return settings.cache_ttl_hours * 3600
 
 
 def _error(status: int, code: str, message: str) -> JSONResponse:
@@ -106,43 +115,197 @@ async def _resolve_area(
             f"Area too large (max {settings.max_bbox_deg} deg per side) — "
             "use a district or neighbourhood instead of a whole region.",
         )
-    return city, display_name, bbox
+    # Snap outward to a fixed grid. The UI sends raw map.getBounds() floats,
+    # which are unique to the pixel, so without this the SVG cache could
+    # only ever hit on a byte-identical repeat of a previous request. The
+    # snapped bbox is what gets rendered and what the response reports, so
+    # clients see the area actually drawn.
+    snapped = snap_bbox(bbox, settings.render_snap_deg)
+    if snapped != bbox:
+        warnings.append("bbox_snapped")
+    return city, display_name, snapped
 
 
-async def _load_raw(
-    bbox: BBox, layers: list[str], warnings: list[str]
-) -> tuple[list[dict] | None, JSONResponse | None]:
-    """Redis-first fetch with OSM Main API fallback.
+def _tile_key(tile: tuple[int, int], deg: float, layer: str) -> str:
+    return citymap_cache_key("tile", tile_ref(tile, deg), layer)
 
-    Returns (elements, None) or (None, error response) when Overpass *and*
-    the OSM Main API both fail. Fallback hits append ``osm_api_fallback``
-    so clients can tell the data came from chunked ``/api/0.6/map`` reads.
+
+async def _fetch_missing(
+    missing: dict[str, set[tuple[int, int]]], deg: float, warnings: list[str]
+) -> tuple[dict[str, list[dict]] | None, set[tuple[int, int]], JSONResponse | None]:
+    """Fetch the missing ``(layer -> tiles)`` work in as few queries as we can.
+
+    Missing tiles are decomposed into rectangles and unioned into a single
+    Overpass query, so a cold render still costs one round-trip exactly as
+    it used to — only a warm one gets cheaper.
+
+    Returns ``(elements per layer, tiles fully covered by the fetch, error)``.
+    The covered set matters: a way whose nodes straddle the edge of the
+    fetched region would otherwise be filed under an outside tile, and
+    caching that tile would pin a payload missing everything else there.
     """
-    key = citymap_cache_key("overpass", bbox_str(bbox), ",".join(sorted(layers)))
-    raw_json = await cache_get(key)
-    if raw_json is not None:
-        warnings.append("overpass_cache_hit")
-        try:
-            return json.loads(raw_json), None
-        except ValueError:
-            pass
+    all_tiles: set[tuple[int, int]] = set()
+    for tiles in missing.values():
+        all_tiles |= tiles
+    rects = covering_rects(all_tiles)
+    layers = sorted(missing)
+
+    covered: set[tuple[int, int]] = set()
+    for row0, col0, row1, col1 in rects:
+        for r in range(row0, row1 + 1):
+            for c in range(col0, col1 + 1):
+                covered.add((r, c))
+
+    members: list[str] = []
+    for rect in rects:
+        members.extend(union_members(rect_bbox(rect, deg), layers))
     try:
-        elements = await fetch_overpass(build_overpass_query(bbox, layers))
+        elements = await fetch_overpass(wrap_query(members))
     except OverpassError as exc:
         log.warning("citymap overpass failed, trying OSM API: %s", exc.detail)
+        chunks: list[list[dict]] = []
         try:
-            elements = await fetch_osm_api(bbox)
+            for rect in rects:
+                chunks.append(await fetch_osm_api(rect_bbox(rect, deg)))
         except OsmApiError as exc2:
-            return None, _error(
+            return None, set(), _error(
                 502,
                 "overpass_unavailable",
                 f"Map data fetch failed (Overpass: {exc.detail}; "
                 f"OSM API: {exc2.detail}). "
                 "(Upstreams busy — retry in a minute, with fewer layers or a smaller area).",
             )
+        elements = merge_elements(chunks)
         warnings.append("osm_api_fallback")
-    await cache_set(key, json.dumps(elements))
-    return elements, None
+
+    # One query returns every layer at once, and the OSM Main API fallback
+    # is not layer-aware at all, so each tile key gets only its own layer —
+    # otherwise the per-layer reuse this scheme buys would be a lie.
+    per_layer = {layer: _select_layer(elements, layer) for layer in layers}
+    return per_layer, covered, None
+
+
+def _select_layer(elements: list[dict], layer: str) -> list[dict]:
+    """Elements belonging to ``layer``, plus the nodes they reference.
+
+    A union query returns every layer at once; each tile key must hold only
+    its own layer or the per-layer reuse this whole scheme buys would be a
+    lie. Uses the same predicates the renderer does.
+    """
+    from backend.citymap.overpass import match_relation_layer, match_way_layer
+
+    nodes: dict[int, dict] = {}
+    ways: dict[int, dict] = {}
+    relations: list[dict] = []
+    for el in elements:
+        kind = el.get("type")
+        if kind == "node":
+            nodes[el["id"]] = el
+        elif kind == "way":
+            ways[el["id"]] = el
+        elif kind == "relation":
+            relations.append(el)
+
+    only = [layer]
+    kept: dict[tuple[str, int], dict] = {}
+
+    def keep_way(way: dict) -> None:
+        kept[("way", way["id"])] = way
+        for ref in way.get("nodes", []):
+            node = nodes.get(ref)
+            if node is not None:
+                kept[("node", ref)] = node
+
+    for rel in relations:
+        if match_relation_layer(rel.get("tags", {}) or {}, only) is None:
+            continue
+        kept[("relation", rel["id"])] = rel
+        for member in rel.get("members", []):
+            if member.get("type") == "way" and member.get("ref") in ways:
+                keep_way(ways[member["ref"]])
+    for way in ways.values():
+        if match_way_layer(way.get("tags", {}) or {}, only) is not None:
+            keep_way(way)
+    return list(kept.values())
+
+
+async def _load_raw(
+    bbox: BBox, layers: list[str], warnings: list[str]
+) -> tuple[list[dict] | None, JSONResponse | None]:
+    """Tile-cached fetch with OSM Main API fallback.
+
+    Raw OSM is held per ``(tile, layer)`` rather than per
+    ``(exact bbox, layer set)``, so a pan refetches only the new tiles and
+    ticking a layer on reuses the layers already held. The result is
+    clipped back to ``bbox`` so the element set — and therefore the
+    renderer's extent — is identical to what one query over ``bbox`` would
+    have produced, whatever the cache happened to hold.
+
+    Returns (elements, None) or (None, error response) when Overpass *and*
+    the OSM Main API both fail. Fallback hits append ``osm_api_fallback``
+    so clients can tell the data came from chunked ``/api/0.6/map`` reads.
+    """
+    deg = tile_deg_for_bbox(bbox, settings.tile_max_tiles)
+    tiles = tiles_for_bbox(bbox, deg)
+
+    keys = {
+        (layer, tile): _tile_key(tile, deg, layer)
+        for layer in layers
+        for tile in tiles
+    }
+    found = await cache_get_many(list(keys.values()))
+
+    payloads: dict[tuple[str, tuple[int, int]], list[dict]] = {}
+    missing: dict[str, set[tuple[int, int]]] = {}
+    for (layer, tile), key in keys.items():
+        raw = found.get(key)
+        if raw is not None:
+            try:
+                payloads[(layer, tile)] = json.loads(raw)
+                continue
+            except ValueError:
+                pass
+        missing.setdefault(layer, set()).add(tile)
+
+    hit_count = len(keys) - sum(len(v) for v in missing.values())
+    if hit_count:
+        warnings.append("overpass_cache_hit")
+
+    if missing:
+        per_layer, covered, err = await _fetch_missing(missing, deg, warnings)
+        if err is not None:
+            return None, err
+        assert per_layer is not None
+        writes: dict[str, str] = {}
+        for layer, elements in per_layer.items():
+            by_tile = assign_to_tiles(elements, deg, limit_to=covered)
+            # Cache every tile the fetch covered, not just the ones this
+            # request lacked — the rectangle is already paid for and the
+            # neighbours are what the next pan will ask for. A covered tile
+            # with no features of this layer is a real answer, not a miss;
+            # storing the empty list stops it being re-fetched forever.
+            for tile in covered:
+                payload = by_tile.get(tile, [])
+                writes[_tile_key(tile, deg, layer)] = json.dumps(payload)
+                if tile in missing[layer]:
+                    payloads[(layer, tile)] = payload
+        await cache_set_many(writes, settings.tile_cache_ttl_hours * 3600)
+
+    # Assemble in a fixed (layer, tile) order rather than in whatever order
+    # the cache answered. Assembly order decides the order of <path>
+    # elements in the SVG, and the same request must render identically
+    # whether it was served entirely from cache or partly refetched.
+    chunks = [
+        payloads.get((layer, tile), [])
+        for layer in layers
+        for tile in tiles
+    ]
+    log.info(
+        "citymap.tiles z=%g tiles=%d layers=%d hit=%d miss=%d",
+        deg, len(tiles), len(layers), hit_count,
+        sum(len(v) for v in missing.values()),
+    )
+    return clip_elements(merge_elements(chunks), bbox), None
 
 
 @router.get("/layers", response_model=LayersResponse)
@@ -221,6 +384,59 @@ async def geocode(city: str = Query(min_length=1, max_length=120)) -> GeocodeRes
     )
 
 
+def _render_keys(
+    bbox: BBox, layers: list[str], body: RenderRequest
+) -> tuple[str, str]:
+    """``(svg key, counts key)`` for one render.
+
+    The counts sidecar holds the path/raw totals the response reports. It
+    exists so an SVG hit costs two small reads instead of re-parsing a
+    multi-MB payload and re-running ``split_elements`` purely to fill in
+    numbers the renderer already computed once.
+    """
+    parts = (
+        bbox_str(bbox), ",".join(sorted(layers)),
+        f"minlen={body.min_path_len_m}", f"width={body.width}",
+    )
+    return citymap_cache_key("svg", *parts), citymap_cache_key("counts", *parts)
+
+
+async def _load_cached_render(
+    svg_key: str, counts_key: str, layers: list[str], warnings: list[str]
+) -> tuple[str, dict[str, int], dict[str, int]] | None:
+    """Cached SVG plus its counts, or None when the SVG is not held."""
+    found = await cache_get_many([svg_key, counts_key])
+    svg_text = found.get(svg_key)
+    if svg_text is None:
+        return None
+    warnings.append("svg_cache_hit")
+    raw_counts: dict[str, int] = {"nodes": -1, "ways": -1, "relations": -1}
+    counts_json = found.get(counts_key)
+    if counts_json is not None:
+        try:
+            meta = json.loads(counts_json)
+            return svg_text, meta["path_counts"], meta["raw_counts"]
+        except (ValueError, KeyError):
+            pass
+    # Sidecar missing or unreadable (an SVG cached before this existed, or
+    # an expiry race): count paths in the document rather than re-fetching.
+    warnings.append("counts_from_cached_svg")
+    return svg_text, _count_paths_in_svg(svg_text, layers), raw_counts
+
+
+async def _store_render(
+    svg_key: str, counts_key: str, svg_text: str,
+    path_counts: dict[str, int], raw_counts: dict[str, int],
+) -> None:
+    """Store the SVG and its counts sidecar in one pipelined write."""
+    await cache_set_many({
+        svg_key: svg_text,
+        counts_key: json.dumps(
+            {"path_counts": path_counts, "raw_counts": raw_counts}
+        ),
+    })
+
+
 @router.post("/render", response_model=RenderResponse,
               dependencies=[Depends(require_rate_limit)])
 async def render(body: RenderRequest, request: Request) -> RenderResponse | JSONResponse:
@@ -232,61 +448,28 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     city, display_name, bbox = resolved
 
     layers = list(body.layers)
-    raw_key = citymap_cache_key("overpass", bbox_str(bbox), ",".join(sorted(layers)))
-    svg_key = citymap_cache_key(
-        "svg", bbox_str(bbox), ",".join(sorted(layers)),
-        f"minlen={body.min_path_len_m}", f"width={body.width}",
-    )
+    svg_key, counts_key = _render_keys(bbox, layers, body)
 
-    # -- data (Redis first, Overpass on miss) -----------------------------
-    cached_svg = await cache_get(svg_key)
-    if cached_svg is not None:
-        svg_text = cached_svg
+    cached = await _load_cached_render(svg_key, counts_key, layers, warnings)
+    if cached is not None:
+        svg_text, path_counts, raw_counts = cached
         cache_hit = True
-        warnings.append("svg_cache_hit")
-        # Path counts are recomputed cheaply below from the raw payload when
-        # available; otherwise they are re-derived from the cached SVG.
-        raw_elements: list[dict] | None = None
-        raw_json = await cache_get(raw_key)
-        if raw_json is not None:
-            try:
-                raw_elements = json.loads(raw_json)
-            except ValueError:
-                raw_elements = None
     else:
         cache_hit = False
         raw_elements, err = await _load_raw(bbox, layers, warnings)
         if err is not None:
             return err
 
-    # -- split + render (CPU-bound: off the event loop) --------------------
-    def _build() -> tuple[str, dict[str, int], dict[str, int]]:
-        geoms, raw_counts = split_elements(raw_elements or [], layers)
-        svg, path_counts = render_svg(
-            geoms, bbox, layers,
-            width=body.width, min_path_len_m=body.min_path_len_m,
-        )
-        return svg, path_counts, raw_counts
+        def _build() -> tuple[str, dict[str, int], dict[str, int]]:
+            geoms, raw_counts_ = split_elements(raw_elements or [], layers)
+            svg, path_counts_ = render_svg(
+                geoms, bbox, layers,
+                width=body.width, min_path_len_m=body.min_path_len_m,
+            )
+            return svg, path_counts_, raw_counts_
 
-    if cached_svg is not None and raw_elements is None:
-        # SVG hit but no raw payload (e.g. raw entry expired first): count
-        # paths straight from the cached document instead of re-fetching.
-        svg_text = cached_svg
-        path_counts = _count_paths_in_svg(cached_svg, layers)
-        raw_counts = {"nodes": -1, "ways": -1, "relations": -1}
-        warnings.append("counts_from_cached_svg")
-    elif cached_svg is not None:
-        # Both cached: reuse the SVG, split the raw payload for counts only
-        # (no re-render — the stored document is already what we would emit).
-        assert raw_elements is not None
-        svg_text = cached_svg
-        geoms, raw_counts = await asyncio.to_thread(
-            split_elements, raw_elements, layers
-        )
-        path_counts = {layer: len(geoms.get(layer, [])) for layer in layers}
-    else:
         svg_text, path_counts, raw_counts = await asyncio.to_thread(_build)
-        await cache_set(svg_key, svg_text)
+        await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
 
     base = resolve_public_base(request)
     token = svg_key.rsplit(":", 1)[-1]
@@ -324,15 +507,33 @@ async def import_map(body: RenderRequest) -> ImportResponse | JSONResponse:
         return resolved
     city, display_name, bbox = resolved
     layers = list(body.layers)
-    elements, err = await _load_raw(bbox, layers, warnings)
-    if err is not None:
-        return err
-    assert elements is not None
-    geoms, raw_counts = await asyncio.to_thread(split_elements, elements, layers)
-    svg_text, path_counts = render_svg(
-        geoms, bbox, layers,
-        width=body.width, min_path_len_m=body.min_path_len_m,
-    )
+    svg_key, counts_key = _render_keys(bbox, layers, body)
+
+    # The UI calls /render and then /import with the same payload, so this
+    # is nearly always the render we just produced. Reading it back beats
+    # rendering the same document a second time.
+    cached = await _load_cached_render(svg_key, counts_key, layers, warnings)
+    if cached is not None:
+        svg_text, path_counts, raw_counts = cached
+    else:
+        elements, err = await _load_raw(bbox, layers, warnings)
+        if err is not None:
+            return err
+        assert elements is not None
+
+        def _build() -> tuple[str, dict[str, int], dict[str, int]]:
+            geoms, raw_counts_ = split_elements(elements or [], layers)
+            svg, path_counts_ = render_svg(
+                geoms, bbox, layers,
+                width=body.width, min_path_len_m=body.min_path_len_m,
+            )
+            return svg, path_counts_, raw_counts_
+
+        # Off the event loop: a dense render is seconds of CPU and used to
+        # block the whole worker here, unlike the /render path.
+        svg_text, path_counts, raw_counts = await asyncio.to_thread(_build)
+        await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
+
     if sum(path_counts.values()) == 0:
         return _error(
             422, ErrorCode.INVALID_PARAMS,
@@ -381,7 +582,7 @@ async def get_result(token: str) -> Response:
     """Serve a cached rendered SVG (sha1 token from ``svg_url``)."""
     if len(token) != 40 or any(c not in "0123456789abcdef" for c in token.lower()):
         return _error(404, "result_not_found", "Unknown map result.")
-    svg_text = await cache_get(f"fund-vista:citymap:v1:svg:{token.lower()}")
+    svg_text = await cache_get(f"{KEY_PREFIX}:svg:{token.lower()}")
     if svg_text is None:
         return _error(
             404, "result_not_found",

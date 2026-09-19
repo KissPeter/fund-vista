@@ -356,8 +356,12 @@ def test_load_raw_falls_back_to_osm_api_on_overpass_outage():
         router_mod.fetch_overpass, router_mod.fetch_osm_api = boom, fallback
         try:
             warnings: list[str] = []
+            # The bbox must contain the fixture's nodes (lat 47.5-47.6,
+            # lon 19.0-19.1): _load_raw now clips the upstream payload to
+            # the requested area, so a bbox elsewhere correctly yields
+            # nothing and would not exercise the fallback at all.
             elements, err = await router_mod._load_raw(
-                (47.4, 19.0, 47.45, 19.05), ["highways"], warnings
+                (47.45, 18.95, 47.65, 19.15), ["highways"], warnings
             )
         finally:
             router_mod.fetch_overpass, router_mod.fetch_osm_api = (
@@ -370,6 +374,10 @@ def test_load_raw_falls_back_to_osm_api_on_overpass_outage():
     assert err is None
     assert elements is not None and len(elements) > 0
     assert "osm_api_fallback" in warnings
+    # The fallback payload is layer-filtered on the way into the tile cache:
+    # the motorway (10) and the primary (13) are both "highways", while the
+    # residential (11) and the building (12) are dropped.
+    assert {e["id"] for e in elements if e["type"] == "way"} == {10, 13}
 
 
 def test_load_raw_502_when_both_upstreams_fail():
