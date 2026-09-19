@@ -1,0 +1,10 @@
+.git
+backend/.data/
+backend/__pycache__/
+**/__pycache__/
+**/*.pyc
+node_modules/
+.output/
+.wrangler/
+test-results/
+playwright-report/
