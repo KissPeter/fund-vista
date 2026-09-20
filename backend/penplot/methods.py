@@ -259,7 +259,10 @@ def _collapse_skeleton_ladders(skel: np.ndarray) -> np.ndarray:
     )
     for _ in range(10):
         s = skel.astype(np.uint8)
-        full = s[:-1, :-1] & s[:-1, 1:] & s[1:, :-1] & s[1:, 1:]
+        # bool mask (not uint8): `drop` below is bool, and bool |= uint8
+        # raises UFuncTypeError on NumPy 2 (500'd every centerline convert
+        # whose skeleton contained a full 2x2 block, i.e. any dense photo).
+        full = (s[:-1, :-1] & s[:-1, 1:] & s[1:, :-1] & s[1:, 1:]) != 0
         if not bool(np.any(full)):
             break
         h, w = s.shape
