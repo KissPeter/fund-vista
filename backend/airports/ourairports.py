@@ -11,9 +11,11 @@ center ± half the runway length along the ident heading (``"13L" → 130°``).
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import io
+import json
 import logging
 import re
 
@@ -108,6 +110,18 @@ async def _fetch_csv(
 _ROWS_CACHE: dict[str, list[dict[str, str]]] = {}
 _ROWS_CACHE_MAX = 4
 
+# Search-only rows: same down-sampling pattern, but over the minimal column
+# set ``rank_candidates`` reads, and mirrored cluster-wide in Redis under a
+# single key so all 4 workers share ONE parse of the ~12 MB airports.csv
+# instead of each re-parsing it (and each holding 83k full-width dicts) per
+# TTL. The JSON round-trip is ~1/4 of the full parse cost.
+_SEARCH_FIELDS = (
+    "ident", "gps_code", "iata_code", "name", "municipality",
+    "iso_country", "type", "latitude_deg", "longitude_deg",
+)
+_SEARCH_ROWS_CACHE: dict[str, list[dict[str, str]]] = {}
+_search_seed_lock = asyncio.Lock()
+
 
 def _rows(csv_text: str) -> list[dict[str, str]]:
     digest = hashlib.sha1(csv_text.encode("utf-8")).hexdigest()
@@ -121,6 +135,44 @@ def _rows(csv_text: str) -> list[dict[str, str]]:
         _ROWS_CACHE.pop(next(iter(_ROWS_CACHE)))
     _ROWS_CACHE[digest] = rows
     return rows
+
+
+def _search_rows(csv_text: str) -> list[dict[str, str]]:
+    """Parse ``airports.csv`` into the minimal rows ``rank_candidates`` needs.
+
+    In-process cache (digest-keyed, like :func:`_rows`) plus the cluster-wide
+    Redis mirror in :func:`_search_rows_cached`.
+    """
+    digest = hashlib.sha1(csv_text.encode("utf-8")).hexdigest()
+    cached = _SEARCH_ROWS_CACHE.get(digest)
+    if cached is not None:
+        return cached
+    rows = []
+    for row in csv.DictReader(io.StringIO(csv_text)):
+        rows.append({field: (row.get(field) or "") for field in _SEARCH_FIELDS})
+    _SEARCH_ROWS_CACHE.clear()
+    _SEARCH_ROWS_CACHE[digest] = rows
+    return rows
+
+
+async def _search_rows_cached(csv_text: str) -> list[dict[str, str]]:
+    """Search rows, shared across workers via Redis (in-process fallback).
+
+    The write is single-flighted per worker (``_search_seed_lock``) so a TTL
+    rollover triggers exactly one parse per process; workers that arrive later
+    read the JSON mirror instead of parsing 83k rows themselves.
+    """
+    key = cache_mod.airports_cache_key("searchrows")
+    raw = await cache_mod.cache_get(key)
+    if raw is not None:
+        return json.loads(raw)
+    async with _search_seed_lock:
+        raw = await cache_mod.cache_get(key)
+        if raw is not None:
+            return json.loads(raw)
+        rows = await asyncio.to_thread(_search_rows, csv_text)
+        await cache_mod.cache_set(key, json.dumps(rows, ensure_ascii=False))
+        return rows
 
 
 async def resolve_airport(icao: str) -> tuple[dict, bool]:
@@ -207,14 +259,18 @@ def rank_candidates(
 async def search_airports(query: str, limit: int = 5) -> tuple[list[dict], bool]:
     """Freeform search over the cached ``airports.csv``.
 
-    Returns ``(candidates, cache_hit)``. CSV parsing runs off the event
-    loop (the file is ~12 MB).
+    Returns ``(candidates, cache_hit)``. Both the CSV parse and the 83k-row
+    ranking scan run off the event loop (``asyncio.to_thread``) so a slow
+    query never blocks a worker's loop; parsed rows are shared cluster-wide
+    via the ``searchrows`` Redis key so the expensive parse happens once per
+    TTL instead of once per worker.
     """
     import asyncio as _asyncio
 
     text, hit = await _fetch_csv("airports")
-    rows = await _asyncio.to_thread(_rows, text)
-    return rank_candidates(rows, query, limit), hit
+    rows = await _search_rows_cached(text)
+    candidates = await _asyncio.to_thread(rank_candidates, rows, query, limit)
+    return candidates, hit
 
 
 async def airport_runways(airport_ident: str) -> tuple[list[dict], bool]:
