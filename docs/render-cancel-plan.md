@@ -250,5 +250,8 @@ Acceptance: interactive cancel always server-visible (`DELETE` or auto-supersede
 
 P0 + P1 LANDED in shop `1.28` (draft previews, skip tiny refires, proxy
 abort forwarding; shop detail in `pen-pixel-shop/docs/render-cancel-plan.md`).
-P2 + P3 implemented here (backend only) — remaining: NAS rebuild/redeploy,
-then HAR-level verification.
+P2 + P3 implemented here (backend only) — cloud already serves the new
+code (`job_not_found` contract observed in prod). NAS tunnel restored
+2026-09-23 ~11:13 but the NAS app predates P2/P3 (`/v1/jobs` answers
+`Unknown upstream prefix`) — NAS rebuild/redeploy still pending
+(requires LAN access to `root@192.168.0.240`), then HAR-level verification.
