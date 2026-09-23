@@ -33,6 +33,7 @@ from backend.citymap.cache import (
     KEY_PREFIX,
     cache_get,
     cache_get_many,
+    cache_set,
     cache_set_many,
     citymap_cache_key,
 )
@@ -138,6 +139,57 @@ async def _resolve_area(
 
 def _tile_key(tile: tuple[int, int], deg: float, layer: str) -> str:
     return citymap_cache_key("tile", tile_ref(tile, deg), layer)
+
+
+# P5: split_elements output is cached separately from the rendered SVG. The
+# SVG cache key includes width/min_path_len, so sliding those controls with
+# the same area+layers re-renders from the tiles every time; the split is
+# independent of both, so a hit skips ``_load_raw`` and ``split_elements``
+# entirely. The key binds the exact (bbox, layer set) — adding a layer can
+# reassign a way to a different layer via the ordering in match_way_layer, so
+# per-layer keys would be unsound. Bump the version when split semantics or
+# render geometry change.
+SPLIT_VERSION = "split-v1"
+
+
+def _split_key(bbox: BBox, layers: list[str]) -> str:
+    return citymap_cache_key(
+        "split", bbox_str(bbox), ",".join(sorted(layers)), SPLIT_VERSION
+    )
+
+
+async def _load_cached_split(
+    bbox: BBox, layers: list[str], warnings: list[str],
+) -> tuple[dict[str, list[list[tuple[float, float]]]], dict[str, int]] | None:
+    key = _split_key(bbox, layers)
+    raw = await cache_get(key)
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+        geoms = {
+            layer: [
+                [tuple(pt) for pt in pl]
+                for pl in data["geoms"][layer]
+            ]
+            for layer in layers
+        }
+        raw_counts = dict(data["raw_counts"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    warnings.append("split_cache_hit")
+    return geoms, raw_counts
+
+
+async def _store_split(
+    bbox: BBox, layers: list[str],
+    geoms: dict[str, list[list[tuple[float, float]]]],
+    raw_counts: dict[str, int],
+) -> None:
+    await cache_set(
+        _split_key(bbox, layers),
+        json.dumps({"geoms": geoms, "raw_counts": raw_counts}, separators=(",", ":")),
+    )
 
 
 async def _fetch_missing(
@@ -501,12 +553,21 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         cache_hit = False
         # 1 — before any network/CPU work.
         await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started)
-        raw_elements, err = await _load_raw(
-            bbox, layers, warnings,
-            request=request, endpoint=endpoint, started_mono=started,
-        )
-        if err is not None:
-            return err
+        # P5: same area+layers with different width/minlen reuses the split
+        # and skips the Overpass/tile fetch entirely.
+        split_cache = await _load_cached_split(bbox, layers, warnings)
+        raw_elements = None
+        geoms_pre: dict | None = None
+        raw_counts_pre: dict | None = None
+        if split_cache is not None:
+            geoms_pre, raw_counts_pre = split_cache
+        else:
+            raw_elements, err = await _load_raw(
+                bbox, layers, warnings,
+                request=request, endpoint=endpoint, started_mono=started,
+            )
+            if err is not None:
+                return err
         # 3 — after fetch, before SVG build.
         await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
 
@@ -514,21 +575,28 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         watch = start_disconnect_watcher(request, stop)
         watcher = asyncio.create_task(watch())
 
-        def _build() -> tuple[str, dict[str, int], dict[str, int]]:
+        def _build() -> tuple[str, dict[str, int], dict[str, int],
+                              tuple[dict, dict] | None]:
             from backend.citymap.overpass import split_elements as _split
             from backend.citymap.render import render_svg as _render
 
-            geoms, raw_counts_ = _split(
-                raw_elements or [], layers, cancelled=stop.is_set)
+            store_me: tuple[dict, dict] | None = None
+            if raw_elements is None:
+                assert geoms_pre is not None and raw_counts_pre is not None
+                geoms, raw_counts_ = geoms_pre, raw_counts_pre
+            else:
+                geoms, raw_counts_ = _split(
+                    raw_elements, layers, cancelled=stop.is_set)
+                store_me = (geoms, raw_counts_)
             svg, path_counts_ = _render(
                 geoms, bbox, layers,
                 width=body.width, min_path_len_m=body.min_path_len_m,
                 cancelled=stop.is_set,
             )
-            return svg, path_counts_, raw_counts_
+            return svg, path_counts_, raw_counts_, store_me
 
         try:
-            svg_text, path_counts, raw_counts = await asyncio.to_thread(_build)
+            svg_text, path_counts, raw_counts, store_me = await asyncio.to_thread(_build)
         except ClientCancelled as exc:
             raise log_and_499(
                 endpoint=endpoint, stage=exc.stage or "svg_build",
@@ -540,6 +608,8 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         # Thread may have finished just as the client went away — do not
         # poison the cache with a run nobody will use.
         await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
+        if store_me is not None:
+            await _store_split(bbox, layers, store_me[0], store_me[1])
         await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
 
     base = resolve_public_base(request)
@@ -593,36 +663,49 @@ async def import_map(body: RenderRequest, request: Request) -> ImportResponse | 
         svg_text, path_counts, raw_counts = cached
     else:
         await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started)
-        elements, err = await _load_raw(
-            bbox, layers, warnings,
-            request=request, endpoint=endpoint, started_mono=started,
-        )
-        if err is not None:
-            return err
-        assert elements is not None
+        split_cache = await _load_cached_split(bbox, layers, warnings)
+        elements = None
+        geoms_pre: dict | None = None
+        raw_counts_pre: dict | None = None
+        if split_cache is not None:
+            geoms_pre, raw_counts_pre = split_cache
+        else:
+            elements, err = await _load_raw(
+                bbox, layers, warnings,
+                request=request, endpoint=endpoint, started_mono=started,
+            )
+            if err is not None:
+                return err
+            assert elements is not None
         await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
 
         stop = threading.Event()
         watch = start_disconnect_watcher(request, stop)
         watcher = asyncio.create_task(watch())
 
-        def _build() -> tuple[str, dict[str, int], dict[str, int]]:
+        def _build() -> tuple[str, dict[str, int], dict[str, int],
+                              tuple[dict, dict] | None]:
             from backend.citymap.overpass import split_elements as _split
-            from backend.citymap.render import render_svg as _render
 
-            geoms, raw_counts_ = _split(
-                elements or [], layers, cancelled=stop.is_set)
+            store_me: tuple[dict, dict] | None = None
+            if elements is None:
+                assert geoms_pre is not None and raw_counts_pre is not None
+                geoms, raw_counts_ = geoms_pre, raw_counts_pre
+            else:
+                geoms, raw_counts_ = _split(
+                    elements, layers, cancelled=stop.is_set)
+                store_me = (geoms, raw_counts_)
             svg, path_counts_ = render_svg(
                 geoms, bbox, layers,
                 width=body.width, min_path_len_m=body.min_path_len_m,
                 cancelled=stop.is_set,
             )
-            return svg, path_counts_, raw_counts_
+            return svg, path_counts_, raw_counts_, store_me
 
         # Off the event loop: a dense render is seconds of CPU and used to
         # block the whole worker here, unlike the /render path.
         try:
-            svg_text, path_counts, raw_counts = await asyncio.to_thread(_build)
+            svg_text, path_counts, raw_counts, store_me = await asyncio.to_thread(_build)
         except ClientCancelled as exc:
             raise log_and_499(
                 endpoint=endpoint, stage=exc.stage or "svg_build",
@@ -632,6 +715,8 @@ async def import_map(body: RenderRequest, request: Request) -> ImportResponse | 
             stop.set()
             watcher.cancel()
         await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
+        if store_me is not None:
+            await _store_split(bbox, layers, store_me[0], store_me[1])
         await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
 
     if sum(path_counts.values()) == 0:

@@ -87,6 +87,80 @@ def render_diagram_version() -> str:
     return render_source_version()
 
 
+# P5: split outputs are cached independently of the render params (width/
+# minlen/zoom/layers/labels all render from the same aeroway/context rings).
+# Keys mirror the Overpass payload key (lat/lon/radius) so a slider change
+# with the same airport reuses the split and skips the per-render CPU. Bump
+# the version when split_aeroway/split_context semantics change.
+SPLIT_VERSION = "split-v1"
+
+
+def _split_keys(lat: float, lon: float, radius_m: float) -> tuple[str, str]:
+    center = f"{lat:.5f},{lon:.5f}"
+    radius = f"r={radius_m:.0f}"
+    return (
+        airports_cache_key("split-aeroway", center, radius, SPLIT_VERSION),
+        airports_cache_key("split-ctx", center, radius, SPLIT_VERSION),
+    )
+
+
+def _unjson_geoms(geoms: dict, classes: list[str]) -> dict[str, list[list[tuple[float, float]]]]:
+    return {
+        cls: [[tuple(pt) for pt in pl] for pl in geoms[cls]]
+        for cls in classes
+    }
+
+
+async def _load_cached_splits(
+    aer_key: str, ctx_key: str, wants_context: bool, warnings: list[str],
+) -> tuple[dict | None, dict | None, dict | None]:
+    """Cached ``(aeroway geoms, raw_counts, context geoms)`` or None entries."""
+    from backend.airports.overpass import AEROWAY_CLASSES, CONTEXT_CLASSES
+
+    keys = [aer_key]
+    if wants_context:
+        keys.append(ctx_key)
+    found = await cache_get_many(keys)
+    aer_geoms = raw_counts = ctx_geoms = None
+    aer_json = found.get(aer_key)
+    if aer_json is not None:
+        try:
+            data = json.loads(aer_json)
+            aer_geoms = _unjson_geoms(data["geoms"], AEROWAY_CLASSES)
+            raw_counts = data["raw_counts"]
+        except (ValueError, KeyError, TypeError):
+            aer_geoms = raw_counts = None
+    if aer_geoms is not None:
+        warnings.append("aeroway_split_cache_hit")
+    if wants_context:
+        ctx_json = found.get(ctx_key)
+        if ctx_json is not None:
+            try:
+                ctx_geoms = _unjson_geoms(json.loads(ctx_json)["geoms"], CONTEXT_CLASSES)
+            except (ValueError, KeyError, TypeError):
+                ctx_geoms = None
+        if ctx_geoms is not None:
+            warnings.append("context_split_cache_hit")
+    return aer_geoms, raw_counts, ctx_geoms
+
+
+async def _store_splits(
+    aer_key: str, ctx_key: str,
+    aer: tuple[dict[str, list[list[tuple[float, float]]]], dict[str, int]] | None,
+    ctx: dict[str, list[list[tuple[float, float]]]] | None,
+) -> None:
+    items: dict[str, str] = {}
+    if aer is not None:
+        geoms, raw_counts = aer
+        items[aer_key] = json.dumps(
+            {"geoms": geoms, "raw_counts": raw_counts}, separators=(",", ":")
+        )
+    if ctx is not None:
+        items[ctx_key] = json.dumps({"geoms": ctx}, separators=(",", ":"))
+    if items:
+        await cache_set_many(items)
+
+
 def _fnum(value: object) -> float | None:
     try:
         if value is None or (isinstance(value, str) and not value.strip()):
@@ -307,11 +381,14 @@ async def _render_uncached(
     endpoint: str = "/v1/airports/render",
     started_mono: float = 0.0,
     stop: threading.Event | None = None,
-) -> tuple[str, dict[str, int], dict[str, int], float] | JSONResponse:
+) -> tuple[str, dict[str, int], dict[str, int], float,
+           tuple[dict, dict] | None, dict | None, str, str] | JSONResponse:
     """Fetch polygons and render, off the event loop. Shared by render/import.
 
     P2: fetch raced (checkpoints 2/3); CPU build runs in a thread with
-    ``stop`` polled every 2000 elements (checkpoint 4).
+    ``stop`` polled every 2000 elements (checkpoint 4). P5: returns any
+    split outputs that were computed (vs reused from cache) so the caller
+    can persist them next to the render cache.
     """
     elements, err = await _load_polygons(
         lat, lon, radius_m, warnings,
@@ -329,23 +406,30 @@ async def _render_uncached(
         warnings.append("context_enabled")
     await check_cancelled(
         request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
+    aer_key, ctx_key = _split_keys(lat, lon, radius_m)
+    pre_geoms, pre_counts, pre_ctx = await _load_cached_splits(
+        aer_key, ctx_key, ctx_elements is not None, warnings)
     cancelled_cb = stop.is_set if stop is not None else None
     try:
-        svg_text, path_counts, raw_counts, rotation, render_warnings = (
-            await asyncio.to_thread(
-                _build_svg, airport, runway_rows, freq_rows, elements,
-                body.width, body.min_path_len_m, ctx_elements, body.zoom,
-                body.effective_layers(), body.taxiway_labels,
-                cancelled_cb,
+        svg_text, path_counts, raw_counts, rotation, render_warnings, \
+            computed_aer, computed_ctx = (
+                await asyncio.to_thread(
+                    _build_svg, airport, runway_rows, freq_rows, elements,
+                    body.width, body.min_path_len_m, ctx_elements, body.zoom,
+                    body.effective_layers(), body.taxiway_labels,
+                    cancelled_cb, pre_geoms, pre_counts, pre_ctx,
+                )
             )
-        )
     except ClientCancelled as exc:
         raise log_and_499(
             endpoint=endpoint, stage=exc.stage or "svg_build",
             request=request, started_mono=started_mono,
         )
     warnings.extend(render_warnings)
-    return svg_text, path_counts, raw_counts, rotation
+    return (
+        svg_text, path_counts, raw_counts, rotation,
+        computed_aer, computed_ctx, aer_key, ctx_key,
+    )
 
 
 def _build_svg(
@@ -360,15 +444,31 @@ def _build_svg(
     layers: list[str] | None = None,
     taxiway_labels: bool = False,
     cancelled: object = None,
-) -> tuple[str, dict[str, int], dict[str, int], float, list[str]]:
+    geoms: dict[str, list[list[tuple[float, float]]]] | None = None,
+    raw_counts: dict[str, int] | None = None,
+    ctx_geoms: dict[str, list[list[tuple[float, float]]]] | None = None,
+) -> tuple[str, dict[str, int], dict[str, int], float, list[str],
+           tuple[dict, dict] | None, dict | None]:
     from backend.airports.overpass import extract_taxiway_refs, split_context
 
-    geoms, raw_counts = split_aeroway(
-        elements, cancelled=cancelled if callable(cancelled) else None)
+    computed_aer: tuple[dict, dict] | None = None
+    if geoms is None:
+        geoms, raw_counts = split_aeroway(
+            elements, cancelled=cancelled if callable(cancelled) else None)
+        computed_aer = (geoms, raw_counts)
+    assert raw_counts is not None
     twy_refs = extract_taxiway_refs(elements) if taxiway_labels else None
-    ctx_geoms = split_context(context_elements or []) if context_elements else {}
+    computed_ctx: dict | None = None
     if context_elements:
-        raw_counts = {**raw_counts, "context_ways": sum(len(v) for v in ctx_geoms.values())}
+        if ctx_geoms is None:
+            ctx_geoms = split_context(context_elements)
+            computed_ctx = ctx_geoms
+        raw_counts = {
+            **raw_counts,
+            "context_ways": sum(len(v) for v in ctx_geoms.values()),
+        }
+    else:
+        ctx_geoms = {}
     svg, path_counts, rotation, warnings = render_diagram(
         airport=airport,
         runways=runway_rows,
@@ -389,7 +489,7 @@ def _build_svg(
         taxiway_refs=twy_refs,
         taxiway_labels=taxiway_labels,
     )
-    return svg, path_counts, raw_counts, rotation, warnings
+    return svg, path_counts, raw_counts, rotation, warnings, computed_aer, computed_ctx
 
 
 @router.get("/search", response_model=SearchResponse)
@@ -490,8 +590,10 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
             watcher.cancel()
         if isinstance(built, JSONResponse):
             return built
-        svg_text, path_counts, raw_counts, rotation = built
+        svg_text, path_counts, raw_counts, rotation, \
+            computed_aer, computed_ctx, aer_key, ctx_key = built
         await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
+        await _store_splits(aer_key, ctx_key, computed_aer, computed_ctx)
         await _store_render(svg_key, meta_key, svg_text, path_counts,
                             raw_counts, rotation)
 
@@ -563,8 +665,10 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
             watcher.cancel()
         if isinstance(built, JSONResponse):
             return built
-        svg_text, path_counts, raw_counts, rotation = built
+        svg_text, path_counts, raw_counts, rotation, \
+            computed_aer, computed_ctx, aer_key, ctx_key = built
         await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
+        await _store_splits(aer_key, ctx_key, computed_aer, computed_ctx)
         await _store_render(svg_key, meta_key, svg_text, path_counts,
                             raw_counts, rotation)
 
