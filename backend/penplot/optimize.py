@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 import math
 
+import numpy as np
+
 from backend.penplot.config import PAGE_SIZES_MM
 from backend.penplot.methods import Polyline
 
@@ -28,7 +30,10 @@ def dist(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 
 def polyline_length(pl: Polyline) -> float:
-    return sum(dist(pl[i], pl[i + 1]) for i in range(len(pl) - 1))
+    xs = np.asarray(pl, dtype=float)
+    return float(
+        np.hypot(xs[1:, 0] - xs[:-1, 0], xs[1:, 1] - xs[:-1, 1]).sum()
+    )
 
 
 def count_points(lines: list[Polyline]) -> int:
@@ -371,7 +376,12 @@ def linesort(lines: list[Polyline]) -> list[Polyline]:
 # -- reloop --------------------------------------------------------------
 
 def reloop(lines: list[Polyline], tol: float) -> list[Polyline]:
-    """Rotate closed loops so the seam sits nearest the previous pen position."""
+    """Rotate closed loops so the seam sits nearest the previous pen position.
+
+    P4: the seam search uses ``np.argmin`` (first-index tie-break, same as the
+    previous ``min(range(...))``), so the chosen seam and rotation are
+    unchanged. ``tol < 0`` is the fast-path sentinel: loops are left alone.
+    """
     if tol < 0:
         return lines
     out: list[Polyline] = []
@@ -380,7 +390,9 @@ def reloop(lines: list[Polyline], tol: float) -> list[Polyline]:
         if len(pl) >= 4 and dist(pl[0], pl[-1]) <= max(tol, 1e-9):
             body = pl[:-1]  # drop duplicated closure point for rotation
             anchor = prev_end if prev_end is not None else body[0]
-            k = min(range(len(body)), key=lambda i: dist(body[i], anchor))
+            arr = np.asarray(body, dtype=float)
+            d = np.hypot(arr[:, 0] - anchor[0], arr[:, 1] - anchor[1])
+            k = int(np.argmin(d))
             rotated = body[k:] + body[:k] + [body[k]]
             out.append(rotated)
             prev_end = rotated[-1]
