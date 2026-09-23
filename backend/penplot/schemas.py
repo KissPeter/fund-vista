@@ -171,6 +171,16 @@ class ConvertParams(BaseModel):
     linesimplify_tolerance_mm: float = Field(default=0.1, ge=0.0, le=2.0)
     linesort: bool = True
     reloop_tolerance_mm: float = Field(default=0.05, ge=0.0, le=2.0)
+    full_quality: bool = Field(
+        default=False,
+        description=(
+            "Run the full travel-optimisation chain (linesort + reloop) for "
+            "vector inputs. Those stages reorder strokes for pen-travel speed "
+            "only and do not change the drawn geometry, so vector previews "
+            "skip them by default; set true for the final plot. Ignored for "
+            "raster inputs (their defaults already optimise travel)."
+        ),
+    )
     page: PageParams = Field(default_factory=PageParams)
     pen: PenParams = Field(default_factory=PenParams)
     label: LabelParams = Field(default_factory=LabelParams)

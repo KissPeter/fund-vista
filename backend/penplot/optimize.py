@@ -495,7 +495,7 @@ def build_vpype_command(
     linemerge_tol: float,
     linesimplify_tol: float,
     linesort_on: bool,
-    reloop_tol: float,
+    reloop_tol: float | None,
     page_size: str,
     margin_mm: float,
 ) -> str:
@@ -508,13 +508,17 @@ def build_vpype_command(
     ring-preserving RDP, greedy+2-opt vs. greedy-only sort, random vs.
     deterministic seam placement. Keep the field name (spec §2.3 mandates it);
     do not present the string as reproducible — see SPEC_V1.md.
+
+    ``reloop_tol=None`` and ``linesort_on=False`` mirror the fast vector
+    preview path (P2): stages that were skipped are left out of the recipe.
     """
     segs = ['read --quantization 0.02mm "in.svg"']
     segs.append(f"linemerge --tolerance {linemerge_tol:g}mm")
     segs.append(f"linesimplify --tolerance {linesimplify_tol:g}mm")
     if linesort_on:
         segs.append("linesort")
-    segs.append(f"reloop --tolerance {reloop_tol:g}mm")
+    if reloop_tol is not None:
+        segs.append(f"reloop --tolerance {reloop_tol:g}mm")
     segs.append(f"layout {page_size} --margin {margin_mm:g}mm")
     segs.append('write --color-mode none "out.svg"')
     return " ".join(segs)

@@ -37,6 +37,7 @@ from backend.penplot.optimize import (
     to_svg,
 )
 from backend.penplot.schemas import ConvertParams, ConvertStats, PointsStats, SegmentsStats
+from backend.penplot.svgparsecache import load_parsed_svg, store_parsed_svg
 
 log = logging.getLogger(__name__)
 
@@ -58,9 +59,59 @@ class ConvertResult:
         self.vpype_command = vpype_command
 
 
-def params_hash(params: ConvertParams) -> str:
-    canonical = json.dumps(params.model_dump(mode="json"), sort_keys=True)
+# Raster-only parameters that never reach the geometry for vector inputs
+# (they feed the raster preprocessing pipeline). Stripped from the convert
+# signature so reshaping slider values the UI still shows for SVGs does not
+# invalidate the result cache.
+_VECTOR_IGNORED_PARAMS = frozenset({
+    "methods",
+    "threshold",
+    "blur_radius",
+    "contrast",
+    "brightness",
+    "remove_background",
+    "strip_hatch_px",
+    "hatch_pitch_mm",
+    "hatch_angle_deg",
+    "contour_simplify",
+    "centerline_prune_px",
+})
+# Default-off stages for the fast vector preview path (see P2 / gh #27).
+_SKIPPABLE_TRAVEL_STAGES = frozenset({"linesort", "reloop_tolerance_mm"})
+
+
+def is_fast_preview(params: ConvertParams, is_vector: bool) -> bool:
+    """Vector inputs skip linesort/reloop unless ``full_quality`` is set.
+
+    Those two stages only reorder strokes for pen-travel speed — the drawn
+    geometry (what the preview shows) is byte-identical — and they are pure
+    CPU on dense SVGs, so the fast preview path (the default) omits them.
+    Raster inputs always optimise travel (their defaults already did).
+    """
+    return is_vector and not params.full_quality
+
+
+def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
+    """Canonical param dict as actually executed (drives signature + cache key)."""
+    data = params.model_dump(mode="json", exclude_none=True)
+    if is_vector:
+        for field in _VECTOR_IGNORED_PARAMS:
+            data.pop(field, None)
+        if not params.full_quality:
+            for field in _SKIPPABLE_TRAVEL_STAGES:
+                data.pop(field, None)
+    return data
+
+
+def params_hash(params: ConvertParams, is_vector: bool = False) -> str:
+    canonical = json.dumps(effective_params_dump(params, is_vector), sort_keys=True)
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
+def convert_result_filename(
+    image_id: str, params: ConvertParams, is_vector: bool
+) -> str:
+    return f"{image_id}_{params_hash(params, is_vector)}_optimized.svg"
 
 
 def _timed(label: str, image_id: str, method: str, started: float) -> None:
@@ -125,7 +176,17 @@ def run_convert(
     try:
         if is_vector:
             _poll("vpype:decode")
-            raw_px, vw, vh, svg_warnings = imaging.parse_svg_vectors(image_bytes)
+            parsed = load_parsed_svg(
+                image_id, settings.parsed_dir, settings.parsed_svg_ttl_hours
+            )
+            if parsed is None:
+                raw_px, vw, vh, svg_warnings = imaging.parse_svg_vectors(image_bytes)
+                store_parsed_svg(
+                    image_id, settings.parsed_dir, settings.parsed_svg_ttl_hours,
+                    raw_px, vw, vh, svg_warnings,
+                )
+            else:
+                raw_px, vw, vh, svg_warnings = parsed
             src_w, src_h = vw, vh
             warnings.extend(svg_warnings)
             _timed("parse-svg", image_id, method_label, t0)
@@ -261,11 +322,14 @@ def run_convert(
         simplified = linesimplify(smoothed, params.linesimplify_tolerance_mm)
         _timed("linesimplify", image_id, method_label, t0)
         t0 = time.perf_counter()
+        fast = is_fast_preview(params, is_vector)
+        if fast and (params.linesort or params.reloop_tolerance_mm > 0):
+            warnings.append("travel_optimization_off")
         _poll("vpype:linesort")
-        ordered = linesort(simplified) if params.linesort else simplified
+        ordered = linesort(simplified) if (params.linesort and not fast) else simplified
         _timed("linesort", image_id, method_label, t0)
         _poll("vpype:reloop")
-        final = reloop(ordered, params.reloop_tolerance_mm)
+        final = reloop(ordered, params.reloop_tolerance_mm) if not fast else ordered
         _timed("reloop", image_id, method_label, t0)
 
         pen_down = sum(polyline_length(pl) for pl in final)
@@ -294,12 +358,12 @@ def run_convert(
         vpype_command = build_vpype_command(
             linemerge_tol=params.linemerge_tolerance_mm,
             linesimplify_tol=params.linesimplify_tolerance_mm,
-            linesort_on=params.linesort,
-            reloop_tol=params.reloop_tolerance_mm,
+            linesort_on=params.linesort and not fast,
+            reloop_tol=params.reloop_tolerance_mm if not fast else None,
             page_size=params.page.size.upper(),
             margin_mm=params.page.margin_mm,
         )
-        filename = f"{image_id}_{params_hash(params)}_optimized.svg"
+        filename = convert_result_filename(image_id, params, is_vector)
         return ConvertResult(
             svg_text=svg_text, filename=filename, stats=stats,
             warnings=warnings, vpype_command=vpype_command,

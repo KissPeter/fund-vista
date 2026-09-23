@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     # coordinate is snapped to this grid (mm) right after layout, so the
     # vpype_command string in convert responses describes what really ran.
     quantization_mm: float = 0.02
+    # P5: content-addressed disk cache of parse_svg_vectors output (keyed by
+    # image_id == sha256 of the SVG bytes). Dense SVGs cost seconds to parse on
+    # every convert; re-parsing is wasted once the result cache (P1) serves the
+    # hourly-repeated slider tweaks. Same fixed-window TTL model as images.
+    parsed_svg_ttl_hours: int = 48
 
     @field_validator("rate_limit_whitelist", mode="before")
     @classmethod
@@ -102,6 +107,10 @@ class Settings(BaseSettings):
     @property
     def results_dir(self) -> str:
         return os.path.join(self.data_dir, "results")
+
+    @property
+    def parsed_dir(self) -> str:
+        return os.path.join(self.data_dir, "parsed")
 
 
 ALLOWED_RASTER_EXTS = frozenset({"png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"})

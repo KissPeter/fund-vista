@@ -1,4 +1,9 @@
-"""Unit tests for the filesystem store's lazy TTL (reviews C.2.1, C.2.3)."""
+"""Unit tests for the filesystem store's lazy TTL (reviews C.2.1, C.2.3).
+
+Plus the P1 result-sidecar: the convert endpoint serves repeated identical
+converts from the sidecar without recomputing, so the store's meta round-trip
+and read cost are contract here.
+"""
 
 from __future__ import annotations
 
@@ -56,3 +61,57 @@ def test_result_path_guards_traversal(tmp_path):
     store = _store(tmp_path)
     path = store.result_path("../../etc/passwd")
     assert path == os.path.join(store.results_dir, "passwd") or ".." not in path
+
+
+# -- result sidecar (P1 cache-first conversions) --------------------------
+
+def _filename() -> str:
+    return "0" * 64 + "_" + "0" * 12 + "_optimized.svg"
+
+
+def test_result_meta_roundtrip(tmp_path):
+    store = _store(tmp_path)
+    filename = _filename()
+    store.put_result(filename, "<svg/>")
+    path = store.put_result_meta(filename, {
+        "stats": {"points": {"before": 10, "after": 4}, "strokes": 2,
+                  "pen_down_mm": 1.25, "pen_up_mm": 0.0, "estimated_time_s": 0.5},
+        "warnings": ["travel_optimization_off"],
+        "vpype_command": "read --quantization 0.02mm",
+    })
+    assert path == store.result_meta_path(filename)
+    meta = store.get_result_meta(filename)
+    assert meta is not None
+    assert meta["warnings"] == ["travel_optimization_off"]
+    assert meta["stats"]["strokes"] == 2
+    assert meta["vpype_command"].startswith("read")
+
+
+def test_result_meta_missing_or_corrupt_returns_none(tmp_path):
+    store = _store(tmp_path)
+    assert store.get_result_meta(_filename()) is None
+    filename = _filename()
+    store.put_result(filename, "<svg/>")
+    store.put_result_meta(filename, {"nope": True})
+    meta = store.get_result_meta(filename)
+    assert meta is not None and meta == {"nope": True}
+    with open(store.result_meta_path(filename), "w") as fh:
+        fh.write("{not json")
+    assert store.get_result_meta(filename) is None
+
+
+def test_result_meta_read_is_fast(tmp_path):
+    # P1 perf guard: a cache hit must not re-run the pipeline — reading the
+    # sidecar plus statting the SVG stays well under 10 ms regardless of how
+    # heavy the convert that produced it was.
+    store = _store(tmp_path)
+    filename = _filename()
+    store.put_result(filename, "<svg/>")
+    store.put_result_meta(filename, {"vpype_command": "x", "warnings": [],
+                                     "stats": {"a": 1}})
+    t0 = time.perf_counter()
+    for _ in range(50):
+        assert store.get_result_meta(filename) is not None
+        assert store.has_result(filename) is True
+    elapsed = (time.perf_counter() - t0) / 50
+    assert elapsed < 0.01

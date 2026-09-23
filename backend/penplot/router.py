@@ -28,11 +28,12 @@ from backend.penplot import imaging
 from backend.penplot import tokens as design_tokens
 from backend.penplot.config import ALLOWED_RASTER_EXTS, Settings
 from backend.penplot.errors import ErrorCode, PenPlotError, image_not_found, rate_limited
-from backend.penplot.pipeline import run_convert
+from backend.penplot.pipeline import convert_result_filename, run_convert
 from backend.penplot.ratelimit import RateLimiter, get_redis
 from backend.penplot.schemas import (
     ConvertRequest,
     ConvertResponse,
+    ConvertStats,
     HealthResponse,
     ImageMetaResponse,
     RetainResponse,
@@ -245,12 +246,15 @@ async def get_image(image_id: str) -> ImageMetaResponse | JSONResponse:
 @router.post("/convert", response_model=ConvertResponse,
              dependencies=[Depends(require_rate_limit)])
 async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | JSONResponse:
-    """Convert an image to plotter SVG (P2 checkpoints, shapes unchanged).
+    """Convert an image to plotter SVG (P1 cache-first, P2 checkpoints).
 
-    1. after validation + image lookup, before any CPU work; 2. before image
-    decode; 3. after decode, before the vpype build; 4. inside the CPU loop
-    (every method pass + every vpype stage via ``cancelled``). Abort → 499
-    with no partial ``svg_url`` file written.
+    P1: the result is content-addressed by ``convert_result_filename``
+    (image_id + effective-params hash). When the SVG and its sidecar JSON
+    already exist, the response is rebuilt from metadata with zero CPU —
+    nothing is parsed, probed or re-rendered. Misses run the pipeline with
+    the same P2 checkpoints: 1. after validation + image lookup, before any
+    CPU work; 2. before image decode; 3. after decode; 4. inside the CPU
+    loop via ``cancelled``. Abort → 499 with no partial ``svg_url`` file.
     """
     from backend.cancel import (
         ClientCancelled,
@@ -269,34 +273,50 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
         return _error_response(exc.status, exc.code, exc.message)
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else "png"
     is_vector = ext == "svg"
+    filename = convert_result_filename(image_id, body.params, is_vector)
+
+    # P1 fast path: both the SVG and its sidecar are cached — serve the
+    # response from metadata (no image read, no probe, no CPU).
+    meta = store.get_result_meta(filename)
+    if meta is not None and store.has_result(filename):
+        try:
+            stats = ConvertStats(**meta["stats"])
+        except (KeyError, TypeError, ValueError):
+            stats = None
+        if stats is not None:
+            url = f"{resolve_public_base(request)}/v1/results/{filename}"
+            log.debug(
+                "convert.cache_hit id=%s file=%s", image_id[:12], filename
+            )
+            return ConvertResponse(
+                image_id=image_id,
+                svg_url=url,
+                vpype_command=meta.get("vpype_command", ""),
+                stats=stats,
+                warnings=list(meta.get("warnings", [])),
+            )
+
     await check_cancelled(request, endpoint=endpoint, stage="decode", started_mono=started)
     with open(path, "rb") as fh:
         data = fh.read()
     # Authoritative dims (cheap re-probe; keeps stats honest even if the
-    # cached file was replaced between upload and convert).
-    try:
-        if is_vector:
-            _, vw, vh, _svg_warnings = imaging.parse_svg_vectors(data)
-            src_w, src_h = float(vw), float(vh)
-        else:
+    # cached file was replaced between upload and convert). Vector inputs
+    # never need the low-res hint (it is raster-only), so we do not parse
+    # the SVG here — the pipeline resolves the real size from its own
+    # (P5-cached) parse.
+    src_w = src_h = 0.0
+    if not is_vector:
+        try:
             w, h, _fmt = imaging.probe_raster(data)
-            src_w, src_h = float(w), float(h)
-    except PenPlotError as exc:
-        return _error_response(exc.status, exc.code, exc.message)
+        except PenPlotError as exc:
+            return _error_response(exc.status, exc.code, exc.message)
+        src_w, src_h = float(w), float(h)
     await check_cancelled(request, endpoint=endpoint, stage="vpype", started_mono=started)
 
     stop = threading.Event()
     watch = start_disconnect_watcher(request, stop)
     watcher = asyncio.create_task(watch())
     try:
-        # Review D.3.1: run_convert is fully synchronous and GIL-bound (OpenCV,
-        # the hatch march, RDP/merge O(n²)); running it inline would stall every
-        # route — /healthz, the fund proxy — for the whole convert. Offload to
-        # the default thread executor; the function is pure (deterministic,
-        # content-addressed), so results are unaffected. The watcher sets
-        # ``stop`` on disconnect; the pipeline aborts at the next stage
-        # boundary (a running thread finishes its stage, <= seconds, but no
-        # further stage starts — P2.4) and no partial file is stored.
         result = await asyncio.to_thread(
             run_convert,
             image_id=image_id, image_bytes=data, is_vector=is_vector,
@@ -316,18 +336,25 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
         watcher.cancel()
     await check_cancelled(request, endpoint=endpoint, stage="vpype", started_mono=started)
 
-    store.put_result(result.filename, result.svg_text)
-    svg_url = f"{resolve_public_base(request)}/v1/results/{result.filename}"
+    store.put_result(filename, result.svg_text)
+    # Sidecar so the next identical convert is served cache-first (P1).
+    # Warnings include the low-res hint so the stored response matches
+    # what the very first call reported.
+    warnings = list(result.warnings)
+    if not is_vector and "low_resolution_for_a4" in _warnings_for(int(src_w), int(src_h), False):
+        if "low_resolution_for_a4" not in warnings:
+            warnings.append("low_resolution_for_a4")
+    store.put_result_meta(filename, {
+        "stats": result.stats.model_dump(mode="json"),
+        "warnings": warnings,
+        "vpype_command": result.vpype_command,
+    })
+    svg_url = f"{resolve_public_base(request)}/v1/results/{filename}"
     log.info(
         "convert.ok id=%s method=%s strokes=%d pen_down=%.1fmm",
         image_id[:12], "+".join(body.params.methods or ["hatch"]),
         result.stats.strokes, result.stats.pen_down_mm,
     )
-    # Spec §4.3: surface low-res hint on convert too so client/server agree.
-    warnings = list(result.warnings)
-    if not is_vector and "low_resolution_for_a4" in _warnings_for(int(src_w), int(src_h), False):
-        if "low_resolution_for_a4" not in warnings:
-            warnings.append("low_resolution_for_a4")
     return ConvertResponse(
         image_id=image_id,
         svg_url=svg_url,

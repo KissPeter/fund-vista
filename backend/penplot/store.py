@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import threading
@@ -173,3 +174,38 @@ class ImageStore:
 
     def has_result(self, filename: str) -> bool:
         return os.path.exists(self.result_path(filename))
+
+    # -- result sidecar (P1: metadata for cache-first converts) ----------
+
+    def result_meta_path(self, filename: str) -> str:
+        """Sidecar JSON next to the SVG: stats/warnings/vpype_command."""
+        return self.result_path(filename) + ".json"
+
+    def put_result_meta(self, filename: str, meta: dict) -> str:
+        """Persist the sidecar; the SVG itself must already be stored."""
+        path = self.result_meta_path(filename)
+        payload = json.dumps(meta, sort_keys=True, separators=(",", ":"))
+        with self._lock:
+            os.makedirs(self.results_dir, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+            os.replace(tmp, path)
+        return path
+
+    def get_result_meta(self, filename: str) -> dict | None:
+        """Return the stored sidecar dict, or None when missing/expired."""
+        path = self.result_meta_path(filename)
+        with self._lock:
+            if not os.path.exists(path):
+                return None
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = fh.read()
+            except OSError:
+                return None
+        try:
+            meta = json.loads(data)
+            return meta if isinstance(meta, dict) else None
+        except ValueError:
+            return None
