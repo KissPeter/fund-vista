@@ -3,6 +3,10 @@
 Date: 2026-09-23
 Repro: live NAS backend (`fundvista:nas`, `docker exec` into the running container)
 Linked plan: GH issues in this repo (see §6).
+Status: P1–P5 IMPLEMENTED (backend @ `57ee556` + `9cbcd88` + `30e3c04`; the
+  spatial-hash linemerge/linesort translation landed in `13d1978`; deploy
+  pending push to `main`). Findings below are the original profiling record;
+  §6 marks what actually landed, with commit + test references.
 
 ## TL;DR
 
@@ -196,3 +200,33 @@ Phased in this repo's issues, each phase carries its own tests (unit/spec
    + batch stats; byte-identical output, perf regression gate.
 5. **Parsed-geometry + layer caching** — cache `parse_svg_vectors` output by
    content hash; reuse render-side layer split for re-converts/imports.
+
+## 7. Landed status
+
+All five phases are implemented and committed on `main` (deploy = push):
+
+| Phase | Issue | Landed | What ships |
+|-------|-------|--------|------------|
+| 1 | #26 | `57ee556` | `/v1/convert` content-addressed by `image_id` + effective param hash; cache hit serves result + stats/warnings/vpype sidecar (`store.result_meta*`) with no geometry work; raster-only params stripped from the vector signature |
+| 2 | #27 | `57ee556` | vector previews skip `linesort`/`reloop` by default (drawn geometry byte-identical), `travel_optimization_off` warning, `full_quality` re-enables; `vpype_command` recipe omits skipped stages |
+| 3 | #28 | `13d1978` | `linemerge` single-pass over a tol-sized spatial hash with a 5×5 neighbourhood (exact distance filter) instead of repeated O(n²) passes; byte-identical to the legacy scan (frozen-reference equivalence suite in `9cbcd88`) |
+| 4 | #29 | `13d1978` + `9cbcd88` | spatial-hash `linesort` (Chebyshev ring + exact linear fallback); numpy `reloop` (`np.argmin`) + `polyline_length` (`9cbcd88`) |
+| 5 | #30 | `57ee556` (part A: parsed-SVG disk cache) + `30e3c04` (part B: citymap/airports Redis split-geometry cache) | render/import round-trips skip decode/merge/matching on repeat |
+
+Tests (added with the code, all green against the live-server fixture):
+
+- `backend/tests/test_penplot_optimize.py` — frozen pre-rewrite references,
+  byte-equivalence on random + adversarial (tie/symmetric-ring) fixtures, and
+  perf guards (linemerge dense ≤ 10 s, linesort ≤ 5 s, reloop ≤ 2 s — the
+  previous quadratic linemerge on the 76k map never returned).
+- `backend/tests/test_penplot_preview.py` — P1 cache identity over HTTP
+  (identical repeats, raster-param churn, `full_quality` isolates a distinct
+  result) + P2 default-off vector behaviour and warning contract.
+- `backend/tests/test_penplot_store.py` — result-sidecar round-trip,
+  corrupt/missing meta, and a 50-read timing guard (< 10 ms/cache hit).
+
+Timing record (previous NAS numbers vs. the regression gates in CI): the
+original 76k-point map never left `linemerge` (> 5 min, single pegged core);
+the shipped code carries a 10 s upper-bound gate at 20k segments and the
+byte-identity guarantees that any pre-existing output reproduces exactly.
+Fresh end-to-end NAS timings belong to the post-deploy verification step.

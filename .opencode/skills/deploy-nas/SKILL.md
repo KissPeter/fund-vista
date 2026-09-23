@@ -33,7 +33,8 @@ all `/v1` work runs here.
 ## Pre-deploy gates (all mandatory)
 
 1. Full backend suite green:
-   `.venv/bin/python -m pytest backend/tests/ -q` (from repo root).
+   `./runtests.sh` (docker `fundvista-dev`; adds the P1–P5 performance
+   regression + cache-identity tests from docs/CR-002-convert-performance.md).
 2. Changes committed on `main` and pushed (`git push origin main`).
 3. Confirm what the NAS checkout has: `git log --oneline -3` on NAS vs local.
 
