@@ -15,9 +15,19 @@ import asyncio
 import json
 import logging
 import math
+import threading
+import time
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
+
+from backend.cancel import (
+    ClientCancelled,
+    check_cancelled,
+    log_and_499,
+    race_cancel,
+    start_disconnect_watcher,
+)
 
 from backend.airports import cache as cache_mod
 from backend.airports.cache import (
@@ -134,11 +144,17 @@ def _runway_infos(runway_rows: list[dict]) -> list[dict]:
 async def _load_polygons(
     lat: float, lon: float, radius_m: float, warnings: list[str],
     kind: str = "overpass",
+    request: Request | None = None,
+    endpoint: str = "/v1/airports/render",
+    started_mono: float = 0.0,
 ) -> tuple[list[dict] | None, JSONResponse | None]:
     """Redis-first Overpass ``around`` fetch. Returns (elements, None) or
     (None, error response) when every mirror fails. ``kind`` namespaces the
     cache key (``overpass`` vs ``overpass-ctx``). Context outages degrade to
-    an empty layer (warning) instead of failing the whole render."""
+    an empty layer (warning) instead of failing the whole render.
+
+    P2: the fetch is raced against disconnect (no partial cache on abort).
+    """
     from backend.airports.overpass import build_context_query
 
     key = cache_mod.airports_cache_key(
@@ -157,7 +173,10 @@ async def _load_polygons(
         else build_context_query(lat, lon, radius_m)
     )
     try:
-        elements = await fetch_airport_polygons(query)
+        elements = await race_cancel(
+            request, fetch_airport_polygons(query),
+            endpoint=endpoint, stage="overpass", started_mono=started_mono,
+        )
     except AirportOverpassError as exc:
         if kind != "overpass":
             warnings.append("context_unavailable")
@@ -284,9 +303,20 @@ async def _render_uncached(
     airport: dict, runway_rows: list[dict], freq_rows: list[dict],
     lat: float, lon: float, radius_m: float,
     body: RenderRequest, warnings: list[str],
+    request: Request | None = None,
+    endpoint: str = "/v1/airports/render",
+    started_mono: float = 0.0,
+    stop: threading.Event | None = None,
 ) -> tuple[str, dict[str, int], dict[str, int], float] | JSONResponse:
-    """Fetch polygons and render, off the event loop. Shared by render/import."""
-    elements, err = await _load_polygons(lat, lon, radius_m, warnings)
+    """Fetch polygons and render, off the event loop. Shared by render/import.
+
+    P2: fetch raced (checkpoints 2/3); CPU build runs in a thread with
+    ``stop`` polled every 2000 elements (checkpoint 4).
+    """
+    elements, err = await _load_polygons(
+        lat, lon, radius_m, warnings,
+        request=request, endpoint=endpoint, started_mono=started_mono,
+    )
     if err is not None or elements is None:
         return err if err is not None else _error(
             502, "overpass_unavailable", "Ground-layout fetch failed."
@@ -294,15 +324,26 @@ async def _render_uncached(
     ctx_elements = None
     if body.needs_context():
         ctx_elements, _ = await _load_polygons(
-            lat, lon, radius_m, warnings, kind="overpass-ctx")
+            lat, lon, radius_m, warnings, kind="overpass-ctx",
+            request=request, endpoint=endpoint, started_mono=started_mono)
         warnings.append("context_enabled")
-    svg_text, path_counts, raw_counts, rotation, render_warnings = (
-        await asyncio.to_thread(
-            _build_svg, airport, runway_rows, freq_rows, elements,
-            body.width, body.min_path_len_m, ctx_elements, body.zoom,
-            body.effective_layers(), body.taxiway_labels,
+    await check_cancelled(
+        request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
+    cancelled_cb = stop.is_set if stop is not None else None
+    try:
+        svg_text, path_counts, raw_counts, rotation, render_warnings = (
+            await asyncio.to_thread(
+                _build_svg, airport, runway_rows, freq_rows, elements,
+                body.width, body.min_path_len_m, ctx_elements, body.zoom,
+                body.effective_layers(), body.taxiway_labels,
+                cancelled_cb,
+            )
         )
-    )
+    except ClientCancelled as exc:
+        raise log_and_499(
+            endpoint=endpoint, stage=exc.stage or "svg_build",
+            request=request, started_mono=started_mono,
+        )
     warnings.extend(render_warnings)
     return svg_text, path_counts, raw_counts, rotation
 
@@ -318,10 +359,12 @@ def _build_svg(
     zoom: float = 1.0,
     layers: list[str] | None = None,
     taxiway_labels: bool = False,
+    cancelled: object = None,
 ) -> tuple[str, dict[str, int], dict[str, int], float, list[str]]:
     from backend.airports.overpass import extract_taxiway_refs, split_context
 
-    geoms, raw_counts = split_aeroway(elements)
+    geoms, raw_counts = split_aeroway(
+        elements, cancelled=cancelled if callable(cancelled) else None)
     twy_refs = extract_taxiway_refs(elements) if taxiway_labels else None
     ctx_geoms = split_context(context_elements or []) if context_elements else {}
     if context_elements:
@@ -404,9 +447,16 @@ async def lookup(
 
 
 @router.post("/render", response_model=RenderResponse,
-             dependencies=[Depends(require_rate_limit)])
+              dependencies=[Depends(require_rate_limit)])
 async def render(body: RenderRequest, request: Request) -> RenderResponse | JSONResponse:
-    """Fetch OSM ground polygons and render one blueprint SVG."""
+    """Fetch OSM ground polygons and render one blueprint SVG.
+
+    P2 checkpoints (shapes unchanged): 1. after validation+cache; 2. before
+    Overpass fetch (raced); 3. after fetch before build; 4. inside CPU loop
+    (every 2000 elements). Abort → 499, no cache write.
+    """
+    endpoint = "/v1/airports/render"
+    started = time.monotonic()
     resolved = await _lookup(body.icao)
     if isinstance(resolved, JSONResponse):
         return resolved
@@ -426,12 +476,22 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         cache_hit = True
     else:
         cache_hit = False
-        built = await _render_uncached(
-            airport, runway_rows, freq_rows, lat, lon, radius_m, body, warnings
-        )
+        await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started)
+        stop = threading.Event()
+        watch = start_disconnect_watcher(request, stop)
+        watcher = asyncio.create_task(watch())
+        try:
+            built = await _render_uncached(
+                airport, runway_rows, freq_rows, lat, lon, radius_m, body, warnings,
+                request=request, endpoint=endpoint, started_mono=started, stop=stop,
+            )
+        finally:
+            stop.set()
+            watcher.cancel()
         if isinstance(built, JSONResponse):
             return built
         svg_text, path_counts, raw_counts, rotation = built
+        await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
         await _store_render(svg_key, meta_key, svg_text, path_counts,
                             raw_counts, rotation)
 
@@ -458,14 +518,18 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
 
 
 @router.post("/import", response_model=ImportResponse,
-             dependencies=[Depends(require_rate_limit)])
-async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
+              dependencies=[Depends(require_rate_limit)])
+async def import_diagram(body: RenderRequest, request: Request) -> ImportResponse | JSONResponse:
     """Render an airport diagram and register it as a penplot image.
 
     Returns ``image_id`` — convert it with ``POST /v1/convert`` exactly
     like an uploaded SVG (vector branch: shading sliders are ignored,
     pen/page/label/display all apply).
+
+    Same P2 checkpoints as ``/render``.
     """
+    endpoint = "/v1/airports/import"
+    started = time.monotonic()
     resolved = await _lookup(body.icao)
     if isinstance(resolved, JSONResponse):
         return resolved
@@ -485,12 +549,22 @@ async def import_diagram(body: RenderRequest) -> ImportResponse | JSONResponse:
     if cached is not None:
         svg_text, path_counts, raw_counts, rotation = cached
     else:
-        built = await _render_uncached(
-            airport, runway_rows, freq_rows, lat, lon, radius_m, body, warnings
-        )
+        await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started)
+        stop = threading.Event()
+        watch = start_disconnect_watcher(request, stop)
+        watcher = asyncio.create_task(watch())
+        try:
+            built = await _render_uncached(
+                airport, runway_rows, freq_rows, lat, lon, radius_m, body, warnings,
+                request=request, endpoint=endpoint, started_mono=started, stop=stop,
+            )
+        finally:
+            stop.set()
+            watcher.cancel()
         if isinstance(built, JSONResponse):
             return built
         svg_text, path_counts, raw_counts, rotation = built
+        await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
         await _store_render(svg_key, meta_key, svg_text, path_counts,
                             raw_counts, rotation)
 

@@ -633,7 +633,7 @@ def test_render_endpoint_wires_layers_without_network():
     async def fake_lookup(icao):
         return airport, [], [], [], False
 
-    async def fake_polygons(lat, lon, radius_m, warnings, kind="overpass"):
+    async def fake_polygons(lat, lon, radius_m, warnings, kind="overpass", **kw):
         return [], None
 
     async def scenario():

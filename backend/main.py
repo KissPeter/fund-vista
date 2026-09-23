@@ -21,6 +21,8 @@ from backend.citymap.ui import ui_router as citymap_ui_router
 from backend.airports.cache import configure_airports_redis
 from backend.airports.router import router as airports_router
 from backend.airports.ui import ui_router as airports_ui_router
+from backend.jobs.router import router as jobs_router
+from backend.jobs.store import configure_jobs_redis
 from backend.penplot.errors import PenPlotError
 from backend.penplot.ratelimit import configure_redis
 from backend.penplot.router import (
@@ -127,6 +129,8 @@ async def _request_id_middleware(request: Request, call_next):  # type: ignore[n
 # rides along here for the same reason.
 app.include_router(penplot_router)
 app.include_router(penplot_ui_router)
+# Async jobs (P3): /v1/jobs must win over the catch-all proxy as well.
+app.include_router(jobs_router)
 # City maps next: versioned routes must win over the catch-all proxy below.
 app.include_router(citymap_router)
 app.include_router(citymap_ui_router)
@@ -170,11 +174,13 @@ async def _startup() -> None:
         configure_redis(redis_client)
         configure_citymap_redis(redis_client)
         configure_airports_redis(redis_client)
+        configure_jobs_redis(redis_client)
     except Exception as exc:
         redis_client = None
         configure_redis(None)
         configure_citymap_redis(None)
         configure_airports_redis(None)
+        configure_jobs_redis(None)
         print(f"Redis unavailable, continuing without cache: {exc}")
 
 

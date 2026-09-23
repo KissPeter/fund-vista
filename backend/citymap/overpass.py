@@ -115,14 +115,23 @@ def match_relation_layer(tags: dict, layers: list[str]) -> str | None:
 
 
 def split_elements(
-    elements: list[dict], layers: list[str]
+    elements: list[dict], layers: list[str],
+    cancelled: object = None,
+    cancel_every: int = 2000,
 ) -> tuple[dict[str, list[list[tuple[float, float]]]], dict[str, int]]:
     """Group Overpass elements into lon/lat polylines per requested layer.
 
     Returns ``(geometries, counts)`` where geometries maps layer id to a
     list of ``[(lon, lat), ...]`` polylines (closed rings repeat their
     first node) and counts reports raw node/way/relation totals.
+
+    ``cancelled`` is an optional ``() -> bool`` polled every ``cancel_every``
+    ways (P2 checkpoint 4: aborts dense renders inside the CPU loop instead
+    of running to completion after the client went away). When it fires,
+    :class:`backend.cancel.ClientCancelled` is raised and the caller must
+    skip cache writes.
     """
+    from backend.cancel import ClientCancelled
     nodes: dict[int, tuple[float | None, float | None]] = {}
     ways: dict[int, tuple[list[int], dict]] = {}
     relations: list[dict] = []
@@ -160,9 +169,11 @@ def split_elements(
                 emit(layer, ways[ref][0])
                 emitted_ways.add(ref)
 
-    for wid, (refs, tags) in ways.items():
+    for n, (wid, (refs, tags)) in enumerate(ways.items()):
         if wid in emitted_ways:
             continue
+        if cancelled is not None and n % max(1, cancel_every) == 0 and callable(cancelled) and cancelled():
+            raise ClientCancelled("citymap", "svg_build")
         layer = match_way_layer(tags, layers)
         if layer is not None:
             emit(layer, refs)

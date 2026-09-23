@@ -15,9 +15,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
+import time
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
+
+from backend.cancel import (
+    ClientCancelled,
+    check_cancelled,
+    log_and_499,
+    race_cancel,
+    start_disconnect_watcher,
+)
 
 from backend.citymap.cache import (
     KEY_PREFIX,
@@ -131,13 +141,20 @@ def _tile_key(tile: tuple[int, int], deg: float, layer: str) -> str:
 
 
 async def _fetch_missing(
-    missing: dict[str, set[tuple[int, int]]], deg: float, warnings: list[str]
+    missing: dict[str, set[tuple[int, int]]], deg: float, warnings: list[str],
+    request: Request | None = None,
+    endpoint: str = "/v1/citymap/render",
+    started_mono: float = 0.0,
 ) -> tuple[dict[str, list[dict]] | None, set[tuple[int, int]], JSONResponse | None]:
     """Fetch the missing ``(layer -> tiles)`` work in as few queries as we can.
 
     Missing tiles are decomposed into rectangles and unioned into a single
     Overpass query, so a cold render still costs one round-trip exactly as
     it used to — only a warm one gets cheaper.
+
+    P2: the Overpass ``httpx`` fetch is raced against a disconnect watcher
+    (``race_cancel``) — on abort the fetch task is cancelled and 499 raised
+    with no partial cache write.
 
     Returns ``(elements per layer, tiles fully covered by the fetch, error)``.
     The covered set matters: a way whose nodes straddle the edge of the
@@ -160,13 +177,22 @@ async def _fetch_missing(
     for rect in rects:
         members.extend(union_members(rect_bbox(rect, deg), layers))
     try:
-        elements = await fetch_overpass(wrap_query(members))
+        # Checkpoint 2/3 boundary: race the Overpass fetch so abort stops
+        # the httpx wait instead of running to completion (P2.3).
+        elements = await race_cancel(
+            request, fetch_overpass(wrap_query(members)),
+            endpoint=endpoint, stage="overpass", started_mono=started_mono,
+        )
     except OverpassError as exc:
         log.warning("citymap overpass failed, trying OSM API: %s", exc.detail)
         chunks: list[list[dict]] = []
         try:
             for rect in rects:
-                chunks.append(await fetch_osm_api(rect_bbox(rect, deg)))
+                chunks.append(await race_cancel(
+                    request, fetch_osm_api(rect_bbox(rect, deg)),
+                    endpoint=endpoint, stage="overpass",
+                    started_mono=started_mono,
+                ))
         except OsmApiError as exc2:
             return None, set(), _error(
                 502,
@@ -230,7 +256,10 @@ def _select_layer(elements: list[dict], layer: str) -> list[dict]:
 
 
 async def _load_raw(
-    bbox: BBox, layers: list[str], warnings: list[str]
+    bbox: BBox, layers: list[str], warnings: list[str],
+    request: Request | None = None,
+    endpoint: str = "/v1/citymap/render",
+    started_mono: float = 0.0,
 ) -> tuple[list[dict] | None, JSONResponse | None]:
     """Tile-cached fetch with OSM Main API fallback.
 
@@ -272,7 +301,10 @@ async def _load_raw(
         warnings.append("overpass_cache_hit")
 
     if missing:
-        per_layer, covered, err = await _fetch_missing(missing, deg, warnings)
+        per_layer, covered, err = await _fetch_missing(
+            missing, deg, warnings,
+            request=request, endpoint=endpoint, started_mono=started_mono,
+        )
         if err is not None:
             return None, err
         assert per_layer is not None
@@ -440,7 +472,18 @@ async def _store_render(
 @router.post("/render", response_model=RenderResponse,
               dependencies=[Depends(require_rate_limit)])
 async def render(body: RenderRequest, request: Request) -> RenderResponse | JSONResponse:
-    """Fetch OSM data for the area and render one SVG group per layer."""
+    """Fetch OSM data for the area and render one SVG group per layer.
+
+    P2 cooperative cancel (4 checkpoints, same JSON shapes on success):
+    1. after validation + cache lookup, before any network/CPU work;
+    2. immediately before the Overpass fetch (inside ``_load_raw`` race);
+    3. immediately after the fetch, before the SVG build;
+    4. inside the CPU loop (every 2000 ways / polylines via ``cancelled``).
+    Abort raises 499 (INFO log + ``penplot_cancelled_total``) with no cache
+    write and no partial ``svg_url`` file.
+    """
+    endpoint = "/v1/citymap/render"
+    started = time.monotonic()
     warnings: list[str] = []
     resolved = await _resolve_area(body, warnings)
     if isinstance(resolved, JSONResponse):
@@ -456,19 +499,47 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         cache_hit = True
     else:
         cache_hit = False
-        raw_elements, err = await _load_raw(bbox, layers, warnings)
+        # 1 — before any network/CPU work.
+        await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started)
+        raw_elements, err = await _load_raw(
+            bbox, layers, warnings,
+            request=request, endpoint=endpoint, started_mono=started,
+        )
         if err is not None:
             return err
+        # 3 — after fetch, before SVG build.
+        await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
+
+        stop = threading.Event()
+        watch = start_disconnect_watcher(request, stop)
+        watcher = asyncio.create_task(watch())
 
         def _build() -> tuple[str, dict[str, int], dict[str, int]]:
-            geoms, raw_counts_ = split_elements(raw_elements or [], layers)
-            svg, path_counts_ = render_svg(
+            from backend.citymap.overpass import split_elements as _split
+            from backend.citymap.render import render_svg as _render
+
+            geoms, raw_counts_ = _split(
+                raw_elements or [], layers, cancelled=stop.is_set)
+            svg, path_counts_ = _render(
                 geoms, bbox, layers,
                 width=body.width, min_path_len_m=body.min_path_len_m,
+                cancelled=stop.is_set,
             )
             return svg, path_counts_, raw_counts_
 
-        svg_text, path_counts, raw_counts = await asyncio.to_thread(_build)
+        try:
+            svg_text, path_counts, raw_counts = await asyncio.to_thread(_build)
+        except ClientCancelled as exc:
+            raise log_and_499(
+                endpoint=endpoint, stage=exc.stage or "svg_build",
+                request=request, started_mono=started,
+            )
+        finally:
+            stop.set()
+            watcher.cancel()
+        # Thread may have finished just as the client went away — do not
+        # poison the cache with a run nobody will use.
+        await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
         await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
 
     base = resolve_public_base(request)
@@ -493,14 +564,19 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
 
 @router.post("/import", response_model=ImportResponse,
               dependencies=[Depends(require_rate_limit)])
-async def import_map(body: RenderRequest) -> ImportResponse | JSONResponse:
+async def import_map(body: RenderRequest, request: Request) -> ImportResponse | JSONResponse:
     """Render a city map and register it as a penplot image.
 
     Returns ``image_id`` — convert it with ``POST /v1/convert`` exactly
     like an uploaded SVG (vector branch: shading sliders are ignored,
     pen/page/label/display all apply). The citymap SVG is chrome-free, so
     the plotter draws only street geometry.
+
+    Same P2 checkpoints as ``/render`` (``request`` added for disconnect
+    polling; success/error JSON shapes unchanged).
     """
+    endpoint = "/v1/citymap/import"
+    started = time.monotonic()
     warnings: list[str] = []
     resolved = await _resolve_area(body, warnings)
     if isinstance(resolved, JSONResponse):
@@ -516,22 +592,46 @@ async def import_map(body: RenderRequest) -> ImportResponse | JSONResponse:
     if cached is not None:
         svg_text, path_counts, raw_counts = cached
     else:
-        elements, err = await _load_raw(bbox, layers, warnings)
+        await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started)
+        elements, err = await _load_raw(
+            bbox, layers, warnings,
+            request=request, endpoint=endpoint, started_mono=started,
+        )
         if err is not None:
             return err
         assert elements is not None
+        await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
+
+        stop = threading.Event()
+        watch = start_disconnect_watcher(request, stop)
+        watcher = asyncio.create_task(watch())
 
         def _build() -> tuple[str, dict[str, int], dict[str, int]]:
-            geoms, raw_counts_ = split_elements(elements or [], layers)
+            from backend.citymap.overpass import split_elements as _split
+            from backend.citymap.render import render_svg as _render
+
+            geoms, raw_counts_ = _split(
+                elements or [], layers, cancelled=stop.is_set)
             svg, path_counts_ = render_svg(
                 geoms, bbox, layers,
                 width=body.width, min_path_len_m=body.min_path_len_m,
+                cancelled=stop.is_set,
             )
             return svg, path_counts_, raw_counts_
 
         # Off the event loop: a dense render is seconds of CPU and used to
         # block the whole worker here, unlike the /render path.
-        svg_text, path_counts, raw_counts = await asyncio.to_thread(_build)
+        try:
+            svg_text, path_counts, raw_counts = await asyncio.to_thread(_build)
+        except ClientCancelled as exc:
+            raise log_and_499(
+                endpoint=endpoint, stage=exc.stage or "svg_build",
+                request=request, started_mono=started,
+            )
+        finally:
+            stop.set()
+            watcher.cancel()
+        await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
         await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
 
     if sum(path_counts.values()) == 0:

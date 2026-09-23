@@ -12,6 +12,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
@@ -244,13 +245,31 @@ async def get_image(image_id: str) -> ImageMetaResponse | JSONResponse:
 @router.post("/convert", response_model=ConvertResponse,
              dependencies=[Depends(require_rate_limit)])
 async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | JSONResponse:
+    """Convert an image to plotter SVG (P2 checkpoints, shapes unchanged).
+
+    1. after validation + image lookup, before any CPU work; 2. before image
+    decode; 3. after decode, before the vpype build; 4. inside the CPU loop
+    (every method pass + every vpype stage via ``cancelled``). Abort → 499
+    with no partial ``svg_url`` file written.
+    """
+    from backend.cancel import (
+        ClientCancelled,
+        check_cancelled,
+        log_and_499,
+        start_disconnect_watcher,
+    )
+
+    endpoint = "/v1/convert"
+    started = time.monotonic()
     image_id = body.image_id.lower()
+    await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started)
     path = store.find_image(image_id)
     if path is None:
         exc = image_not_found(image_id)
         return _error_response(exc.status, exc.code, exc.message)
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else "png"
     is_vector = ext == "svg"
+    await check_cancelled(request, endpoint=endpoint, stage="decode", started_mono=started)
     with open(path, "rb") as fh:
         data = fh.read()
     # Authoritative dims (cheap re-probe; keeps stats honest even if the
@@ -264,21 +283,38 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
             src_w, src_h = float(w), float(h)
     except PenPlotError as exc:
         return _error_response(exc.status, exc.code, exc.message)
+    await check_cancelled(request, endpoint=endpoint, stage="vpype", started_mono=started)
 
+    stop = threading.Event()
+    watch = start_disconnect_watcher(request, stop)
+    watcher = asyncio.create_task(watch())
     try:
         # Review D.3.1: run_convert is fully synchronous and GIL-bound (OpenCV,
         # the hatch march, RDP/merge O(n²)); running it inline would stall every
         # route — /healthz, the fund proxy — for the whole convert. Offload to
         # the default thread executor; the function is pure (deterministic,
-        # content-addressed), so results are unaffected.
+        # content-addressed), so results are unaffected. The watcher sets
+        # ``stop`` on disconnect; the pipeline aborts at the next stage
+        # boundary (a running thread finishes its stage, <= seconds, but no
+        # further stage starts — P2.4) and no partial file is stored.
         result = await asyncio.to_thread(
             run_convert,
             image_id=image_id, image_bytes=data, is_vector=is_vector,
             src_w=src_w, src_h=src_h, params=body.params, settings=_settings,
+            cancelled=stop.is_set,
+        )
+    except ClientCancelled as exc:
+        raise log_and_499(
+            endpoint=endpoint, stage=exc.stage or "vpype",
+            request=request, started_mono=started,
         )
     except PenPlotError as exc:
         log.warning("convert failed id=%s: %s", image_id[:12], exc.code)
         return _error_response(exc.status, exc.code, exc.message)
+    finally:
+        stop.set()
+        watcher.cancel()
+    await check_cancelled(request, endpoint=endpoint, stage="vpype", started_mono=started)
 
     store.put_result(result.filename, result.svg_text)
     svg_url = f"{resolve_public_base(request)}/v1/results/{result.filename}"

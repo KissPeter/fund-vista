@@ -59,6 +59,8 @@ def build_airport_query(lat: float, lon: float, radius_m: float) -> str:
 
 def split_aeroway(
     elements: list[dict],
+    cancelled: object = None,
+    cancel_every: int = 2000,
 ) -> tuple[dict[str, list[list[tuple[float, float]]]], dict[str, int]]:
     """Group ``out geom`` elements by ``aeroway`` tag.
 
@@ -66,12 +68,30 @@ def split_aeroway(
     ``AEROWAY_CLASSES`` to ``[[(lon, lat), ...]]`` rings/lines and counts
     reports raw element totals. Ways whose tag is an aeroway value outside
     the drawn classes (e.g. ``helipad``, ``jet_bridge``, ``gate``) are ignored.
+
+    ``cancelled`` is an optional ``() -> bool`` polled every ``cancel_every``
+    elements (P2 checkpoint 4). Raises ``ClientCancelled`` when it fires.
     """
     geoms: dict[str, list[list[tuple[float, float]]]] = {
         cls: [] for cls in AEROWAY_CLASSES
     }
     n_nodes = n_ways = n_relations = 0
-    for el in elements:
+    for n, el in enumerate(elements):
+        if (
+            cancelled is not None
+            and n % max(1, cancel_every) == 0
+            and callable(cancelled)
+        ):
+            try:
+                if cancelled():  # type: ignore[operator]
+                    from backend.cancel import ClientCancelled
+
+                    raise ClientCancelled("airports", "svg_build")
+            except Exception as exc:
+                from backend.cancel import ClientCancelled as _CC
+
+                if isinstance(exc, _CC):
+                    raise
         kind = el.get("type")
         tags = el.get("tags", {}) or {}
         raw_cls = (tags.get("aeroway") or "").strip()

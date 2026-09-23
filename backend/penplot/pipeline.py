@@ -79,11 +79,35 @@ def run_convert(
     src_h: float,
     params: ConvertParams,
     settings: Settings,
+    cancelled: object = None,
 ) -> ConvertResult:
+    """Convert an image to plotter SVG.
+
+    ``cancelled`` is an optional ``() -> bool`` polled between stages — after
+    decode, before each method pass (``contour``/``centerline``/``hatch``/
+    ``flow``), and between each vpype stage (``linemerge → linesimplify →
+    linesort → reloop``) — i.e. P2 checkpoint 4 for converts. When it fires,
+    :class:`backend.cancel.ClientCancelled` is raised; callers must skip
+    result writes so no partial ``svg_url`` file is stored.
+    """
     methods = list(params.methods or ["hatch"])
     method_label = "+".join(methods)
     t0 = time.perf_counter()
     warnings: list[str] = []
+
+    def _poll(stage: str) -> None:
+        # P2 checkpoint 4 inside the convert CPU loop.
+        if cancelled is not None and callable(cancelled):
+            try:
+                if cancelled():  # type: ignore[operator]
+                    from backend.cancel import ClientCancelled
+
+                    raise ClientCancelled("/v1/convert", stage)
+            except Exception as exc:
+                from backend.cancel import ClientCancelled as _CC
+
+                if isinstance(exc, _CC):
+                    raise
     # Title strip first: reserve the label zone from the image area so
     # artwork bottoms out on the divider instead of sliding under it.
     # 0 when the label is off/blank/fully-unsupported (render no-ops).
@@ -100,6 +124,7 @@ def run_convert(
             reserve_bottom_mm += labels.LABEL_ARTWORK_GAP_MM
     try:
         if is_vector:
+            _poll("vpype:decode")
             raw_px, vw, vh, svg_warnings = imaging.parse_svg_vectors(image_bytes)
             src_w, src_h = vw, vh
             warnings.extend(svg_warnings)
@@ -107,6 +132,7 @@ def run_convert(
             gray = None
             mask = None
         else:
+            _poll("vpype:decode")
             gray, w, h, _fmt = imaging.load_raster(image_bytes)
             src_w, src_h = float(w), float(h)
             _timed("load", image_id, method_label, t0)
@@ -161,6 +187,7 @@ def run_convert(
             # outlines last) — linesort later only reorders for travel.
             raw_px = []
             for method in methods:
+                _poll(f"vpype:{method}")
                 generator = METHOD_REGISTRY[method]
                 raw_px.extend(generator.generate(mask, gray, ctx))
                 _timed(f"method-{method}", image_id, method_label, t0)
@@ -213,12 +240,14 @@ def run_convert(
         # artwork out of the image area (or the frame into it).
         q = settings.quantization_mm
         tol = params.linemerge_tolerance_mm
+        _poll("vpype:linemerge")
         merged = linemerge(quantize(laid, q), tol)
         static_lines = lab_lines + frame_lines
         if static_lines:
             merged.extend(linemerge(quantize(static_lines, q), tol))
         _timed("linemerge", image_id, method_label, t0)
         t0 = time.perf_counter()
+        _poll("vpype:curvesmooth")
         smoothed = (
             curvesmooth(merged, params.curve_smooth)
             if params.curve_smooth > 0
@@ -228,11 +257,14 @@ def run_convert(
             warnings.append("curve_smoothed")
         _timed("curvesmooth", image_id, method_label, t0)
         t0 = time.perf_counter()
+        _poll("vpype:linesimplify")
         simplified = linesimplify(smoothed, params.linesimplify_tolerance_mm)
         _timed("linesimplify", image_id, method_label, t0)
         t0 = time.perf_counter()
+        _poll("vpype:linesort")
         ordered = linesort(simplified) if params.linesort else simplified
         _timed("linesort", image_id, method_label, t0)
+        _poll("vpype:reloop")
         final = reloop(ordered, params.reloop_tolerance_mm)
         _timed("reloop", image_id, method_label, t0)
 
@@ -275,5 +307,9 @@ def run_convert(
     except PenPlotError:
         raise
     except Exception as exc:
+        from backend.cancel import ClientCancelled as _CC2
+
+        if isinstance(exc, _CC2):
+            raise
         log.exception("pipeline.convert failed image=%s method=%s", image_id[:12], method_label)
         raise processing_failed() from exc

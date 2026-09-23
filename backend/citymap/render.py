@@ -42,22 +42,39 @@ def render_svg(
     *,
     width: int = 1000,
     min_path_len_m: float = 0.0,
+    cancelled: object = None,
+    cancel_every: int = 2000,
 ) -> tuple[str, dict[str, int]]:
     """Render layer geometries to a chrome-free SVG document.
 
     Returns ``(svg_text, path_counts)``. Polylines shorter than
     ``min_path_len_m`` meters are dropped (the city-roads ``minLength``
     pen-plotter option, but in meters instead of pixels).
+
+    ``cancelled`` is an optional ``() -> bool`` polled every ``cancel_every``
+    polylines (P2 checkpoint 4). Raises ``ClientCancelled`` when it fires.
     """
     south, west, north, east = bbox
     lon0, lat0 = (west + east) / 2.0, (south + north) / 2.0
 
+    def _is_cancelled() -> bool:
+        try:
+            return bool(callable(cancelled) and cancelled())  # type: ignore[operator]
+        except Exception:
+            return False
+
     projected: dict[str, list[list[tuple[float, float]]]] = {}
     min_x = min_y = math.inf
     max_x = max_y = -math.inf
+    seen = 0
     for layer in layers:
         polys: list[list[tuple[float, float]]] = []
         for lonlat in geoms.get(layer, []):
+            seen += 1
+            if cancelled is not None and seen % max(1, cancel_every) == 0 and _is_cancelled():
+                from backend.cancel import ClientCancelled
+
+                raise ClientCancelled("citymap", "svg_build")
             pts = [project(lon, lat, lon0, lat0) for lon, lat in lonlat]
             length = sum(
                 math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
