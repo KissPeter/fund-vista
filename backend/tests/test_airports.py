@@ -305,12 +305,15 @@ def test_render_stands_stopways_and_context_groups():
                       (19.252, 47.4393), (19.251, 47.4393),
                       (19.251, 47.4395)]],
     }
+    # Far south of the stands/stopways frame: present as data (groups are
+    # still emitted, nothing warns) but drawn nowhere — frame clipping
+    # cuts everything outside the airfield view (shop issue #10).
     ctx = {
-        "highways": [], "roads": [[(19.24, 47.43), (19.27, 47.43)]],
+        "highways": [], "roads": [[(19.24, 47.41), (19.27, 47.41)]],
         "paths": [], "rails": [],
-        "waterway": [[(19.245, 47.431), (19.265, 47.431)]],
-        "buildings": [[(19.24, 47.432), (19.241, 47.432), (19.241, 47.4318),
-                       (19.24, 47.4318), (19.24, 47.432)]],
+        "waterway": [[(19.245, 47.411), (19.265, 47.411)]],
+        "buildings": [[(19.24, 47.412), (19.241, 47.412), (19.241, 47.4118),
+                       (19.24, 47.4118), (19.24, 47.412)]],
         "water": [],
     }
     layers = ["stands", "stopways", "roads", "waterway", "buildings"]
@@ -322,8 +325,10 @@ def test_render_stands_stopways_and_context_groups():
     assert 'id="context-roads"' in svg and 'id="context-waterway"' in svg
     assert 'id="context-railways"' not in svg and 'id="context-rail"' not in svg
     assert counts["stands"] == 1 and counts["stopways"] == 1
-    assert counts["roads"] == 1 and counts["waterway"] == 1
-    assert counts["buildings"] == 1 and counts["runway"] == 0
+    # Out-of-frame context draws no paths (shop issue #10) yet still
+    # counts as present data — no warnings either way.
+    assert counts["roads"] == 0 and counts["waterway"] == 0
+    assert counts["buildings"] == 0 and counts["runway"] == 0
     assert "no_context_data" not in warnings
     # Empty context warns instead of failing.
     _, _, _, warnings2 = render_diagram(
@@ -358,6 +363,48 @@ def test_render_layers_filter_draw_fit_and_counts():
     assert 'id="osm-runways"' not in svg and 'id="osm-aprons"' not in svg
     assert counts["taxiway"] == 1 and counts["runway"] == 0
     assert sum(counts.values()) == 1
+
+
+def test_context_layers_keep_airfield_framing():
+    """Shop issue #10: enabling context must not reframe the airfield.
+    The fit comes from airfield geometry only, so the airfield artwork is
+    byte-identical with and without context; selected context draws where
+    it falls inside the frame (frame clipping cuts the rest)."""
+    import re
+
+    osm = {
+        "runway": [[(19.251, 47.4395), (19.2602, 47.4342)]],
+        "taxiway": [[(19.252, 47.438), (19.259, 47.435)]],
+        "apron": [], "terminal": [], "hangar": [], "stands": [], "stopways": [],
+    }
+    ctx = {
+        "highways": [], "roads": [[(19.252, 47.437), (19.258, 47.437)]],
+        "paths": [], "rails": [],
+        "waterway": [[(19.245, 47.411), (19.265, 47.411)]],
+        "water": [], "buildings": [],
+    }
+    svg_plain, _, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=[],
+        osm_geoms=osm, width=1000, layers=["runway", "taxiway"],
+    )
+    svg_ctx, counts_ctx, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=[],
+        osm_geoms=osm, context_geoms=ctx, width=1000,
+        layers=["runway", "taxiway", "roads", "waterway"],
+    )
+
+    def group_paths(svg, gid):
+        section = svg.split(f'id="{gid}"')[1].split("</g>")[0]
+        return re.findall(r"<path d=\"[^\"]+\"/>", section)
+
+    for gid in ("runways", "runway-marks", "osm-runways", "osm-taxiways"):
+        assert group_paths(svg_ctx, gid) == group_paths(svg_plain, gid)
+    # In-frame context draws…
+    assert 'id="context-roads"' in svg_ctx
+    assert counts_ctx["roads"] == 1
+    # …far-outside-frame context is cut.
+    assert 'id="context-waterway"' in svg_ctx
+    assert counts_ctx["waterway"] == 0
 
 
 def test_min_detail_filters_small_footprints_not_perimeters():

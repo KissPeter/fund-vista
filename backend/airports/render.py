@@ -51,8 +51,9 @@ def render_source_version() -> str:
 # the viewBox to the page with margin (iDraw working area 210×297mm).
 # Fixed aspect is what makes zoom fill the page: downstream layout does
 # a contain-fit, so a content-sized frame could never fill the page on
-# the other axis no matter the zoom. Here zoom=1 contains all content
-# and zoom>1 covers (crops) toward a full-bleed page.
+# the other axis no matter the zoom. Here zoom=1 contains the airfield
+# frame (context layers draw where they fall inside it, never reframing);
+# zoom>1 covers (crops) toward a full-bleed page.
 # NOTE: no title, no frequency strip, no footer, no compass in the
 # artwork — the SVG is pure diagram geometry (runways, ground, badges).
 # Names, frequencies and credits live on the page / API responses, never
@@ -205,25 +206,32 @@ def render_diagram(
         if not any(ctx_r.values()):
             warnings.append("no_context_data")
 
-    # -- fit rotated world → diagram area (SELECTED layers only) ---------
-    all_pts: list[tuple[float, float]] = []
+    # -- fit rotated world → diagram area (AIRFIELD geometry only) ---------
+    # Shop issue #10: context layers span the full fetch radius, so fitting
+    # them reframes (shrinks) the airfield whenever any is enabled. The
+    # frame keeps the airfield view area; selected context still draws
+    # wherever it falls inside it (the frame clipping below cuts the rest).
+    # With no airfield geometry at all (e.g. a context-only selection),
+    # fall back to the selected-geometry fit so the view stays meaningful.
+    fit_pts: list[tuple[float, float]] = []
     if "runway" in selected:
         for s in strips_r:
-            all_pts += [s["le"], s["he"]]
+            fit_pts += [s["le"], s["he"]]
     for cls, polys in list(osm_r.items()):
-        if cls in selected:
+        if cls in selected and cls in AIRFIELD_LAYERS:
             for poly in polys:
-                all_pts += poly
-    for cls, polys in list(ctx_r.items()):
-        if cls in selected:
-            for poly in polys:
-                all_pts += poly
-    if not all_pts:
-        all_pts = [(-500.0, -500.0), (500.0, 500.0)]
-    min_x = min(p[0] for p in all_pts)
-    max_x = max(p[0] for p in all_pts)
-    min_y = min(p[1] for p in all_pts)
-    max_y = max(p[1] for p in all_pts)
+                fit_pts += poly
+    if not fit_pts:
+        for cls, polys in list(ctx_r.items()):
+            if cls in selected:
+                for poly in polys:
+                    fit_pts += poly
+    if not fit_pts:
+        fit_pts = [(-500.0, -500.0), (500.0, 500.0)]
+    min_x = min(p[0] for p in fit_pts)
+    max_x = max(p[0] for p in fit_pts)
+    min_y = min(p[1] for p in fit_pts)
+    max_y = max(p[1] for p in fit_pts)
     pad_m = max(max_x - min_x, max_y - min_y) * 0.06 + 50.0
     min_x -= pad_m
     max_x += pad_m
