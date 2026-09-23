@@ -1,2 +1,3 @@
 .env
 Dockerfile.nas
+__pycache__/
