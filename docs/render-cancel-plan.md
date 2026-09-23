@@ -1,7 +1,7 @@
 # Aborted render still burns backend CPU — fix plan
 
 Date: 2026-09-23
-Status: P2 + P3 IMPLEMENTED (backend only; P0/P1 shop-side remain open)
+Status: P2 + P3 IMPLEMENTED (backend @ `7e064f7`; P0/P1 LANDED in shop `1.28` @ `1cb6d18` — statuses below updated, P0/P1 detail lives in the shop copy)
 Source: `penplot.linuxadm.hu2.har` + code walkthrough
 Implementation: `backend/cancel.py`, `backend/jobs/` (`schemas|store|router|runner.py`),
   checkpoints in `backend/citymap/router.py`, `backend/airports/router.py`,
@@ -32,14 +32,14 @@ With 4 NAS workers, two overlapping renders + a 66 s convert contend directly.
 
 ## Plan
 
-### P0 — fire fewer full renders (frontend only)
+### P0 — fire fewer full renders (frontend only) — LANDED in shop `1.28`
 
 - `src/components/custom/useCitymapRender.ts:106-120`: render on map `moveend`/idle only; keep `1200/900/400ms` debounce as fallback.
 - Skip tiny deltas: if bbox change < threshold (~50 m) and layers unchanged, don't refire.
 - Round bbox to 3 decimals before `POST` so backend `bbox_snapped` actually yields `cache_hit:true`.
 - Draft preview `width:400-500` while interacting; full `width:1000` only on settle / attach (`cityRenderBody` in `src/lib/penplot.api.ts:220-227`).
 
-### P1 — propagate abort through proxy + nginx
+### P1 — propagate abort through proxy + nginx — LANDED in shop `1.28` (proxy part; nginx check is ops-side)
 
 - `src/lib/v1proxy.ts:49-60`: wire `request.signal → controller.abort()` (one-line fix; dev/e2e parity).
 - VPS nginx `/etc/nginx/sites-enabled/penplot.linuxadm.hu` (`docs/nas-fundvista.md:22-24`): verify `proxy_ignore_client_abort off` (default) so client RST closes the upstream connection; keep `310s` read/send timeouts.
@@ -248,4 +248,7 @@ Acceptance: interactive cancel always server-visible (`DELETE` or auto-supersede
 
 ## Order
 
-P0 + P1 first (shop repo only, no backend deploy). P2 + P3 implemented here (backend only).
+P0 + P1 LANDED in shop `1.28` (draft previews, skip tiny refires, proxy
+abort forwarding; shop detail in `pen-pixel-shop/docs/render-cancel-plan.md`).
+P2 + P3 implemented here (backend only) — remaining: NAS rebuild/redeploy,
+then HAR-level verification.
