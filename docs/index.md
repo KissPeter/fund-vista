@@ -28,6 +28,8 @@ Doc: `docs/F-001-airport-diagrams.md`.
 - `docs/ui-penplot-image.md` — `/penplot` Jinja page: controls, JS, backend.
 - `docs/convert-pipeline-reference.md` — every `/v1/convert` pipeline element:
   purpose, what it changes, its knob, cost class, and when to skip it.
+- `docs/nas-fundvista.md` — NAS primary backend: topology, env, rebuild/verify/
+  rollback runbook (mirrors `.opencode/skills/deploy-nas/SKILL.md`).
 - `docs/ui-citymap.md` — `/citymap` Jinja page: controls, JS, backend.
 - `docs/ui-airports.md` — `/airports` Jinja page: controls, JS, backend.
 - `docs/python-service-shop-changes.md` — pen-pixel work-order §§1–8 implementation record.
