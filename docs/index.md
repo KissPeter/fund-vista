@@ -26,6 +26,8 @@ Doc: `docs/F-001-airport-diagrams.md`.
 - `docs/drawscape-two-phase-rendering.md` — two-phase preview → render
   vs fund-vista static SVG.
 - `docs/ui-penplot-image.md` — `/penplot` Jinja page: controls, JS, backend.
+- `docs/convert-pipeline-reference.md` — every `/v1/convert` pipeline element:
+  purpose, what it changes, its knob, cost class, and when to skip it.
 - `docs/ui-citymap.md` — `/citymap` Jinja page: controls, JS, backend.
 - `docs/ui-airports.md` — `/airports` Jinja page: controls, JS, backend.
 - `docs/python-service-shop-changes.md` — pen-pixel work-order §§1–8 implementation record.
