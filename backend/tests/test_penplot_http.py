@@ -13,6 +13,7 @@ from backend.tests.helpers import (
     default_params,
     empty_svg_bytes,
     png_bytes,
+    png_with_svg_metadata_bytes,
     sha256_hex,
     svg_bytes,
     tiny_png_bytes,
@@ -39,6 +40,21 @@ def test_upload_is_idempotent_same_bytes_same_id(http_client):
     first = upload(http_client, data).json()["image_id"]
     second = upload(http_client, data).json()["image_id"]
     assert first == second
+
+
+def test_upload_png_with_svg_metadata_accepted_as_raster(http_client):
+    """Regression: a valid PNG whose raster metadata mentions `<svg` (XMP in
+    design-tool exports) must upload as a raster. The old naive sniff
+    classified it as SVG and 400'd with "Uploaded SVG is not well-formed
+    XML.", breaking the "we accept all image types" promise."""
+    data = png_with_svg_metadata_bytes()
+    assert b"<svg" in data.lstrip()[:2048].lower()
+    resp = upload(http_client, data, "photo.png")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["format"] == "png"
+    assert body["is_vector"] is False
+    assert body["image_id"] == sha256_hex(data)
 
 
 def test_get_image_roundtrip(http_client):

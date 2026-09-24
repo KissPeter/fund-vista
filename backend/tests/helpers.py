@@ -32,6 +32,28 @@ def tiny_png_bytes() -> bytes:
     return png_bytes(20, 20)
 
 
+def png_with_svg_metadata_bytes() -> bytes:
+    """A valid PNG whose raster metadata mentions ``<svg``.
+
+    Design-tool exports (Adobe etc.) embed XMP that references the svg
+    namespace, so ``<svg`` lands inside the first 2 KB of an otherwise pure
+    raster. Such files must sniff (and upload) as PNG — the old naive
+    ``b"<svg" in head`` check classified them as SVG and rejected them with a
+    bogus "Uploaded SVG is not well-formed XML." 400 (regression test).
+    """
+    from PIL import PngImagePlugin
+
+    info = PngImagePlugin.PngInfo()
+    info.add_text(
+        "XML:com.adobe.xmp",
+        '<x:xmpmeta xmlns:svg="http://www.w3.org/2000/svg"><svg:Desc/></x:xmpmeta>',
+    )
+    img = Image.new("RGB", (64, 64))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", pnginfo=info)
+    return buf.getvalue()
+
+
 def svg_bytes() -> bytes:
     return (
         b'<svg xmlns="http://www.w3.org/2000/svg" width="210" height="297">'

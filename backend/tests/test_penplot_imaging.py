@@ -38,6 +38,42 @@ def test_sniff_extension_decompression_bomb_is_413(monkeypatch):
     assert ei.value.code == "image_too_large"
 
 
+def _png_with_svg_metadata() -> bytes:
+    import io
+
+    from PIL import PngImagePlugin
+
+    info = PngImagePlugin.PngInfo()
+    info.add_text(
+        "XML:com.adobe.xmp",
+        '<x:xmpmeta xmlns:svg="http://www.w3.org/2000/svg"><svg:Desc/></x:xmpmeta>',
+    )
+    img = PILImage.new("RGB", (64, 64))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", pnginfo=info)
+    return buf.getvalue()
+
+
+def test_sniff_extension_raster_with_svg_metadata_is_not_svg():
+    """Regression: a valid PNG whose metadata mentions `<svg` must sniff as a
+    raster, not as SVG — otherwise upload 400s with the bogus
+    "Uploaded SVG is not well-formed XML." error."""
+    data = _png_with_svg_metadata()
+    assert b"<svg" in data.lstrip()[:2048].lower()  # naive check WOULD trip
+    assert imaging.sniff_extension(data, "photo.png") == "png"
+
+
+def test_sniff_extension_genuine_svg_still_detected():
+    assert imaging.sniff_extension(_svg('<rect x="0" y="0" width="10" height="10"/>'), "shapes.svg") == "svg"
+    # Content wins even when the filename does NOT claim svg.
+    assert imaging.sniff_extension(_svg('<rect x="0" y="0" width="10" height="10"/>'), "image") == "svg"
+
+
+def test_sniff_extension_name_svg_still_routes_malformed_to_svg_parser():
+    # A broken `.svg` keeps its honest 400 path (parser, not a 422).
+    assert imaging.sniff_extension(b"<svg not well-formed <svg", "broken.svg") == "svg"
+
+
 def test_parse_svg_vectors_returns_four_tuple_with_warnings():
     polylines, w, h, warnings = imaging.parse_svg_vectors(_svg('<rect x="0" y="0" width="10" height="10"/>'))
     assert len(polylines) == 1

@@ -58,13 +58,33 @@ EXT_TO_PILLOW_FORMAT = {
 
 
 def looks_like_svg(data: bytes) -> bool:
+    """True when the bytes actually parse as an SVG document.
+
+    A plain ``b"<svg"`` substring test is not enough: valid rasters — e.g.
+    PNG/JPEG exports whose XMP metadata references ``<svg:...>`` /
+    ``xmlns:svg`` — carry that literal inside their first 2 KB and would be
+    classified as SVG, then rejected with a bogus "not well-formed XML" 400.
+    Verify the bytes parse as XML with an ``<svg>`` root instead.
+    """
     head = data.lstrip()[:2048].lower()
-    return b"<svg" in head
+    if b"<svg" not in head:
+        return False
+    try:
+        root = DefusedET.fromstring(data)
+    except Exception:
+        return False
+    return _local_tag(root) == "svg"
 
 
 def sniff_extension(data: bytes, filename: str | None) -> str | None:
     """Return a normalized extension (no dot) or None if unsupported."""
-    if looks_like_svg(data):
+    # A `.svg` filename wins even for malformed content: routing it to the
+    # SVG parser surfaces the honest "not well-formed XML" 400 instead of a
+    # confusing 422. Content matches must parse as an actual SVG document
+    # (see looks_like_svg) so a raster whose metadata merely mentions `<svg`
+    # is not mistaken for a vector.
+    name = (filename or "").lower()
+    if name.endswith(".svg") or looks_like_svg(data):
         return "svg"
     try:
         with Image.open(io.BytesIO(data)) as img:
