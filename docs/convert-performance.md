@@ -3,10 +3,11 @@
 Date: 2026-09-23
 Repro: live NAS backend (`fundvista:nas`, `docker exec` into the running container)
 Linked plan: GH issues in this repo (see §6).
-Status: P1–P5 IMPLEMENTED (backend @ `57ee556` + `9cbcd88` + `30e3c04`; the
-  spatial-hash linemerge/linesort translation landed in `13d1978`; deploy
-  pending push to `main`). Findings below are the original profiling record;
-  §6 marks what actually landed, with commit + test references.
+Status: P1–P5 IMPLEMENTED + DEPLOYED (backend @ `57ee556` + `9cbcd88` + `30e3c04`;
+  the spatial-hash linemerge/linesort translation landed in `13d1978`; live on
+  NAS `fundvista:nas` since 2026-09-24). The numbers below are the original
+  profiling record from 2026-09-23; §6 marks what actually landed and §8 records
+  the fresh post-deploy timing run against the same environment.
 
 ## TL;DR
 
@@ -230,3 +231,44 @@ original 76k-point map never left `linemerge` (> 5 min, single pegged core);
 the shipped code carries a 10 s upper-bound gate at 20k segments and the
 byte-identity guarantees that any pre-existing output reproduces exactly.
 Fresh end-to-end NAS timings belong to the post-deploy verification step.
+
+## 8. Post-deploy verification — fresh timing run (2026-09-24)
+
+Method: the §2 cProfile harness, run live inside the shipped container
+(`fundvista:nas` rebuilt from `main`: Python 3.13.15, numpy 2.5.3, 4 uvicorn
+workers, `--cpus=3.0`). The two user SVGs from the original run were no
+longer present in the data volume, so two map-like SVGs of matching size were
+generated (medium 145 KB / 7 634 pts / 5 504 source segs; large 1.3 MB /
+71 996 pts / 51 578 source segs). The harness drives `run_convert` directly,
+so the times are pure cold-compute: the P1 result cache lives at the router
+layer (identity semantics covered by `test_penplot_preview.py`), and the P5
+parsed-geometry cache shows up as a warm `parse-svg` on repeats.
+
+Default vector preview path — what the designer tabs call
+(`linesort`/`reloop` skipped by P2 unless `full_quality`):
+
+| Input | parse-svg | linemerge | curvesmooth | linesimplify | linesort | reloop | total | old record |
+|---|---|---|---|---|---|---|---|---|
+| medium | 810 ms | 697 ms | 63 ms | 135 ms | skipped | skipped | **1.96 s** | 9.5 s |
+| large | 7 673 ms | 8 242 ms | 468 ms | 1 446 ms | skipped | skipped | **19.35 s** | > 5 min (never returned) |
+
+`linemerge` on the large input fell from > 5 min to ≈ 8.2 s. A geometry-warm
+repeat (parse hits the P5 parsed-SVG cache, 7.67 s → 0.45 s) totals 12.1 s;
+the P1 result-cache hit is even a pure re-serve at the router.
+
+Full-quality path (`full_quality=true`, travel optimisation on):
+
+| Input | parse-svg | linemerge | linesimplify | linesort | reloop | total |
+|---|---|---|---|---|---|---|
+| medium | 29 ms (cached) | 631 ms | 127 ms | **3.40 s** | ~0.3 ms (numpy) | **4.53 s** |
+| large | 455 ms (cached) | 8 213 ms | 1 444 ms | **11.89 s** | ~0.3 ms (numpy) | **24.10 s** |
+
+Hot-spot shift (cProfile tottime, large full-quality): with the merge and
+numpy-reloop fixes in, `linesort`'s Chebyshev ring search is the largest
+cost (`optimize.py:260 _linesort_nearest` ≈ 4.0 s, `_cell_min_dist` ≈ 2.9 s,
+1.4 M `dict.get`, 1.2 M `math.hypot`). On sparse street-map layouts the
+nearest-neighbour jump is large, the ring radius grows, and every ring walks
+a full cell perimeter in pure Python. A follow-up (P6) could switch to a
+radial-cell / kd-tree nearest-neighbour list; default-quality converts — the
+shop's normal path — already skip this stage entirely (`stage=linesort
+ms=0.0`), so the delivered win is the cold 19.35 s vs the old > 5 min.
