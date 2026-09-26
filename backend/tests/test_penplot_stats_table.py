@@ -56,7 +56,7 @@ def test_positions_anchor_corners():
     bl, _ = _render(position="bottom-left")
     br, _ = _render(position="bottom-right")
     tlx0, tly0, _, _ = _bbox(tl)
-    _, _, trx1, try0 = _bbox(tr)
+    _, try0, trx1, _ = _bbox(tr)
     blx0, _, _, bly1 = _bbox(bl)
     _, _, brx1, bry1 = _bbox(br)
     assert tlx0 < trx1 and abs(tly0 - try0) < 1e-6
@@ -105,11 +105,16 @@ def test_stats_table_adds_strokes_over_http(http_client):
 
 
 def test_stats_table_disabled_is_noop_over_http(http_client):
+    # Disabled-with-rows still salts the result cache key (rows are part of
+    # the canonical params), so filenames differ — but the artwork must be
+    # byte-identical and the stats equal.
     image_id = upload(http_client, png_bytes()).json()["image_id"]
     plain = _convert(http_client, image_id, default_params("hatch")).json()
     off = _convert(
         http_client, image_id, _tabled(default_params("hatch"), enabled=False)).json()
-    assert off["svg_url"] == plain["svg_url"]
+    assert off["svg_url"] != plain["svg_url"]
+    assert off["stats"] == plain["stats"]
+    assert http_client.get(off["svg_url"]).text == http_client.get(plain["svg_url"]).text
 
 
 def test_stats_table_positions_differ_over_http(http_client):
