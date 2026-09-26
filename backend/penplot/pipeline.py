@@ -17,6 +17,7 @@ import numpy as np
 
 from backend.penplot import imaging
 from backend.penplot import labels
+from backend.penplot import stats_table
 from backend.penplot.backgrounds import get_background_data_uri
 from backend.penplot.config import Settings
 from backend.penplot.errors import PenPlotError, processing_failed
@@ -207,6 +208,20 @@ def run_convert(
                 page_w, page_h,
                 params.page.margin_mm, params.page.frame_radius_mm,
             )]
+        # Layer-stats overlay table (citymap/airport path_counts, plotted in
+        # a page corner). Empty rows are a no-op so the toggle can stay on
+        # before the first import lands; bottom corners sit above the label
+        # strip instead of sliding under it.
+        table_lines: list = []
+        if params.stats_table.enabled and params.stats_table.rows:
+            table_lines, table_warnings = stats_table.render_stats_table(
+                [(r.key, r.value) for r in params.stats_table.rows],
+                position=params.stats_table.position,
+                page_w=page_w, page_h=page_h,
+                margin_mm=params.page.margin_mm,
+                reserve_bottom_mm=reserve_bottom_mm,
+            )
+            warnings.extend(table_warnings)
         t0 = time.perf_counter()
         # Merge domains separately: a joint linemerge would fuse image strokes
         # into divider/frame across the strip gap at high tolerances, dragging
@@ -214,7 +229,7 @@ def run_convert(
         q = settings.quantization_mm
         tol = params.linemerge_tolerance_mm
         merged = linemerge(quantize(laid, q), tol)
-        static_lines = lab_lines + frame_lines
+        static_lines = lab_lines + frame_lines + table_lines
         if static_lines:
             merged.extend(linemerge(quantize(static_lines, q), tol))
         _timed("linemerge", image_id, method_label, t0)

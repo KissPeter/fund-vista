@@ -96,6 +96,40 @@ class PenParams(BaseModel):
     pen_lift_s: float = Field(default=0.3, ge=0.0, le=10.0)
 
 
+StatsTablePosition = Literal["top-left", "top-right", "bottom-left", "bottom-right"]
+
+
+class StatsTableRow(BaseModel):
+    """One plotted stats-table row: layer key + path count.
+
+    Keys are the raw layer ids (``highways``); the renderer capitalizes
+    the first letter for the drawn cell (``Highways``). Values are the
+    ``path_counts`` integers from the citymap/airport import response —
+    the frontend filters to non-zero layers before sending.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=32)
+    value: int = Field(ge=0, le=999999)
+
+
+class StatsTableParams(BaseModel):
+    """Layer-stats overlay table, drawn in a page corner (plotter strokes).
+
+    Off by default; when enabled with a non-empty ``rows`` list the
+    pipeline draws a bordered two-column table (key | value) anchored
+    inside the page margins at ``position``. Empty rows are a silent
+    no-op so the toggle can stay on before the first import lands.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    position: StatsTablePosition = "top-right"
+    rows: list[StatsTableRow] = Field(default_factory=list, max_length=20)
+
+
 class ConvertParams(BaseModel):
     """Slider state. Defaults match the spec §2.3 example.
 
@@ -174,6 +208,7 @@ class ConvertParams(BaseModel):
     page: PageParams = Field(default_factory=PageParams)
     pen: PenParams = Field(default_factory=PenParams)
     label: LabelParams = Field(default_factory=LabelParams)
+    stats_table: StatsTableParams = Field(default_factory=StatsTableParams)
     line_color: LineColorName = Field(
         default="black",
         description=(
