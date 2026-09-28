@@ -65,6 +65,24 @@ class RenderRequest(BaseModel):
         default=1000, ge=100, le=4000,
         description="SVG width in user units (plane meters scaled to fit).",
     )
+    bearing_deg: float = Field(
+        default=0.0, ge=-720.0, le=720.0,
+        description="Map bearing clockwise from north (what the picker shows). "
+        "Non-zero rotates the artwork to match the rotated view and clips it "
+        "to the viewport; requires viewport_aspect.",
+    )
+    viewport_aspect: float | None = Field(
+        default=None, gt=0.0, le=10.0,
+        description="Picker viewport width ÷ height. Needed to recover the "
+        "framed rect from the axis-aligned bbox when bearing is non-zero.",
+    )
+
+    @model_validator(mode="after")
+    def _bearing_needs_aspect(self) -> RenderRequest:
+        b = (self.bearing_deg or 0.0) % 360.0
+        if min(b, 360.0 - b) > 1e-9 and self.viewport_aspect is None:
+            raise ValueError("'viewport_aspect' is required when 'bearing_deg' is non-zero.")
+        return self
 
     @model_validator(mode="after")
     def _source_and_layers(self) -> RenderRequest:

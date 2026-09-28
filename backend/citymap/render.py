@@ -35,6 +35,54 @@ def project(
     return x, y
 
 
+def _clip_segment(
+    p0: tuple[float, float], p1: tuple[float, float],
+    x0: float, y0: float, x1: float, y1: float,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Liang-Barsky clip of one segment to an axis-aligned rect (or None)."""
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, p0[0] - x0), (dx, x1 - p0[0]),
+                 (-dy, p0[1] - y0), (dy, y1 - p0[1])):
+        if abs(p) < 1e-12:
+            if q < 0.0:
+                return None
+        else:
+            r = q / p
+            if p < 0.0:
+                t0 = max(t0, r)
+            else:
+                t1 = min(t1, r)
+            if t0 > t1:
+                return None
+    return ((p0[0] + t0 * dx, p0[1] + t0 * dy),
+            (p0[0] + t1 * dx, p0[1] + t1 * dy))
+
+
+def _clip_polyline(
+    pts: list[tuple[float, float]],
+    x0: float, y0: float, x1: float, y1: float,
+) -> list[list[tuple[float, float]]]:
+    """Clip a polyline to an axis-aligned rect, splitting into kept runs."""
+    runs: list[list[tuple[float, float]]] = []
+    cur: list[tuple[float, float]] = []
+    for p0, p1 in zip(pts, pts[1:]):
+        seg = _clip_segment(p0, p1, x0, y0, x1, y1)
+        if seg is None:
+            if cur:
+                runs.append(cur)
+                cur = []
+            continue
+        q0, q1 = seg
+        if not cur:
+            cur = [q0]
+        if math.hypot(q1[0] - cur[-1][0], q1[1] - cur[-1][1]) > 1e-9:
+            cur.append(q1)
+    if cur:
+        runs.append(cur)
+    return [run for run in runs if len(run) > 1]
+
+
 def render_svg(
     geoms: dict[str, list[list[tuple[float, float]]]],
     bbox: BBox,
@@ -42,6 +90,8 @@ def render_svg(
     *,
     width: int = 1000,
     min_path_len_m: float = 0.0,
+    bearing_deg: float = 0.0,
+    viewport_aspect: float | None = None,
     cancelled: object = None,
     cancel_every: int = 2000,
 ) -> tuple[str, dict[str, int]]:
@@ -56,6 +106,25 @@ def render_svg(
     """
     south, west, north, east = bbox
     lon0, lat0 = (west + east) / 2.0, (south + north) / 2.0
+
+    # Rotated picker view: bearing clockwise from north (SVG y grows
+    # downwards = south, so a screen-clockwise rotation is the standard
+    # matrix here). Content rotates by +bearing about the bbox center and
+    # clips to the framed viewport rect recovered from the bbox + aspect.
+    bearing = bearing_deg % 360.0
+    rotated = not (bearing < 1e-9 or bearing > 360.0 - 1e-9)
+    if rotated and viewport_aspect is None:
+        raise ValueError("'viewport_aspect' is required when 'bearing_deg' is non-zero.")
+    theta = math.radians(bearing)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    view_w = view_h = 0.0
+    if rotated:
+        span_x_m = (east - west) * _M_PER_DEG_LON_EQUATOR * math.cos(math.radians(lat0))
+        span_y_m = (north - south) * _M_PER_DEG_LAT
+        u, v = abs(cos_t), abs(sin_t)
+        a = viewport_aspect or 1.0
+        view_h = 0.5 * (span_x_m / (a * u + v) + span_y_m / (a * v + u))
+        view_w = a * view_h
 
     def _is_cancelled() -> bool:
         try:
@@ -82,16 +151,34 @@ def render_svg(
             )
             if length < min_path_len_m:
                 continue
-            polys.append(pts)
-            for x, y in pts:
-                min_x, max_x = min(min_x, x), max(max_x, x)
-                min_y, max_y = min(min_y, y), max(max_y, y)
+            if rotated:
+                rpts = [(x * cos_t - y * sin_t, x * sin_t + y * cos_t) for x, y in pts]
+                runs = _clip_polyline(rpts, -view_w / 2.0, -view_h / 2.0,
+                                      view_w / 2.0, view_h / 2.0)
+                polys.extend(runs)
+                for run in runs:
+                    for x, y in run:
+                        min_x, max_x = min(min_x, x), max(max_x, x)
+                        min_y, max_y = min(min_y, y), max(max_y, y)
+            else:
+                polys.append(pts)
+                for x, y in pts:
+                    min_x, max_x = min(min_x, x), max(max_x, x)
+                    min_y, max_y = min(min_y, y), max(max_y, y)
         projected[layer] = polys
 
-    span_x = max(max_x - min_x, 1e-9)
-    span_y = max(max_y - min_y, 1e-9)
-    scale = width / span_x
-    height = span_y * scale
+    if rotated:
+        # Exact viewport rect (no content scan): canvas aspect == picker aspect.
+        # Centered coords map with a negative offset (x + w/2, y + h/2).
+        scale = width / view_w
+        height = view_h * scale
+        off_x, off_y = -view_w / 2.0, -view_h / 2.0
+    else:
+        span_x = max(max_x - min_x, 1e-9)
+        span_y = max(max_y - min_y, 1e-9)
+        scale = width / span_x
+        height = span_y * scale
+        off_x, off_y = min_x, min_y
     stroke_w = max(0.5, width / 2000.0)
 
     parts = [
@@ -108,7 +195,7 @@ def render_svg(
         )
         closed_ok = layer in AREA_LAYERS
         for pts in polys:
-            mapped = [((x - min_x) * scale, (y - min_y) * scale) for x, y in pts]
+            mapped = [((x - off_x) * scale, (y - off_y) * scale) for x, y in pts]
             d = f"M {mapped[0][0]:.2f} {mapped[0][1]:.2f} " + " ".join(
                 f"L {x:.2f} {y:.2f}" for x, y in mapped[1:]
             )

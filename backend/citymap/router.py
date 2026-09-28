@@ -482,6 +482,11 @@ def _render_keys(
         bbox_str(bbox), ",".join(sorted(layers)),
         f"minlen={body.min_path_len_m}", f"width={body.width}",
     )
+    # Bearing/aspect join the key only when rotation is active, so the
+    # overwhelming north-up traffic keeps its existing cache entries.
+    bearing = (body.bearing_deg or 0.0) % 360.0
+    if not (bearing < 1e-9 or bearing > 360.0 - 1e-9):
+        parts += (f"bearing={bearing:.2f}", f"aspect={(body.viewport_aspect or 0.0):.4f}")
     return citymap_cache_key("svg", *parts), citymap_cache_key("counts", *parts)
 
 
@@ -591,6 +596,8 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
             svg, path_counts_ = _render(
                 geoms, bbox, layers,
                 width=body.width, min_path_len_m=body.min_path_len_m,
+                bearing_deg=body.bearing_deg or 0.0,
+                viewport_aspect=body.viewport_aspect,
                 cancelled=stop.is_set,
             )
             return svg, path_counts_, raw_counts_, store_me
@@ -698,6 +705,8 @@ async def import_map(body: RenderRequest, request: Request) -> ImportResponse | 
             svg, path_counts_ = render_svg(
                 geoms, bbox, layers,
                 width=body.width, min_path_len_m=body.min_path_len_m,
+                bearing_deg=body.bearing_deg or 0.0,
+                viewport_aspect=body.viewport_aspect,
                 cancelled=stop.is_set,
             )
             return svg, path_counts_, raw_counts_, store_me
