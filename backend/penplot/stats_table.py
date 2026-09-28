@@ -79,6 +79,10 @@ def render_stats_table(
     page_h: float,
     margin_mm: float,
     reserve_bottom_mm: float = 0.0,
+    pad_left_mm: float = 0.0,
+    pad_right_mm: float = 0.0,
+    pad_top_mm: float = 0.0,
+    pad_bottom_mm: float = 0.0,
 ) -> tuple[list[Polyline], list[str]]:
     """Lay out the stats table in mm space. See module docstring.
 
@@ -118,10 +122,12 @@ def render_stats_table(
     table_w = col0 + col1
     table_h = row_h * len(cells)
 
-    inner_left = margin_mm + TABLE_GAP_MM
-    inner_right = page_w - margin_mm - TABLE_GAP_MM
-    inner_top = margin_mm + TABLE_GAP_MM
-    inner_bottom = page_h - margin_mm - TABLE_GAP_MM - max(reserve_bottom_mm, 0.0)
+    inner_left = margin_mm + TABLE_GAP_MM + max(pad_left_mm, 0.0)
+    inner_right = page_w - margin_mm - TABLE_GAP_MM - max(pad_right_mm, 0.0)
+    inner_top = margin_mm + TABLE_GAP_MM + max(pad_top_mm, 0.0)
+    inner_bottom = (
+        page_h - margin_mm - TABLE_GAP_MM - max(reserve_bottom_mm, 0.0) - max(pad_bottom_mm, 0.0)
+    )
     inner_w = max(inner_right - inner_left, 1e-9)
     inner_h = max(inner_bottom - inner_top, 1e-9)
 

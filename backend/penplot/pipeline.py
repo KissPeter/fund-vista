@@ -308,6 +308,10 @@ def run_convert(
                 page_w=page_w, page_h=page_h,
                 margin_mm=params.page.margin_mm,
                 reserve_bottom_mm=reserve_bottom_mm,
+                pad_left_mm=params.stats_table.pad_left_mm,
+                pad_right_mm=params.stats_table.pad_right_mm,
+                pad_top_mm=params.stats_table.pad_top_mm,
+                pad_bottom_mm=params.stats_table.pad_bottom_mm,
             )
             warnings.extend(table_warnings)
         t0 = time.perf_counter()
@@ -318,9 +322,13 @@ def run_convert(
         tol = params.linemerge_tolerance_mm
         _poll("vpype:linemerge")
         merged = linemerge(quantize(laid, q), tol)
+        # Page furniture rejoins AFTER linesimplify below: simplify would
+        # eat the 2 mm frame-radius arcs (0.04 mm chord sagitta < 0.1 mm
+        # tolerance) and leave lathe chamfers, so it only ever sees artwork.
         static_lines = lab_lines + frame_lines + table_lines
-        if static_lines:
-            merged.extend(linemerge(quantize(static_lines, q), tol))
+        static_merged: list = (
+            linemerge(quantize(static_lines, q), tol) if static_lines else []
+        )
         _timed("linemerge", image_id, method_label, t0)
         t0 = time.perf_counter()
         _poll("vpype:curvesmooth")
@@ -335,6 +343,10 @@ def run_convert(
         t0 = time.perf_counter()
         _poll("vpype:linesimplify")
         simplified = linesimplify(smoothed, params.linesimplify_tolerance_mm)
+        # Page furniture kept its drawn shape (it bypassed linesimplify
+        # above) — rejoin before travel optimization so pen travel stays
+        # optimal across the whole sheet.
+        simplified.extend(static_merged)
         _timed("linesimplify", image_id, method_label, t0)
         t0 = time.perf_counter()
         fast = is_fast_preview(params, is_vector)

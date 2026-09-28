@@ -128,6 +128,13 @@ class StatsTableParams(BaseModel):
     enabled: bool = False
     position: StatsTablePosition = "top-right"
     rows: list[StatsTableRow] = Field(default_factory=list, max_length=20)
+    # Per-side insets (mm) from the inner margin rect — extra breathing
+    # room between the table and the page edge/label strip, 0 keeps the
+    # default 1 mm table gap.
+    pad_left_mm: float = Field(default=0.0, ge=0.0, le=20.0)
+    pad_right_mm: float = Field(default=0.0, ge=0.0, le=20.0)
+    pad_top_mm: float = Field(default=0.0, ge=0.0, le=20.0)
+    pad_bottom_mm: float = Field(default=0.0, ge=0.0, le=20.0)
 
 
 class ConvertParams(BaseModel):
