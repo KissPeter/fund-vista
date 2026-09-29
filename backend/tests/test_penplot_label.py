@@ -67,7 +67,7 @@ def test_empty_text_is_noop_and_unknown_chars_warn():
     lines, warnings = labels.render_label(
         "Aéb", height_mm=5.0, align="right",
         page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
-        border=False,
+        border=False, font="futural",
     )
     assert len(lines) > 0  # the A still draws
     assert any(w.startswith("label_unsupported_characters") for w in warnings)
@@ -426,7 +426,7 @@ def test_label_reserve_matches_divider():
         lines, _ = labels.render_label(
             "AB", height_mm=5.0, align="right",
             page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
-            border=border, border_radius_mm=0.0,
+            border=border, border_radius_mm=0.0, font="futural",
         )
         if border:
             divider = lines[-2]
