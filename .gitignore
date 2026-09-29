@@ -1,3 +1,10 @@
 .env
 Dockerfile.nas
 __pycache__/
+# Local junk: OS/IDE droppings, caches, build output.
+.DS_Store
+.hypothesis/
+.idea/
+dist/
+node_modules/
+backend/.data/
