@@ -49,13 +49,14 @@ from PIL import Image, ImageDraw, ImageFont
 
 from backend.penplot.hershey_fonts import FACES
 from backend.penplot.methods import Polyline
+from backend.penplot.svgfont import ATTRIBUTION_SINGLESTROKE, FONT_ID as SVG_FONT_ID
 
 WARNING_UNSUPPORTED = "label_unsupported_characters"
 
-DEFAULT_FONT = "futural"
-#: Select order for the UI font picker (Hershey single-stroke first).
+DEFAULT_FONT = SVG_FONT_ID
+#: Select order for the UI font picker (default single-stroke first).
 LABEL_FONTS = (
-    "futural", "futuram", "simplex",
+    SVG_FONT_ID, "futural", "futuram", "simplex",
     "excalifont", "comic-shanns", "nunito",
 )
 #: Hybrid outline faces: TTF file per label font name (OFL/MIT, see below).
@@ -163,15 +164,29 @@ def _resolve_face(
 ) -> tuple[float, float, dict]:
     """(cap_height, space_advance, drawables-only glyphs) in face units.
 
-    Hershey faces come from the vendored table; outline faces rasterize the
-    needed glyphs on demand (cached per process). Missing glyphs are absent
-    from the returned dict so callers warn uniformly.
+    Hershey faces come from the vendored table; the single-stroke SVGinOT
+    face parses its glyph paths on demand (cached per process); outline
+    faces rasterize the needed glyphs on demand (cached per process).
+    Missing glyphs are absent from the returned dict so callers warn
+    uniformly.
     """
-    if font not in FACES and font not in _OUTLINE_FILES:
+    if font not in FACES and font != SVG_FONT_ID and font not in _OUTLINE_FILES:
         font = DEFAULT_FONT
     if font in FACES:
         face = FACES[font]
         return face["cap_height"], face["space_advance"], face["glyphs"]
+    if font == SVG_FONT_ID:
+        from backend.penplot.svgfont import get_svg_face
+
+        face = get_svg_face()
+        glyphs: dict[str, dict] = {}
+        for ch in chars:
+            if ch == " " or ch in glyphs:
+                continue
+            g = face["glyphs"].get(ch)
+            if g is not None:
+                glyphs[ch] = g
+        return face["cap_height"], face["space_advance"], glyphs
     entry = _outline_face(font)
     glyphs: dict[str, dict] = {}
     for ch in chars:
