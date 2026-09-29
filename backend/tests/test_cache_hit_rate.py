@@ -74,12 +74,12 @@ def test_identical_bbox_hits_without_touching_upstream():
     orig = _patch(citymap_router, upstream)
     try:
         bbox = (47.46, 19.04, 47.54, 19.14)
-        first, err = _load(bbox, ["highways"])
+        first, err, _incomplete = _load(bbox, ["highways"])
         assert err is None and first
         assert len(upstream.queries) == 1
 
         warnings: list[str] = []
-        second, err = _load(bbox, ["highways"], warnings)
+        second, err, _incomplete = _load(bbox, ["highways"], warnings)
         assert err is None
         assert len(upstream.queries) == 1, "a repeat must not refetch"
         assert "overpass_cache_hit" in warnings
@@ -154,9 +154,9 @@ def test_a_tile_with_no_features_is_remembered_as_empty():
     orig = _patch(citymap_router, upstream)
     try:
         bbox = (47.46, 19.04, 47.48, 19.06)
-        assert _load(bbox, ["highways"]) == ([], None)
+        assert _load(bbox, ["highways"]) == ([], None, False)
         assert len(upstream.queries) == 1
-        assert _load(bbox, ["highways"]) == ([], None)
+        assert _load(bbox, ["highways"]) == ([], None, False)
         assert len(upstream.queries) == 1, "empty tiles must be cached too"
     finally:
         citymap_router.fetch_overpass = orig

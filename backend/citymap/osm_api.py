@@ -135,7 +135,7 @@ def merge_elements(chunks: list[list[dict]]) -> list[dict]:
 
 async def fetch_osm_api(
     bbox: BBox, client: httpx.AsyncClient | None = None
-) -> list[dict]:
+) -> tuple[list[dict], list[BBox]]:
     """GET bbox cells from the OSM Main API and merge into elements.
 
     Cells that answer HTTP 400 (node-density limit in city centers) are
@@ -145,6 +145,12 @@ async def fetch_osm_api(
 
     Raises :class:`OsmApiError` when every cell fails or answers unusable
     XML so the router can map it to a 502 envelope.
+
+    Returns ``(elements, failed_cells)``: cells that gave up after retries /
+    subdivision are listed (not raised) so the caller can warn and — more
+    importantly — refuse to cache the tiles they cover as if they were
+    really empty. A partial merge served from a tile cache would otherwise
+    pin a rectangular hole for the whole tile TTL.
     """
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=settings.osm_api_timeout_s)
@@ -156,16 +162,17 @@ async def fetch_osm_api(
             )
         cells = chunk_bbox(bbox, settings.osm_api_max_deg)
         failures: list[str] = []
+        failed_cells: list[BBox] = []
         parsed: list[list[dict]] = []
         for cell in cells:
-            await _fetch_recursive(cell, client, failures, parsed)
+            await _fetch_recursive(cell, client, failures, failed_cells, parsed)
         if not parsed:
             raise OsmApiError("; ".join(failures) or "no cells fetched")
         if failures:
             log.info("osm_api.partial failures=%d cells=%d", len(failures), len(cells))
         elements = merge_elements(parsed)
         log.info("osm_api.ok cells=%d elements=%d", len(cells), len(elements))
-        return elements
+        return elements, failed_cells
     finally:
         if own_client:
             await client.aclose()
@@ -207,6 +214,7 @@ async def _fetch_recursive(
     cell: BBox,
     client: httpx.AsyncClient,
     failures: list[str],
+    failed_cells: list[BBox],
     parsed: list[list[dict]],
 ) -> None:
     """Fetch one cell, subdividing on 400 down to ``osm_api_min_deg``."""
@@ -215,13 +223,15 @@ async def _fetch_recursive(
     except _DenseCellError as exc:
         if _cell_too_small(cell, settings.osm_api_min_deg):
             failures.append(f"cell {_cell_param(cell)} answered HTTP 400 ({exc.snippet})" if exc.snippet else f"cell {_cell_param(cell)} answered HTTP 400")
+            failed_cells.append(cell)
             log.warning("osm_api.fail bbox=%s dense_min_size", _cell_param(cell))
             return
         log.info("osm_api.subdivide bbox=%s", _cell_param(cell))
         for quad in split_quadrants(cell):
-            await _fetch_recursive(quad, client, failures, parsed)
+            await _fetch_recursive(quad, client, failures, failed_cells, parsed)
     except (httpx.HTTPError, OsmApiError) as exc:
         failures.append(f"cell {_cell_param(cell)}: {_format_exc(exc)}")
+        failed_cells.append(cell)
         log.warning("osm_api.fail bbox=%s error=%r", _cell_param(cell), exc)
 
 

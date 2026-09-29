@@ -281,7 +281,7 @@ def test_async_citymap_result_matches_sync_keys(client, monkeypatch):
     ]
 
     async def fake_load_raw(*a, **k):
-        return list(elements), None
+        return list(elements), None, False
 
     monkeypatch.setattr(citymap_router, "_load_raw", fake_load_raw)
 

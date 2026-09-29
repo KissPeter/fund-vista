@@ -197,7 +197,7 @@ async def _fetch_missing(
     request: Request | None = None,
     endpoint: str = "/v1/citymap/render",
     started_mono: float = 0.0,
-) -> tuple[dict[str, list[dict]] | None, set[tuple[int, int]], JSONResponse | None]:
+) -> tuple[dict[str, list[dict]] | None, set[tuple[int, int]], JSONResponse | None, list[BBox]]:
     """Fetch the missing ``(layer -> tiles)`` work in as few queries as we can.
 
     Missing tiles are decomposed into rectangles and unioned into a single
@@ -208,10 +208,12 @@ async def _fetch_missing(
     (``race_cancel``) — on abort the fetch task is cancelled and 499 raised
     with no partial cache write.
 
-    Returns ``(elements per layer, tiles fully covered by the fetch, error)``.
-    The covered set matters: a way whose nodes straddle the edge of the
-    fetched region would otherwise be filed under an outside tile, and
-    caching that tile would pin a payload missing everything else there.
+    Returns ``(elements per layer, tiles fully covered by the fetch, error,
+    failed OSM cells)``. The covered set matters: a way whose nodes straddle
+    the edge of the fetched region would otherwise be filed under an outside
+    tile, and caching that tile would pin a payload missing everything else
+    there. ``failed_cells`` is non-empty when the OSM fallback served a
+    partial merge — the caller must warn and must NOT cache those tiles.
     """
     all_tiles: set[tuple[int, int]] = set()
     for tiles in missing.values():
@@ -228,6 +230,7 @@ async def _fetch_missing(
     members: list[str] = []
     for rect in rects:
         members.extend(union_members(rect_bbox(rect, deg), layers))
+    failed_cells: list[BBox] = []
     try:
         # Checkpoint 2/3 boundary: race the Overpass fetch so abort stops
         # the httpx wait instead of running to completion (P2.3).
@@ -240,11 +243,13 @@ async def _fetch_missing(
         chunks: list[list[dict]] = []
         try:
             for rect in rects:
-                chunks.append(await race_cancel(
+                rect_elements, rect_failed = await race_cancel(
                     request, fetch_osm_api(rect_bbox(rect, deg)),
                     endpoint=endpoint, stage="overpass",
                     started_mono=started_mono,
-                ))
+                )
+                chunks.append(rect_elements)
+                failed_cells.extend(rect_failed)
         except OsmApiError as exc2:
             return None, set(), _error(
                 502,
@@ -252,15 +257,26 @@ async def _fetch_missing(
                 f"Map data fetch failed (Overpass: {exc.detail}; "
                 f"OSM API: {exc2.detail}). "
                 "(Upstreams busy — retry in a minute, with fewer layers or a smaller area).",
-            )
+            ), []
         elements = merge_elements(chunks)
         warnings.append("osm_api_fallback")
+        if failed_cells:
+            # Partial merge: some cells gave up. Serve what we have (the
+            # alternative is a 502 for the whole render) but say so, and —
+            # critically — leave the failed cells' tiles uncached below so
+            # the hole heals on the next render instead of pinning for the
+            # tile TTL.
+            warnings.append("osm_cells_incomplete")
+            log.warning(
+                "citymap partial cells=%d rects=%d endpoint=%s",
+                len(failed_cells), len(rects), endpoint,
+            )
 
     # One query returns every layer at once, and the OSM Main API fallback
     # is not layer-aware at all, so each tile key gets only its own layer —
     # otherwise the per-layer reuse this scheme buys would be a lie.
     per_layer = {layer: _select_layer(elements, layer) for layer in layers}
-    return per_layer, covered, None
+    return per_layer, covered, None, failed_cells
 
 
 def _select_layer(elements: list[dict], layer: str) -> list[dict]:
@@ -322,9 +338,13 @@ async def _load_raw(
     renderer's extent — is identical to what one query over ``bbox`` would
     have produced, whatever the cache happened to hold.
 
-    Returns (elements, None) or (None, error response) when Overpass *and*
-    the OSM Main API both fail. Fallback hits append ``osm_api_fallback``
-    so clients can tell the data came from chunked ``/api/0.6/map`` reads.
+    Returns (elements, None, incomplete) or (None, error response, False)
+    when Overpass *and* the OSM Main API both fail. Fallback hits append
+    ``osm_api_fallback`` so clients can tell the data came from chunked
+    ``/api/0.6/map`` reads. ``incomplete`` is True when OSM cells failed and
+    this render is missing their area: the response carries
+    ``osm_cells_incomplete`` and the failed cells' tiles are left uncached
+    (a retry refetches them) — the split/SVG caches must be skipped too.
     """
     deg = tile_deg_for_bbox(bbox, settings.tile_max_tiles)
     tiles = tiles_for_bbox(bbox, deg)
@@ -353,13 +373,21 @@ async def _load_raw(
         warnings.append("overpass_cache_hit")
 
     if missing:
-        per_layer, covered, err = await _fetch_missing(
+        per_layer, covered, err, failed_cells = await _fetch_missing(
             missing, deg, warnings,
             request=request, endpoint=endpoint, started_mono=started_mono,
         )
         if err is not None:
-            return None, err
+            return None, err, False
         assert per_layer is not None
+        # Tiles covered by failed OSM cells hold no data for this fetch:
+        # caching them empty would pin a hole for the tile TTL, so they are
+        # neither written nor counted as answered.
+        uncovered: set[tuple[int, int]] = set()
+        for cell in failed_cells:
+            uncovered.update(tiles_for_bbox(cell, deg))
+        uncovered &= set(tiles)
+        cacheable = covered - uncovered
         writes: dict[str, str] = {}
         for layer, elements in per_layer.items():
             by_tile = assign_to_tiles(elements, deg, limit_to=covered)
@@ -368,12 +396,22 @@ async def _load_raw(
             # neighbours are what the next pan will ask for. A covered tile
             # with no features of this layer is a real answer, not a miss;
             # storing the empty list stops it being re-fetched forever.
-            for tile in covered:
+            # (Uncovered tiles are the exception: see above.)
+            for tile in cacheable:
                 payload = by_tile.get(tile, [])
                 writes[_tile_key(tile, deg, layer)] = json.dumps(payload)
                 if tile in missing[layer]:
                     payloads[(layer, tile)] = payload
         await cache_set_many(writes, settings.tile_cache_ttl_hours * 3600)
+        lacking = {t for t in uncovered for layer in layers if t in missing.get(layer, set())}
+        incomplete = bool(lacking)
+        if incomplete:
+            log.warning(
+                "citymap.tiles incomplete tiles=%d endpoint=%s",
+                len(lacking), endpoint,
+            )
+    else:
+        incomplete = False
 
     # Assemble in a fixed (layer, tile) order rather than in whatever order
     # the cache answered. Assembly order decides the order of <path>
@@ -389,7 +427,7 @@ async def _load_raw(
         deg, len(tiles), len(layers), hit_count,
         sum(len(v) for v in missing.values()),
     )
-    return clip_elements(merge_elements(chunks), bbox), None
+    return clip_elements(merge_elements(chunks), bbox), None, incomplete
 
 
 @router.get("/layers", response_model=LayersResponse)
@@ -564,10 +602,11 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         raw_elements = None
         geoms_pre: dict | None = None
         raw_counts_pre: dict | None = None
+        raw_incomplete = False
         if split_cache is not None:
             geoms_pre, raw_counts_pre = split_cache
         else:
-            raw_elements, err = await _load_raw(
+            raw_elements, err, raw_incomplete = await _load_raw(
                 bbox, layers, warnings,
                 request=request, endpoint=endpoint, started_mono=started,
             )
@@ -615,9 +654,16 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
         # Thread may have finished just as the client went away — do not
         # poison the cache with a run nobody will use.
         await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
-        if store_me is not None:
-            await _store_split(bbox, layers, store_me[0], store_me[1])
-        await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
+        if raw_incomplete:
+            # Partial OSM fallback: the SVG has a hole where cells failed.
+            # Serve it (with the osm_cells_incomplete warning) but cache
+            # nothing derived from it — the tiles were already left unwritten
+            # and the next render refetches exactly the missing cells.
+            log.info("citymap.render incomplete, skipping split/svg cache")
+        else:
+            if store_me is not None:
+                await _store_split(bbox, layers, store_me[0], store_me[1])
+            await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
 
     base = resolve_public_base(request)
     token = svg_key.rsplit(":", 1)[-1]
@@ -674,10 +720,11 @@ async def import_map(body: RenderRequest, request: Request) -> ImportResponse | 
         elements = None
         geoms_pre: dict | None = None
         raw_counts_pre: dict | None = None
+        elements_incomplete = False
         if split_cache is not None:
             geoms_pre, raw_counts_pre = split_cache
         else:
-            elements, err = await _load_raw(
+            elements, err, elements_incomplete = await _load_raw(
                 bbox, layers, warnings,
                 request=request, endpoint=endpoint, started_mono=started,
             )
@@ -724,9 +771,14 @@ async def import_map(body: RenderRequest, request: Request) -> ImportResponse | 
             stop.set()
             watcher.cancel()
         await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
-        if store_me is not None:
-            await _store_split(bbox, layers, store_me[0], store_me[1])
-        await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
+        if elements_incomplete:
+            # Partial OSM fallback — serve with warning, cache nothing
+            # derived (see /render for why).
+            log.info("citymap.import incomplete, skipping split/svg cache")
+        else:
+            if store_me is not None:
+                await _store_split(bbox, layers, store_me[0], store_me[1])
+            await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
 
     if sum(path_counts.values()) == 0:
         return _error(

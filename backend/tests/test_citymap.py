@@ -350,7 +350,7 @@ def test_load_raw_falls_back_to_osm_api_on_overpass_outage():
             raise OverpassError("mirror1 504; mirror2 504")
 
         async def fallback(_bbox, _client=None):
-            return list(_elements())
+            return list(_elements()), []
 
         orig_overpass, orig_osm = router_mod.fetch_overpass, router_mod.fetch_osm_api
         router_mod.fetch_overpass, router_mod.fetch_osm_api = boom, fallback
@@ -360,7 +360,7 @@ def test_load_raw_falls_back_to_osm_api_on_overpass_outage():
             # lon 19.0-19.1): _load_raw now clips the upstream payload to
             # the requested area, so a bbox elsewhere correctly yields
             # nothing and would not exercise the fallback at all.
-            elements, err = await router_mod._load_raw(
+            elements, err, incomplete = await router_mod._load_raw(
                 (47.45, 18.95, 47.65, 19.15), ["highways"], warnings
             )
         finally:
@@ -368,12 +368,14 @@ def test_load_raw_falls_back_to_osm_api_on_overpass_outage():
                 orig_overpass,
                 orig_osm,
             )
-        return elements, err, warnings
+        return elements, err, warnings, incomplete
 
-    elements, err, warnings = asyncio.run(scenario())
+    elements, err, warnings, incomplete = asyncio.run(scenario())
     assert err is None
+    assert incomplete is False
     assert elements is not None and len(elements) > 0
     assert "osm_api_fallback" in warnings
+    assert "osm_cells_incomplete" not in warnings
     # The fallback payload is layer-filtered on the way into the tile cache:
     # the motorway (10) and the primary (13) are both "highways", while the
     # residential (11) and the building (12) are dropped.
@@ -396,7 +398,7 @@ def test_load_raw_502_when_both_upstreams_fail():
         router_mod.fetch_overpass, router_mod.fetch_osm_api = boom, bust
         try:
             warnings: list[str] = []
-            elements, err = await router_mod._load_raw(
+            elements, err, incomplete = await router_mod._load_raw(
                 (47.5, 19.1, 47.55, 19.15), ["highways"], warnings
             )
         finally:
@@ -404,10 +406,78 @@ def test_load_raw_502_when_both_upstreams_fail():
                 orig_overpass,
                 orig_osm,
             )
-        return elements, err
+        return elements, err, incomplete
 
-    elements, err = asyncio.run(scenario())
+    elements, err, incomplete = asyncio.run(scenario())
     assert elements is None
+    assert incomplete is False
     assert err is not None
     assert err.status_code == 502
     assert "osm api 509" in err.body.decode().lower()
+
+
+def test_load_raw_partial_osm_warns_and_leaves_failed_tiles_uncached():
+    """A partial OSM fallback must warn and must not poison the tile cache.
+
+    The fake OSM fetch answers with fixture elements but reports its eastern
+    half as failed. The render still succeeds (availability), carries
+    ``osm_cells_incomplete``, tiles outside the failed half are cached as
+    usual, and tiles inside it are left unwritten so a retry heals them.
+    """
+    import json
+
+    import backend.citymap.router as router_mod
+    from backend.citymap.cache import cache_get
+    from backend.citymap.config import settings
+    from backend.citymap.overpass import OverpassError
+    from backend.citymap.tiles import tile_deg_for_bbox, tile_of_point
+
+    configure_citymap_redis(None)  # hermetic: in-process fallback
+
+    bbox = (47.50, 19.00, 47.52, 19.04)
+    deg = tile_deg_for_bbox(bbox, settings.tile_max_tiles)
+    assert deg == 0.005  # own tile level: no key sharing with other tests
+
+    async def scenario():
+        async def boom(_query, _client=None):
+            raise OverpassError("all mirrors down")
+
+        async def partial(rect_bbox, _client=None):
+            south, west, north, east = rect_bbox
+            failed = [(south, (west + east) / 2, north, east)]
+            return list(_elements()), failed
+
+        orig_overpass, orig_osm = router_mod.fetch_overpass, router_mod.fetch_osm_api
+        router_mod.fetch_overpass, router_mod.fetch_osm_api = boom, partial
+        try:
+            warnings: list[str] = []
+            elements, err, incomplete = await router_mod._load_raw(
+                bbox, ["highways"], warnings
+            )
+        finally:
+            router_mod.fetch_overpass, router_mod.fetch_osm_api = (
+                orig_overpass,
+                orig_osm,
+            )
+        return elements, err, warnings, incomplete
+
+    elements, err, warnings, incomplete = asyncio.run(scenario())
+    assert err is None
+    assert elements is not None and len(elements) > 0
+    assert "osm_api_fallback" in warnings
+    assert "osm_cells_incomplete" in warnings
+    assert incomplete is True
+
+    async def cached_tiles():
+        # Eastern-half tile: failed cell → must be absent (heals on retry).
+        bad_tile = tile_of_point(47.51, 19.03, deg)
+        # Western-half tile: answered (empty here — no fixture nodes fall in
+        # it) → cached as a real empty answer, not skipped.
+        good_tile = tile_of_point(47.51, 19.01, deg)
+        bad = await cache_get(router_mod._tile_key(bad_tile, deg, "highways"))
+        good = await cache_get(router_mod._tile_key(good_tile, deg, "highways"))
+        return bad, good
+
+    bad, good = asyncio.run(cached_tiles())
+    assert bad is None
+    assert good is not None and json.loads(good) == []

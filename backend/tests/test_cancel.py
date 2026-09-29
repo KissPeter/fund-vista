@@ -229,7 +229,7 @@ def test_citymap_render_checkpoint1_skips_fetch_and_cache_write():
 
     async def fake_load_raw(*a, **k):
         calls["load_raw"] += 1
-        return [], None
+        return [], None, False
 
     async def fake_store(*a, **k):
         calls["store"] += 1
@@ -270,7 +270,7 @@ def test_citymap_render_checkpoint3_skips_build_and_cache_write():
         return None
 
     async def fake_load_raw(*a, **k):
-        return [], None
+        return [], None, False
 
     async def fake_store(*a, **k):
         calls["store"] += 1
