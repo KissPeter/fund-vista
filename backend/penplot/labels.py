@@ -252,7 +252,7 @@ def page_frame_rect(
     )
 
 
-def render_label(
+def _plan_label(
     text: str,
     *,
     height_mm: float,
@@ -261,12 +261,16 @@ def render_label(
     page_h: float,
     margin_mm: float,
     font: str = DEFAULT_FONT,
-    border: bool = True,
     pad_left_mm: float = 0.0,
     pad_right_mm: float = 0.0,
-    border_radius_mm: float = DEFAULT_BORDER_RADIUS_MM,
-) -> tuple[list[Polyline], list[str]]:
-    """Lay out one line of label text in mm space. See module docstring."""
+) -> dict:
+    """Shared label geometry: placed text lines plus strip metrics.
+
+    One source for both the drawn strokes (``render_label``) and the
+    map-exclusion zone (``label_cover_zone``) so they can never disagree.
+    ``lines`` is empty (with ``warnings`` kept) when nothing is drawable —
+    callers apply the same empty-text rule as the draw.
+    """
     warnings: list[str] = []
     cap_height, space_advance, glyphs = _resolve_face(font, list(text))
     s = max(height_mm, 1e-9) / cap_height
@@ -288,60 +292,133 @@ def render_label(
     if missing:
         shown = "".join(sorted(missing))[:20]
         warnings.append(f"{WARNING_UNSUPPORTED}:{shown}")
-    if not lines:
-        return [], warnings
-
-    line_w = cursor
     inner_left = margin_mm
     inner_right = page_w - margin_mm
-    inner_w = max(inner_right - inner_left, 1e-9)
-    # Text insets from the frame verticals; the frame/divider still span the
-    # full inner width. Oversized pads collapse to a tiny centered slot so an
-    # over-wide line scales down instead of inverting.
-    text_left = inner_left + max(pad_left_mm, 0.0)
-    text_right = inner_right - max(pad_right_mm, 0.0)
-    if text_left >= text_right:
-        mid = (inner_left + inner_right) / 2.0
-        text_left, text_right = mid - 0.5, mid + 0.5
-    text_w = max(text_right - text_left, 1e-9)
+    pad = gap = 0.0
+    if lines:
+        inner_w = max(inner_right - inner_left, 1e-9)
+        # Text insets from the frame verticals; the frame/divider still span the
+        # full inner width. Oversized pads collapse to a tiny centered slot so an
+        # over-wide line scales down instead of inverting.
+        text_left = inner_left + max(pad_left_mm, 0.0)
+        text_right = inner_right - max(pad_right_mm, 0.0)
+        if text_left >= text_right:
+            mid = (inner_left + inner_right) / 2.0
+            text_left, text_right = mid - 0.5, mid + 0.5
+        text_w = max(text_right - text_left, 1e-9)
 
-    def _bbox() -> tuple[float, float]:
-        xs = [x for pl in lines for x, _ in pl]
-        return min(xs), max(xs)
+        def _bbox() -> tuple[float, float]:
+            xs = [x for pl in lines for x, _ in pl]
+            return min(xs), max(xs)
 
-    min_x, max_x = _bbox()
-    actual_w = max_x - min_x
-    if actual_w > text_w:
-        # Too wide for the padded slot: scale the whole line down to fit.
-        fit = text_w / actual_w
-        lines = [[(x * fit, y) for x, y in pl] for pl in lines]
         min_x, max_x = _bbox()
         actual_w = max_x - min_x
-    if align == "fill" and actual_w > 1e-9:
-        # Non-uniform x-stretch to span the padded slot.
-        sx = text_w / actual_w
-        lines = [[(text_left + (x - min_x) * sx, y) for x, y in pl] for pl in lines]
-    elif align == "left":
-        dx = text_left - min_x
-        if dx != 0.0:
-            lines = [[(x + dx, y) for x, y in pl] for pl in lines]
-    else:  # right (default): glyph bbox ends exactly at the padded edge
-        dx = text_right - max_x
-        if dx != 0.0:
-            lines = [[(x + dx, y) for x, y in pl] for pl in lines]
+        if actual_w > text_w:
+            # Too wide for the padded slot: scale the whole line down to fit.
+            fit = text_w / actual_w
+            lines = [[(x * fit, y) for x, y in pl] for pl in lines]
+            min_x, max_x = _bbox()
+            actual_w = max_x - min_x
+        if align == "fill" and actual_w > 1e-9:
+            # Non-uniform x-stretch to span the padded slot.
+            sx = text_w / actual_w
+            lines = [[(text_left + (x - min_x) * sx, y) for x, y in pl] for pl in lines]
+        elif align == "left":
+            dx = text_left - min_x
+            if dx != 0.0:
+                lines = [[(x + dx, y) for x, y in pl] for pl in lines]
+        else:  # right (default): glyph bbox ends exactly at the padded edge
+            dx = text_right - max_x
+            if dx != 0.0:
+                lines = [[(x + dx, y) for x, y in pl] for pl in lines]
 
-    # Anchor the line's bbox bottom just inside the bottom margin.
+        # Anchor the line's bbox bottom just inside the bottom margin.
+        ys = [y for pl in lines for _, y in pl]
+        lines = [[(x, y + (page_h - margin_mm - max(ys))) for x, y in pl] for pl in lines]
+        m = _strip_metrics(text, height_mm=height_mm, font=font)
+        if m is not None:
+            _, pad, gap = m
+    return {
+        "lines": lines, "warnings": warnings,
+        "inner_left": inner_left, "inner_right": inner_right,
+        "page_h": page_h, "margin_mm": margin_mm,
+        "pad": pad, "gap": gap,
+    }
+
+
+def label_cover_zone(
+    text: str,
+    *,
+    height_mm: float,
+    align: str,
+    page_w: float,
+    page_h: float,
+    margin_mm: float,
+    font: str = DEFAULT_FONT,
+    border: bool = True,
+    pad_left_mm: float = 0.0,
+    pad_right_mm: float = 0.0,
+    halo_mm: float = 1.0,
+) -> tuple[float, float, float, float] | None:
+    """Map-exclusion zone for the title block: text that plots over map lines
+    is unreadable, and a pen cannot print white — so the zone reads as the
+    label's background. Bordered: the full-width strip from the divider down
+    to the bottom margin (frame verticals meeting it keep clean T-junctions).
+    Borderless: the text bbox plus a small halo. None when the label itself
+    is a no-op (same empty-text rule as the draw).
+    """
+    plan = _plan_label(
+        text, height_mm=height_mm, align=align, page_w=page_w,
+        page_h=page_h, margin_mm=margin_mm, font=font,
+        pad_left_mm=pad_left_mm, pad_right_mm=pad_right_mm,
+    )
+    lines = plan["lines"]
+    if not lines:
+        return None
+    if border:
+        ys = [y for pl in lines for _, y in pl]
+        divider_y = max(min(ys) - plan["gap"] - plan["pad"], margin_mm)
+        return (plan["inner_left"], divider_y, plan["inner_right"], page_h - margin_mm)
+    xs = [x for pl in lines for x, _ in pl]
     ys = [y for pl in lines for _, y in pl]
-    lines = [[(x, y + (page_h - margin_mm - max(ys))) for x, y in pl] for pl in lines]
+    halo = max(halo_mm, 0.0)
+    return (
+        max(min(xs) - halo, margin_mm),
+        max(min(ys) - halo, margin_mm),
+        min(max(xs) + halo, page_w - margin_mm),
+        min(max(ys) + halo, page_h - margin_mm),
+    )
 
+def render_label(
+    text: str,
+    *,
+    height_mm: float,
+    align: str,
+    page_w: float,
+    page_h: float,
+    margin_mm: float,
+    font: str = DEFAULT_FONT,
+    border: bool = True,
+    pad_left_mm: float = 0.0,
+    pad_right_mm: float = 0.0,
+    border_radius_mm: float = DEFAULT_BORDER_RADIUS_MM,
+) -> tuple[list[Polyline], list[str]]:
+    """Lay out one line of label text in mm space. See module docstring."""
+    plan = _plan_label(
+        text, height_mm=height_mm, align=align, page_w=page_w,
+        page_h=page_h, margin_mm=margin_mm, font=font,
+        pad_left_mm=pad_left_mm, pad_right_mm=pad_right_mm,
+    )
+    lines, warnings = plan["lines"], plan["warnings"]
+    if not lines:
+        return [], warnings
+    inner_left, inner_right = plan["inner_left"], plan["inner_right"]
     if border:
         # Blueprint title-block strip: lift the text off the frame bottom,
         # then span a divider across the full inner width so it lands exactly
-        # on the left/right frame verticals. pad/gap come from _strip_metrics
-        # so label_reserve_mm (image-area reservation) always agrees.
-        m = _strip_metrics(text, height_mm=height_mm, font=font)
-        assert m is not None  # lines non-empty implies drawable glyphs
-        _, pad, gap = m
+        # on the left/right frame verticals. pad/gap come from the shared
+        # plan so label_reserve_mm (image-area reservation) always agrees.
+        pad, gap = plan["pad"], plan["gap"]
         lines = [[(x, y - gap) for x, y in pl] for pl in lines]
         xs = [x for pl in lines for x, _ in pl]
         ys = [y for pl in lines for _, y in pl]

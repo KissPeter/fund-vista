@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+import re
+
 from backend.penplot import stats_table
 from backend.tests.helpers import default_params, png_bytes, upload
 
@@ -134,3 +137,90 @@ def test_stats_table_invalid_position_422(http_client):
     resp = _convert(http_client, image_id, params)
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "invalid_params"
+
+
+def _paths(svg_text):
+    return re.findall(r"<path d=\"([^\"]+)\"/>", svg_text)
+
+
+def _pts(d):
+    nums = [float(v) for v in re.findall(r"(-?[\d.]+)", d)]
+    return list(zip(nums[0::2], nums[1::2]))
+
+
+def test_cover_zone_is_border_plus_pads():
+    rows = [("highways", 1026), ("roads", 16404)]
+    kw = dict(position="bottom-right", page_w=210.0, page_h=297.0,
+              margin_mm=10.0, pad_left_mm=2.0, pad_right_mm=3.0,
+              pad_top_mm=4.0, pad_bottom_mm=5.0)
+    drawn, _ = stats_table.render_stats_table(rows, **kw)
+    zone = stats_table.table_cover_zone(rows, **kw)
+    assert zone is not None
+    zx0, zy0, zx1, zy1 = zone
+    # Drawn border corners sit exactly pads inside the zone edges.
+    bx = [x for pl in drawn[:1] for x, _ in pl]
+    by = [y for pl in drawn[:1] for _, y in pl]
+    assert min(bx) - zx0 == 2.0 and zx1 - max(bx) == 3.0
+    assert min(by) - zy0 == 4.0 and zy1 - max(by) == 5.0
+    # Every drawn table stroke lives inside the zone (boundary inclusive).
+    for pl in drawn:
+        for x, y in pl:
+            assert zx0 - 1e-9 <= x <= zx1 + 1e-9
+            assert zy0 - 1e-9 <= y <= zy1 + 1e-9
+
+
+def test_cover_zone_empty_is_none():
+    assert stats_table.table_cover_zone(
+        [], position="top-right", page_w=210.0, page_h=297.0, margin_mm=10.0,
+    ) is None
+
+
+DIAG = "\n".join(
+    f'<path d="M 0 {y} L 210 {y}" stroke="#000000" fill="none"/>'
+    for y in list(range(0, 298, 5)) + [297]
+)
+COMB = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="210" height="297">'
+    + DIAG + "</svg>"
+).encode()
+
+
+def test_table_knocks_map_out_of_zone_over_http(http_client):
+    """The table reads as if it had a background: comb teeth crossing its
+    zone are cut at the edges. Survivors inside the zone must all be table
+    furniture (border/dividers/text, taken from the draw call itself, so the
+    assertion can never mistake the table for a street)."""
+    table_kw = dict(position="bottom-right", pad_left_mm=10.0, pad_top_mm=8.0)
+    rows = [("highways", 1026), ("roads", 16404)]
+    drawn, _ = stats_table.render_stats_table(
+        rows, page_w=210.0, page_h=297.0, margin_mm=10.0, **table_kw)
+    furniture = {(round(x, 2), round(y, 2)) for pl in drawn for x, y in pl}
+    zone = stats_table.table_cover_zone(
+        rows, page_w=210.0, page_h=297.0, margin_mm=10.0, **table_kw)
+    assert zone is not None
+    x0, y0, x1, y1 = zone
+
+    def unexplained(svg_text):
+        bad = []
+        for d in _paths(svg_text):
+            pts = _pts(d)
+            inside = [(x, y) for x, y in pts if x0 < x < x1 and y0 < y < y1]
+            if not inside:
+                continue
+            xs = [x for x, _ in pts]
+            ys = [y for _, y in pts]
+            if math.hypot(max(xs) - min(xs), max(ys) - min(ys)) < 8.0:
+                continue  # glyph-scale furniture
+            if all(min(math.hypot(x - fx, y - fy) for fx, fy in furniture) <= 0.15
+                   for x, y in inside):
+                continue  # border/dividers
+            bad.append(d)
+        return bad
+
+    image_id = upload(http_client, COMB, "v.svg").json()["image_id"]
+    plain = _convert(http_client, image_id, default_params("contour")).json()
+    tabled = _convert(
+        http_client, image_id,
+        _tabled(default_params("contour"), **table_kw)).json()
+    assert unexplained(http_client.get(plain["svg_url"]).text) != []
+    assert unexplained(http_client.get(tabled["svg_url"]).text) == []

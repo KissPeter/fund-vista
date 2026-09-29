@@ -285,6 +285,23 @@ def run_convert(
                 border_radius_mm=params.label.border_radius_mm,
             )
             warnings.extend(lab_warnings)
+            # Title-block exclusion zone: a pen cannot print white, so the
+            # strip the label sits in is knocked out of the artwork — the
+            # zone reads as the label's background on screen and as clear
+            # paper on the plot.
+            lab_zone = labels.label_cover_zone(
+                params.label.text,
+                height_mm=params.label.height_mm,
+                align=params.label.align,
+                page_w=page_w, page_h=page_h,
+                margin_mm=params.page.margin_mm,
+                font=params.label.font,
+                border=params.label.border,
+                pad_left_mm=params.label.pad_left_mm,
+                pad_right_mm=params.label.pad_right_mm,
+            )
+            if lab_zone is not None:
+                laid = stats_table.exclude_rect(laid, lab_zone)
             _timed("label", image_id, method_label, t0)
         else:
             lab_lines = []

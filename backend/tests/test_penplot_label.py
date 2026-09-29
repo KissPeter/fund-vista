@@ -73,6 +73,56 @@ def test_empty_text_is_noop_and_unknown_chars_warn():
     assert any(w.startswith("label_unsupported_characters") for w in warnings)
 
 
+def test_cover_zone_matches_drawn_strip():
+    lines, _ = labels.render_label(
+        "AB", height_mm=5.0, align="right",
+        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+        border=True, border_radius_mm=0.0,
+    )
+    divider = lines[-2]
+    zone = labels.label_cover_zone(
+        "AB", height_mm=5.0, align="right",
+        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+        border=True,
+    )
+    assert zone is not None
+    # Full-width strip: divider line is the zone's top edge, bottom margin
+    # the bottom edge — the drawn text sits strictly inside.
+    assert zone == (MARGIN, divider[0][1], PAGE_W - MARGIN, PAGE_H - MARGIN)
+    for pl in lines[:-2]:  # text only (divider/frame live on the boundary)
+        for x, y in pl:
+            assert MARGIN <= x <= PAGE_W - MARGIN
+            assert divider[0][1] < y < PAGE_H - MARGIN
+
+
+def test_cover_zone_borderless_is_text_halo():
+    lines, _ = labels.render_label(
+        "AB", height_mm=5.0, align="left",
+        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+        border=False,
+    )
+    zone = labels.label_cover_zone(
+        "AB", height_mm=5.0, align="left",
+        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+        border=False, halo_mm=1.0,
+    )
+    assert zone is not None
+    x0, _, x1, _ = _bbox(lines)
+    _, y0, _, y1 = _bbox(lines)
+    # Halo around the text, clamped to the margins (never eats the frame).
+    assert zone == (max(x0 - 1.0, MARGIN), max(y0 - 1.0, MARGIN),
+                    min(x1 + 1.0, PAGE_W - MARGIN),
+                    min(y1 + 1.0, PAGE_H - MARGIN))
+
+
+def test_cover_zone_empty_is_none():
+    assert labels.label_cover_zone(
+        "   ", height_mm=5.0, align="right",
+        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+        border=True,
+    ) is None
+
+
 def test_border_draws_title_block_strip():
     plain, _ = labels.render_label(
         "AB", height_mm=5.0, align="right",
@@ -455,3 +505,11 @@ def test_solid_panorama_stays_above_divider_over_http(http_client):
             spanning += 1
     # Only the page frame spans the divider; nothing overflows the strip.
     assert spanning == 1
+
+
+# NOTE: no HTTP knockout test for the label — layout reserves the title
+# strip from the image area (label_reserve_mm), so artwork never enters the
+# zone in the first place; the covered behavior is asserted by the zone
+# geometry tests above plus the existing strip-separation test. The zone
+# exists as belt-and-braces (and for future non-bottom placements),
+# mirroring the stats-table pattern.
