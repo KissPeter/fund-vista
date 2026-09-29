@@ -302,8 +302,9 @@ def run_convert(
         # strip instead of sliding under it.
         table_lines: list = []
         if params.stats_table.enabled and params.stats_table.rows:
+            table_rows = [(r.key, r.value) for r in params.stats_table.rows]
             table_lines, table_warnings = stats_table.render_stats_table(
-                [(r.key, r.value) for r in params.stats_table.rows],
+                table_rows,
                 position=params.stats_table.position,
                 page_w=page_w, page_h=page_h,
                 margin_mm=params.page.margin_mm,
@@ -314,6 +315,22 @@ def run_convert(
                 pad_bottom_mm=params.stats_table.pad_bottom_mm,
             )
             warnings.extend(table_warnings)
+            # Table exclusion zone (border + pads): image geometry inside is
+            # knocked out so the table never overplots the map — the pads
+            # read as clear space on every side.
+            zone = stats_table.table_cover_zone(
+                table_rows,
+                position=params.stats_table.position,
+                page_w=page_w, page_h=page_h,
+                margin_mm=params.page.margin_mm,
+                reserve_bottom_mm=reserve_bottom_mm,
+                pad_left_mm=params.stats_table.pad_left_mm,
+                pad_right_mm=params.stats_table.pad_right_mm,
+                pad_top_mm=params.stats_table.pad_top_mm,
+                pad_bottom_mm=params.stats_table.pad_bottom_mm,
+            )
+            if zone is not None:
+                laid = stats_table.exclude_rect(laid, zone)
         t0 = time.perf_counter()
         # Merge domains separately: a joint linemerge would fuse image strokes
         # into divider/frame across the strip gap at high tolerances, dragging

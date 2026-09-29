@@ -16,6 +16,8 @@ label strip (``reserve_bottom_mm``) instead of sliding under it.
 
 from __future__ import annotations
 
+import math
+
 from backend.penplot.hershey_fonts import FACES
 from backend.penplot.methods import Polyline
 
@@ -71,7 +73,7 @@ def _text_lines(text: str, height_mm: float) -> tuple[list[Polyline], float, lis
     return lines, cursor, warnings
 
 
-def render_stats_table(
+def _plan_table(
     rows: list[tuple[str, int]],
     *,
     position: str,
@@ -83,18 +85,17 @@ def render_stats_table(
     pad_right_mm: float = 0.0,
     pad_top_mm: float = 0.0,
     pad_bottom_mm: float = 0.0,
-) -> tuple[list[Polyline], list[str]]:
-    """Lay out the stats table in mm space. See module docstring.
+) -> dict | None:
+    """Shared table geometry: border origin/size, fit, and laid-out text.
 
-    ``rows`` are (raw layer key, path count) pairs — already filtered to
-    non-zero layers by the caller. ``position`` is one of ``top-left``,
-    ``top-right``, ``bottom-left``, ``bottom-right`` (anything else falls
-    back to ``top-right``).
+    Returns None for empty rows (silent no-op). One source for both the
+    drawn strokes (``render_stats_table``) and the map-exclusion zone
+    (``table_cover_zone``) so they can never disagree.
     """
     warnings: list[str] = []
-    cells = [( _display_key(key), str(value)) for key, value in rows[:MAX_ROWS]]
+    cells = [(_display_key(key), str(value)) for key, value in rows[:MAX_ROWS]]
     if not cells:
-        return [], warnings
+        return None
 
     key_widths: list[float] = []
     val_widths: list[float] = []
@@ -112,7 +113,7 @@ def render_stats_table(
         key_widths.append(key_w)
         val_widths.append(val_w)
     if not any(key_widths) and not any(val_widths):
-        return [], warnings
+        return None
     if text_h <= 1e-9:
         text_h = HEIGHT_MM
 
@@ -139,6 +140,153 @@ def render_stats_table(
     ) else "top-right"
     x0 = inner_left if pos.endswith("left") else inner_right - table_w * fit
     y0 = inner_top if pos.startswith("top") else inner_bottom - table_h * fit
+    return {
+        "warnings": warnings, "cells": cells, "text_blocks": text_blocks,
+        "text_h": text_h, "col0": col0, "row_h": row_h,
+        "table_w": table_w, "table_h": table_h, "fit": fit,
+        "x0": x0, "y0": y0,
+    }
+
+
+def table_cover_zone(
+    rows: list[tuple[str, int]],
+    *,
+    position: str,
+    page_w: float,
+    page_h: float,
+    margin_mm: float,
+    reserve_bottom_mm: float = 0.0,
+    pad_left_mm: float = 0.0,
+    pad_right_mm: float = 0.0,
+    pad_top_mm: float = 0.0,
+    pad_bottom_mm: float = 0.0,
+) -> tuple[float, float, float, float] | None:
+    """Map-exclusion zone for the table: border rect expanded by the pads.
+
+    Image geometry inside is knocked out by the pipeline so the table never
+    overplots the map — the pads read as clear space on every side. None
+    when the table itself is a no-op (same empty-rows rule as the draw).
+    """
+    plan = _plan_table(
+        rows, position=position, page_w=page_w, page_h=page_h,
+        margin_mm=margin_mm, reserve_bottom_mm=reserve_bottom_mm,
+        pad_left_mm=pad_left_mm, pad_right_mm=pad_right_mm,
+        pad_top_mm=pad_top_mm, pad_bottom_mm=pad_bottom_mm,
+    )
+    if plan is None:
+        return None
+    fit = plan["fit"]
+    x0 = plan["x0"] - max(pad_left_mm, 0.0)
+    y0 = plan["y0"] - max(pad_top_mm, 0.0)
+    x1 = plan["x0"] + plan["table_w"] * fit + max(pad_right_mm, 0.0)
+    y1 = plan["y0"] + plan["table_h"] * fit + max(pad_bottom_mm, 0.0)
+    return (x0, y0, x1, y1)
+
+
+def exclude_rect(
+    polylines: list[list[tuple[float, float]]],
+    rect: tuple[float, float, float, float],
+) -> list[list[tuple[float, float]]]:
+    """Drop the parts of polylines falling inside an axis-aligned rect.
+
+    Segment-exact (Liang-Barsky complement): runs outside the rect survive
+    as split polylines, so streets crossing the zone visibly stop at its
+    edge instead of vanishing whole. Points exactly on the edge count as
+    outside (stable across quantize).
+    """
+    x0, y0, x1, y1 = rect
+    kept: list[list[tuple[float, float]]] = []
+    for pts in polylines:
+        if len(pts) < 2:
+            continue
+        cur: list[tuple[float, float]] = []
+
+        def flush() -> None:
+            if len(cur) > 1:
+                kept.append(cur)
+
+        for p0, p1 in zip(pts, pts[1:]):
+            # Inside-interval of this segment (Liang-Barsky); None when
+            # fully outside.
+            dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+            t0, t1 = 0.0, 1.0
+            valid = True
+            for p, q in ((-dx, p0[0] - x0), (dx, x1 - p0[0]),
+                         (-dy, p0[1] - y0), (dy, y1 - p0[1])):
+                if abs(p) < 1e-12:
+                    if q < 0.0:
+                        valid = False
+                        break
+                else:
+                    r = q / p
+                    if p < 0.0:
+                        t0 = max(t0, r)
+                    else:
+                        t1 = min(t1, r)
+                    if t0 > t1:
+                        valid = False
+                        break
+            # Kept sub-runs: complement of the inside-interval. Fully
+            # outside keeps the whole segment (chains); fully inside keeps
+            # nothing (flushes the open run across the gap).
+            parts = [(0.0, 1.0)] if not valid else [
+                (a, b) for a, b in ((0.0, t0), (t1, 1.0)) if b - a >= 1e-9
+            ]
+            if not parts:
+                flush()
+                cur = []
+                continue
+            for a, b in parts:
+                q0 = (p0[0] + a * dx, p0[1] + a * dy)
+                q1 = (p0[0] + b * dx, p0[1] + b * dy)
+                if cur and math.hypot(q0[0] - cur[-1][0], q0[1] - cur[-1][1]) <= 1e-9:
+                    cur.append(q1)
+                else:
+                    flush()
+                    cur = [q0, q1]
+        flush()
+    return kept
+
+
+def render_stats_table(
+    rows: list[tuple[str, int]],
+    *,
+    position: str,
+    page_w: float,
+    page_h: float,
+    margin_mm: float,
+    reserve_bottom_mm: float = 0.0,
+    pad_left_mm: float = 0.0,
+    pad_right_mm: float = 0.0,
+    pad_top_mm: float = 0.0,
+    pad_bottom_mm: float = 0.0,
+) -> tuple[list[Polyline], list[str]]:
+    """Lay out the stats table in mm space. See module docstring.
+
+    ``rows`` are (raw layer key, path count) pairs — already filtered to
+    non-zero layers by the caller. ``position`` is one of ``top-left``,
+    ``top-right``, ``bottom-left``, ``bottom-right`` (anything else falls
+    back to ``top-right``).
+    """
+    plan = _plan_table(
+        rows, position=position, page_w=page_w, page_h=page_h,
+        margin_mm=margin_mm, reserve_bottom_mm=reserve_bottom_mm,
+        pad_left_mm=pad_left_mm, pad_right_mm=pad_right_mm,
+        pad_top_mm=pad_top_mm, pad_bottom_mm=pad_bottom_mm,
+    )
+    if plan is None:
+        return [], []
+    warnings = list(plan["warnings"])
+    cells = plan["cells"]
+    text_blocks = plan["text_blocks"]
+    text_h = plan["text_h"]
+    col0 = plan["col0"]
+    row_h = plan["row_h"]
+    table_w = plan["table_w"]
+    table_h = plan["table_h"]
+    fit = plan["fit"]
+    x0 = plan["x0"]
+    y0 = plan["y0"]
 
     def _map(x: float, y: float) -> tuple[float, float]:
         return (x0 + x * fit, y0 + y * fit)
