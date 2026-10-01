@@ -49,7 +49,7 @@ class PageParams(BaseModel):
 
 LabelAlign = Literal["left", "right", "fill"]
 LabelFont = Literal[
-    "futural", "futuram", "simplex",
+    "znikoslsvginot", "futural", "futuram", "simplex",
     "excalifont", "comic-shanns", "nunito",
 ]
 
@@ -72,7 +72,7 @@ class LabelParams(BaseModel):
     text: str = Field(default="", max_length=120)
     align: LabelAlign = "right"
     height_mm: float = Field(default=5.0, gt=0.0, le=25.0)
-    font: LabelFont = "futural"
+    font: LabelFont = "znikoslsvginot"
     border: bool = True
     border_radius_mm: float = Field(
         default=2.0, ge=0.0, le=20.0,

@@ -18,10 +18,11 @@ from __future__ import annotations
 
 from backend.penplot.hershey_fonts import FACES
 from backend.penplot.methods import Polyline
+from backend.penplot.svgfont import FONT_ID as SVG_FONT_ID, get_svg_face
 
 WARNING_UNSUPPORTED = "stats_table_unsupported_characters"
 
-FONT = "futural"
+FONT = SVG_FONT_ID
 #: Glyph height of the table cells.
 HEIGHT_MM = 3.0
 #: Horizontal breathing room between cell text and the column rules.
@@ -45,7 +46,10 @@ def _text_lines(text: str, height_mm: float) -> tuple[list[Polyline], float, lis
     Returns (polylines, advance_width, warnings); unsupported characters
     are skipped and reported once via ``stats_table_unsupported_characters``.
     """
-    face = FACES[FONT]
+    if FONT == SVG_FONT_ID:
+        face = get_svg_face()
+    else:
+        face = FACES[FONT]
     cap_height, space_advance, glyphs = (
         face["cap_height"], face["space_advance"], face["glyphs"],
     )
