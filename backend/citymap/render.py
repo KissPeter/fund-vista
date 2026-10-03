@@ -2,10 +2,13 @@
 
 Lon/lat polylines are projected with an equirectangular approximation
 around the bbox center (the same flat-plane idea as city-roads' Grid —
-good to ~1% over a metro area) and fitted into ``width`` user units. Each
-requested layer becomes one ``<g id="citymap-<layer>">`` of stroked paths;
-area layers (buildings, water, aeroway) emit closed outlines, everything
-else open polylines. Fills are always ``none`` so the output plots cleanly.
+good to ~1% over a metro area) and drawn into a ``width``-wide canvas
+framed on the *bbox* — never on the data extent — so enabling another
+layer can add paths but never moves or rescales the ones already drawn
+(the layer-toggle view-area bug). Each requested layer becomes one
+``<g id="citymap-<layer>">`` of stroked paths; area layers (buildings,
+water, aeroway) emit closed outlines, everything else open polylines.
+Fills are always ``none`` so the output plots cleanly.
 
 The output is chrome-free by construction: no location caption, no
 attribution comment. (For SVGs exported by the upstream city-roads app,
@@ -15,12 +18,29 @@ lives in the API response metadata instead (``attribution`` field).
 
 from __future__ import annotations
 
+import functools
+import hashlib
+import inspect
 import math
+import sys
 
 from backend.citymap.overpass import BBox
 
 # Layers whose closed rings are outlines of areas (emit a closing Z).
 AREA_LAYERS = frozenset({"buildings", "water", "aeroway"})
+
+
+@functools.lru_cache(maxsize=1)
+def render_source_version() -> str:
+    """Version of the rendered output, baked into the SVG cache key so
+    clients never see art drawn under an older framing.
+
+    Content hash of this file's own source (same convention as the
+    airports renderer): EVERY code change busts the cache automatically,
+    no manual bump to forget."""
+    return hashlib.sha1(
+        inspect.getsource(sys.modules[__name__]).encode("utf-8")
+    ).hexdigest()[:12]
 
 _M_PER_DEG_LAT = 110540.0
 _M_PER_DEG_LON_EQUATOR = 111320.0
@@ -101,30 +121,45 @@ def render_svg(
     ``min_path_len_m`` meters are dropped (the city-roads ``minLength``
     pen-plotter option, but in meters instead of pixels).
 
+    Framing contract: the canvas dimensions and the plane-meter → SVG
+    mapping derive from the *bbox*, never from the data extent — the same
+    bbox always yields the same frame and the same coordinates for the
+    same geometry, whatever the layer set (a layer toggle only adds or
+    removes paths). Content spilling past the frame — Overpass pulls whole
+    ways, so edge ways overhang — is clipped to it (Liang-Barsky,
+    splitting into kept runs).
+
     ``cancelled`` is an optional ``() -> bool`` polled every ``cancel_every``
     polylines (P2 checkpoint 4). Raises ``ClientCancelled`` when it fires.
     """
     south, west, north, east = bbox
     lon0, lat0 = (west + east) / 2.0, (south + north) / 2.0
 
-    # Rotated picker view: bearing clockwise from north (SVG y grows
-    # downwards = south, so a screen-clockwise rotation is the standard
-    # matrix here). Content rotates by +bearing about the bbox center and
-    # clips to the framed viewport rect recovered from the bbox + aspect.
+    # Bearing clockwise from north (SVG y grows downwards = south, so a
+    # screen-clockwise rotation is the standard matrix here). Rotated
+    # content turns about the bbox center and clips to the framed viewport
+    # rect recovered from the bbox + aspect; north-up clips to the bbox
+    # rect itself. Both frames are content-independent (see above).
     bearing = bearing_deg % 360.0
     rotated = not (bearing < 1e-9 or bearing > 360.0 - 1e-9)
     if rotated and viewport_aspect is None:
         raise ValueError("'viewport_aspect' is required when 'bearing_deg' is non-zero.")
     theta = math.radians(bearing)
     cos_t, sin_t = math.cos(theta), math.sin(theta)
-    view_w = view_h = 0.0
+    span_x_m = (east - west) * _M_PER_DEG_LON_EQUATOR * math.cos(math.radians(lat0))
+    span_y_m = (north - south) * _M_PER_DEG_LAT
     if rotated:
-        span_x_m = (east - west) * _M_PER_DEG_LON_EQUATOR * math.cos(math.radians(lat0))
-        span_y_m = (north - south) * _M_PER_DEG_LAT
         u, v = abs(cos_t), abs(sin_t)
         a = viewport_aspect or 1.0
         view_h = 0.5 * (span_x_m / (a * u + v) + span_y_m / (a * v + u))
         view_w = a * view_h
+        fx0, fy0, fx1, fy1 = -view_w / 2.0, -view_h / 2.0, view_w / 2.0, view_h / 2.0
+    else:
+        # project() centers on the bbox midpoint, so the bbox rect is
+        # symmetric about the origin.
+        fx0, fy0, fx1, fy1 = (
+            -span_x_m / 2.0, -span_y_m / 2.0, span_x_m / 2.0, span_y_m / 2.0,
+        )
 
     def _is_cancelled() -> bool:
         try:
@@ -133,8 +168,6 @@ def render_svg(
             return False
 
     projected: dict[str, list[list[tuple[float, float]]]] = {}
-    min_x = min_y = math.inf
-    max_x = max_y = -math.inf
     seen = 0
     for layer in layers:
         polys: list[list[tuple[float, float]]] = []
@@ -152,33 +185,16 @@ def render_svg(
             if length < min_path_len_m:
                 continue
             if rotated:
-                rpts = [(x * cos_t - y * sin_t, x * sin_t + y * cos_t) for x, y in pts]
-                runs = _clip_polyline(rpts, -view_w / 2.0, -view_h / 2.0,
-                                      view_w / 2.0, view_h / 2.0)
-                polys.extend(runs)
-                for run in runs:
-                    for x, y in run:
-                        min_x, max_x = min(min_x, x), max(max_x, x)
-                        min_y, max_y = min(min_y, y), max(max_y, y)
-            else:
-                polys.append(pts)
-                for x, y in pts:
-                    min_x, max_x = min(min_x, x), max(max_x, x)
-                    min_y, max_y = min(min_y, y), max(max_y, y)
+                pts = [(x * cos_t - y * sin_t, x * sin_t + y * cos_t) for x, y in pts]
+            polys.extend(_clip_polyline(pts, fx0, fy0, fx1, fy1))
         projected[layer] = polys
 
-    if rotated:
-        # Exact viewport rect (no content scan): canvas aspect == picker aspect.
-        # Centered coords map with a negative offset (x + w/2, y + h/2).
-        scale = width / view_w
-        height = view_h * scale
-        off_x, off_y = -view_w / 2.0, -view_h / 2.0
-    else:
-        span_x = max(max_x - min_x, 1e-9)
-        span_y = max(max_y - min_y, 1e-9)
-        scale = width / span_x
-        height = span_y * scale
-        off_x, off_y = min_x, min_y
+    # Canvas and mapping come from the frame, never the content.
+    frame_w = max(fx1 - fx0, 1e-9)
+    frame_h = max(fy1 - fy0, 1e-9)
+    scale = width / frame_w
+    height = frame_h * scale
+    off_x, off_y = fx0, fy0
     stroke_w = max(0.5, width / 2000.0)
 
     parts = [
@@ -209,4 +225,4 @@ def render_svg(
     return "\n".join(parts) + "\n", counts
 
 
-__all__ = ["AREA_LAYERS", "project", "render_svg"]
+__all__ = ["AREA_LAYERS", "project", "render_source_version", "render_svg"]

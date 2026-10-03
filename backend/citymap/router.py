@@ -57,7 +57,7 @@ from backend.citymap.overpass import (
     wrap_query,
 )
 from backend.citymap.osm_api import OsmApiError, fetch_osm_api, merge_elements
-from backend.citymap.render import render_svg
+from backend.citymap.render import render_source_version, render_svg
 from backend.citymap.tiles import (
     assign_to_tiles,
     clip_elements,
@@ -477,8 +477,13 @@ def _render_keys(
     exists so an SVG hit costs two small reads instead of re-parsing a
     multi-MB payload and re-running ``split_elements`` purely to fill in
     numbers the renderer already computed once.
+
+    The renderer source version rides every key (same convention as the
+    airports diagram version): a framing change must never keep serving
+    art drawn under the old geometry.
     """
     parts = (
+        render_source_version(),
         bbox_str(bbox), ",".join(sorted(layers)),
         f"minlen={body.min_path_len_m}", f"width={body.width}",
     )

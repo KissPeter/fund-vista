@@ -2,9 +2,10 @@
 
 The whole scheme rests on one property: assembling a bbox out of cached
 tiles must yield exactly the element set a single query over that bbox
-would have returned. ``render_svg`` scales to the extent of the data rather
-than to the bbox, so one extra way on an edge silently rescales the entire
-drawing — a correctness bug that would look like a rendering glitch.
+would have returned. (``render_svg`` frames to the bbox rather than to
+the data extent, so a stray extra way can no longer rescale the drawing —
+but it would still draw a stray path, which is why the element set must
+match exactly.)
 """
 
 from __future__ import annotations
