@@ -8,6 +8,8 @@ The only HTTP cases hit local metadata/validation endpoints.
 from __future__ import annotations
 
 import asyncio
+import math
+import re
 
 from backend.citymap.cache import (
     cache_get,
@@ -143,6 +145,101 @@ def test_render_min_path_length_drops_short_paths():
     assert counts_all["roads"] == 1
     _, counts_filtered = render_svg(geoms, bbox, layers, min_path_len_m=1e9)
     assert counts_filtered["roads"] == 0
+
+
+def _viewbox_of(svg: str) -> tuple[float, float]:
+    """(width, height) from the root <svg> element."""
+    m = re.search(r'<svg[^>]*width="([\d.]+)"[^>]*height="([\d.]+)"', svg)
+    assert m, f"no svg root with width/height in: {svg[:200]}"
+    return float(m.group(1)), float(m.group(2))
+
+
+def _layer_paths(svg: str, layer: str) -> list[str]:
+    """Raw ``d`` strings of one layer group, in document order."""
+    group = re.search(
+        rf'<g id="citymap-{layer}"[^>]*>(.*?)</g>', svg, re.DOTALL
+    )
+    assert group, f"no citymap-{layer} group in svg"
+    return re.findall(r'<path d="([^"]+)"/>', group.group(1))
+
+
+def test_layer_toggle_keeps_the_framing_stable():
+    """Enabling a layer must not move the view area.
+
+    The reported bug: ``render_svg`` fitted the canvas to the data
+    extent, so a newly enabled layer reaching further than the old ones
+    silently rescaled and shifted every path already on screen. The
+    canvas and the mapping now derive from the bbox, so the shared
+    layer's artwork is byte-identical with and without the extra layer.
+    """
+    bbox = (47.541, 18.984, 47.592, 19.038)  # the reporter's viewport
+    highways = [[(18.990, 47.550), (19.000, 47.560)]]
+    rails = [[(19.020, 47.550), (19.035, 47.590)]]  # reaches further east
+    svg_before, _ = render_svg({"highways": highways}, bbox, ["highways"])
+    svg_after, counts = render_svg(
+        {"highways": highways, "rails": rails}, bbox, ["highways", "rails"]
+    )
+    assert counts["rails"] == 1, "the extra layer must actually draw"
+    assert _viewbox_of(svg_after) == _viewbox_of(svg_before)
+    assert _layer_paths(svg_after, "highways") == _layer_paths(svg_before, "highways")
+
+
+def test_north_up_clips_content_to_the_bbox_frame():
+    """Ways overhanging the bbox edge must not leak outside the canvas.
+
+    Overpass pulls whole ways, so edge ways carry nodes outside the
+    requested area; north-up clips them to the bbox rect exactly like a
+    rotated render clips to its viewport rect.
+    """
+    bbox = (47.45, 19.00, 47.55, 19.10)
+    geoms = {"roads": [[(18.90, 47.50), (19.20, 47.50)]]}  # well past both edges
+    svg, counts = render_svg(geoms, bbox, ["roads"])
+    assert counts["roads"] == 1
+    w, h = _viewbox_of(svg)
+    for d in _layer_paths(svg, "roads"):
+        for x, y in (
+            (float(a), float(b))
+            for a, b in re.findall(r"(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)", d)
+        ):
+            assert -0.5 <= x <= w + 0.5 and -0.5 <= y <= h + 0.5, (
+                f"north-up art escapes the frame: {x:.2f},{y:.2f} on {w:.1f}x{h:.1f}"
+            )
+
+
+def test_north_up_canvas_follows_the_bbox_not_the_content():
+    """A sparse render still fills the bbox-proportioned canvas."""
+    bbox = (47.45, 19.00, 47.55, 19.10)
+    svg, _ = render_svg({"roads": [[(19.04, 47.49), (19.06, 47.51)]]}, bbox, ["roads"])
+    w, h = _viewbox_of(svg)
+    assert w == 1000
+    # Canvas ratio is the bbox ratio in plane meters, not the data's
+    # (height is formatted to 1 decimal in the document).
+    span_x = 0.10 * 111320.0 * math.cos(math.radians(47.50))
+    span_y = 0.10 * 110540.0
+    assert abs(h - span_y * 1000.0 / span_x) < 0.1
+
+
+def test_render_keys_carry_the_renderer_version(monkeypatch):
+    """A renderer change must bust cached SVGs (framing fix included).
+
+    The key hashes its parts, so the version works by moving the digest:
+    same inputs under a different renderer source must miss, never hit
+    art drawn under the old geometry.
+    """
+    import backend.citymap.router as citymap_router
+    from backend.citymap.render import render_source_version
+    from backend.citymap.schemas import BBox as BBoxSchema
+    from backend.citymap.schemas import RenderRequest as CityRequest
+
+    version = render_source_version()
+    assert len(version) == 12 and all(c in "0123456789abcdef" for c in version)
+    bbox = (47.45, 19.00, 47.55, 19.10)
+    body = CityRequest(bbox=BBoxSchema(south=47.45, west=19.00, north=47.55, east=19.10),
+                       layers=["roads"])
+    svg_key, counts_key = citymap_router._render_keys(bbox, ["roads"], body)
+    monkeypatch.setattr(citymap_router, "render_source_version", lambda: "0" * 12)
+    svg_next, counts_next = citymap_router._render_keys(bbox, ["roads"], body)
+    assert svg_next != svg_key and counts_next != counts_key
 
 
 def test_layers_endpoint_lists_registry(http_client):

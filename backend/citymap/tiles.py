@@ -16,9 +16,10 @@ layer on reuses the layers already held.
 
 Exactness
 ---------
-``render_svg`` scales to the extent of the *data*, not to the bbox, so the
-tile set must reproduce exactly what a single Overpass query would have
-returned — an extra way on the edge would rescale the whole drawing.
+``render_svg`` frames to the *bbox*, not to the data extent, but the tile
+set must still reproduce exactly what a single Overpass query would have
+returned — an extra way on an edge would draw a stray path (and change
+the counts sidecar) depending on which tiles happened to be cached.
 
 Overpass selects a way when at least one of its nodes lies in the bbox, and
 ``>; out skel qt;`` then pulls in that way's remaining nodes (and, for a
