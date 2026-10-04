@@ -42,8 +42,8 @@ browser ──► https://penplot.linuxadm.hu/v1/* ──► nginx ──┬─�
 ```sh
 ssh -l root 192.168.0.240
 cd /opt/fund-vista && git pull origin main && git log --oneline -1
+docker tag fundvista:nas fundvista:nas-prev   # rollback = PREVIOUS image: tag BEFORE the build (tagging after would just alias the new image and lose the rollback)
 docker build -f Dockerfile.nas -t fundvista:nas .
-docker tag fundvista:nas fundvista:nas-prev   # rollback image
 docker stop fundvista && docker rm fundvista
 docker run -d --name fundvista --network fundvista-net \
   --restart unless-stopped -p 127.0.0.1:8100:8100 \
