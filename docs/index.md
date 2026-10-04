@@ -32,4 +32,5 @@ Doc: `docs/F-001-airport-diagrams.md`.
   rollback runbook (mirrors `.opencode/skills/deploy-nas/SKILL.md`).
 - `docs/ui-citymap.md` — `/citymap` Jinja page: controls, JS, backend.
 - `docs/ui-airports.md` — `/airports` Jinja page: controls, JS, backend.
+- `docs/REF-001-router-pipeline-refactor.md` — refactor plan (PLAN): router/pipeline extraction with the fix-once rule (domains stay separate, shared machinery + shared tests).
 - `docs/python-service-shop-changes.md` — pen-pixel work-order §§1–8 implementation record.
