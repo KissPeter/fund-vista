@@ -105,6 +105,40 @@ def test_bearing_270_also_draws_vertical():
     assert (y1 - y0) > (x1 - x0) * 20
 
 
+# --- rotation direction: content turns counter-clockwise as bearing grows -
+
+
+def test_bearing_direction_matches_maplibre_east_up():
+    # MapLibre bearing is the compass direction that is "up": at 90° east
+    # is up, so ground content turns counter-clockwise on screen as the
+    # bearing grows (turning your head right shifts the world left). A
+    # clockwise rotation passes every quarter-turn test above (90°/270°
+    # are symmetric) while visibly mirroring the picker at small angles,
+    # so pin the sign with a 10° tilt of an east-west street (SVG y grows
+    # downwards, so "east end up" reads as a smaller y).
+    svg, _ = render_svg(
+        _ew_street(), BBOX, LAYERS, bearing_deg=10, viewport_aspect=A4_LANDSCAPE
+    )
+    paths = _paths(svg)
+    assert len(paths) == 1
+    west_end, east_end = paths[0][0], paths[0][-1]
+    assert east_end[1] < west_end[1], (
+        f"bearing 10 should tilt the E-W street's east end up; got "
+        f"west_y={west_end[1]:.2f} east_y={east_end[1]:.2f}"
+    )
+    # Mirrored bearing mirrors the tilt.
+    svg2, _ = render_svg(
+        _ew_street(), BBOX, LAYERS, bearing_deg=350, viewport_aspect=A4_LANDSCAPE
+    )
+    paths2 = _paths(svg2)
+    assert len(paths2) == 1
+    west2, east2 = paths2[0][0], paths2[0][-1]
+    assert east2[1] > west2[1], (
+        f"bearing 350 should tilt the E-W street's east end down; got "
+        f"west_y={west2[1]:.2f} east_y={east2[1]:.2f}"
+    )
+
+
 # --- 45°: content is clipped to the framed viewport rect -----------------
 
 
