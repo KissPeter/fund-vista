@@ -135,16 +135,20 @@ def render_svg(
     south, west, north, east = bbox
     lon0, lat0 = (west + east) / 2.0, (south + north) / 2.0
 
-    # Bearing clockwise from north (SVG y grows downwards = south, so a
-    # screen-clockwise rotation is the standard matrix here). Rotated
-    # content turns about the bbox center and clips to the framed viewport
-    # rect recovered from the bbox + aspect; north-up clips to the bbox
-    # rect itself. Both frames are content-independent (see above).
+    # MapLibre bearing: the compass direction that is "up" — e.g. 90°
+    # orients the map so east is up, i.e. ground content turns
+    # COUNTER-clockwise on screen as the bearing grows (turning your head
+    # right makes the world shift left). SVG y grows downwards (= south),
+    # where the standard matrix [[cos,-sin],[sin,cos]] reads clockwise, so
+    # the artwork must rotate by MINUS the bearing. Rotated content turns
+    # about the bbox center and clips to the framed viewport rect recovered
+    # from the bbox + aspect; north-up clips to the bbox rect itself. Both
+    # frames are content-independent (see above).
     bearing = bearing_deg % 360.0
     rotated = not (bearing < 1e-9 or bearing > 360.0 - 1e-9)
     if rotated and viewport_aspect is None:
         raise ValueError("'viewport_aspect' is required when 'bearing_deg' is non-zero.")
-    theta = math.radians(bearing)
+    theta = math.radians(-bearing)
     cos_t, sin_t = math.cos(theta), math.sin(theta)
     span_x_m = (east - west) * _M_PER_DEG_LON_EQUATOR * math.cos(math.radians(lat0))
     span_y_m = (north - south) * _M_PER_DEG_LAT
