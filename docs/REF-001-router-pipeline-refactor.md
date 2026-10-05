@@ -1,6 +1,7 @@
 # REF-001 — Router/pipeline refactor plan (fix every bug once)
 
-Status: PLAN (accepted 2026-10-04). Work items land as separate branches/PRs.
+Status: PLAN (accepted 2026-10-04; reviewed 2026-10-05 against
+post-merge numbers — §5). Work items land as separate branches/PRs.
 
 ## 0. Why this exists
 
@@ -30,7 +31,7 @@ pen-pixel-shop (excl. the fund-vista submodule):
 | 1 | `src/components/custom/CitymapTab.tsx` | 830 | 59 | 48970 |
 | 2 | `src/components/custom/AirportTab.tsx` | 613 | 35 | 21455 |
 | 3 | `src/lib/shop.server.ts` | 868 | 16 | 13888 |
-| 4 | `src/lib/penplot.api.ts` | 690 | 15 | 10350 |
+| 4 | `src/lib/penplot.api.ts` | 690 | 16 | 11040 |
 | 5 | `src/lib/shop.functions.ts` | 612 | 16 | 9792 |
 
 (`sidebar.tsx` 745 lines × 2 touches and `imaging.py` 1118 × 2 are long
@@ -104,3 +105,38 @@ than grow its own. Take up only after the backend phases are done.
   test; no citymap-only fix accepted.
 - (C): both routers under ~400 lines, no duplicated pipeline, suites green.
 - (D): separate ticket after A–C.
+
+## 5. Review 2026-10-05 (post-merge numbers)
+
+Recomputed after the merge queue (#35 fund-vista; #869, #866, #859, #848,
+#858 shop — 6 merges). Rankings are unchanged in both repos: the two
+routers still lead fund-vista, the two designer tabs still lead shop by an
+order of magnitude (`CitymapTab` 830 × 59, `AirportTab` 613 × 35).
+`penplot.api.ts` moved 15 → 16 touches; nothing else in either top-5 moved.
+
+The queue itself validated the plan's premise (§1.2) three times over:
+
+- **TC-D33 claimed twice.** `#834` (preview fit) and the layer-framing
+  work both shipped a "TC-D33"; the later merges re-homed preview fit to
+  the free **TC-D34** (spec + doc row + mapping + execution-order refs).
+  Lesson: TC numbers are a shared namespace — check the free list before
+  writing the spec, not at merge time.
+- **One component, three authors.** `PageHeader` drew a `<header>` (#836),
+  an `<hgroup>` inner (#850), and a no-local-`.blueprint` rule (TC-X4)
+  from three branches; the merge keeps all three, and TC-X4's chrome
+  assertion is now scoped to the direct child (`:scope > header`) so
+  semantic title headers inside `<main>` stop tripping it.
+- **Stale-tree CI failures are environmental until proven otherwise.**
+  Twice a hermetic lane failed on a tree that was green on re-run with a
+  clean build (`reuseExistingServer: true` + old `.output`, stale `~/pps`
+  without `rm -rf`); e2e also MUST NOT run on the dev Mac (no browsers,
+  wrong server on :5173, policy `docs/e2e-environment.md` §Mac-local).
+  Diagnose from the job log first; never "verify" against the dev Mac.
+
+Open after the queue (NOT merged — red CI, owner decision pending):
+
+- `#844` (preview fit phase 1): red hermetic lane (#134, logs
+  unauthenticated from here); content superseded by merged #858 — close
+  as superseded or re-run CI to confirm.
+- `#852` (#845 phone viewport): red hermetic lane; overlaps #858's merged
+  phone cases — same treatment.
