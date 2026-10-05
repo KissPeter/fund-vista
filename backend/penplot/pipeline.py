@@ -21,6 +21,7 @@ from backend.penplot import stats_table
 from backend.penplot.backgrounds import get_background_data_uri
 from backend.penplot.config import Settings
 from backend.penplot.errors import PenPlotError, processing_failed
+from backend.penplot.knockout import knock_out
 from backend.penplot.methods import METHOD_REGISTRY, MethodContext
 from backend.penplot.optimize import (
     build_vpype_command,
@@ -302,7 +303,7 @@ def run_convert(
         # strip instead of sliding under it.
         table_lines: list = []
         if params.stats_table.enabled and params.stats_table.rows:
-            table_lines, table_warnings = stats_table.render_stats_table(
+            table_lines, table_warnings, table_keepout = stats_table.layout_stats_table(
                 [(r.key, r.value) for r in params.stats_table.rows],
                 position=params.stats_table.position,
                 page_w=page_w, page_h=page_h,
@@ -314,6 +315,10 @@ def run_convert(
                 pad_bottom_mm=params.stats_table.pad_bottom_mm,
             )
             warnings.extend(table_warnings)
+            if table_keepout is not None:
+                # The table is a cartouche: the map must not show through
+                # its text, borders or the inset strip around it.
+                laid = knock_out(laid, table_keepout)
         t0 = time.perf_counter()
         # Merge domains separately: a joint linemerge would fuse image strokes
         # into divider/frame across the strip gap at high tolerances, dragging
