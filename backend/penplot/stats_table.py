@@ -17,6 +17,7 @@ label strip (``reserve_bottom_mm``) instead of sliding under it.
 from __future__ import annotations
 
 from backend.penplot.hershey_fonts import FACES
+from backend.penplot.knockout import Rect
 from backend.penplot.methods import Polyline
 from backend.penplot.svgfont import FONT_ID as SVG_FONT_ID, get_svg_face
 
@@ -77,6 +78,15 @@ def _text_lines(text: str, height_mm: float) -> tuple[list[Polyline], float, lis
 
 def render_stats_table(
     rows: list[tuple[str, int]],
+    **kwargs: float | str,
+) -> tuple[list[Polyline], list[str]]:
+    """Lay out the stats table; see :func:`layout_stats_table` (drops the keep-out)."""
+    lines, warnings, _ = layout_stats_table(rows, **kwargs)  # type: ignore[arg-type]
+    return lines, warnings
+
+
+def layout_stats_table(
+    rows: list[tuple[str, int]],
     *,
     position: str,
     page_w: float,
@@ -87,8 +97,14 @@ def render_stats_table(
     pad_right_mm: float = 0.0,
     pad_top_mm: float = 0.0,
     pad_bottom_mm: float = 0.0,
-) -> tuple[list[Polyline], list[str]]:
+) -> tuple[list[Polyline], list[str], Rect | None]:
     """Lay out the stats table in mm space. See module docstring.
+
+    Returns ``(lines, warnings, keepout)``. ``keepout`` is the rectangle the
+    artwork must be knocked out of (``knockout.knock_out``): from the page
+    margin corner the table is anchored to, across the inset strip, to the far
+    edges of the table plus ``TABLE_GAP_MM`` — a clean cartouche. ``None`` when
+    nothing was drawn.
 
     ``rows`` are (raw layer key, path count) pairs — already filtered to
     non-zero layers by the caller. ``position`` is one of ``top-left``,
@@ -98,7 +114,7 @@ def render_stats_table(
     warnings: list[str] = []
     cells = [( _display_key(key), str(value)) for key, value in rows[:MAX_ROWS]]
     if not cells:
-        return [], warnings
+        return [], warnings, None
 
     key_widths: list[float] = []
     val_widths: list[float] = []
@@ -116,7 +132,7 @@ def render_stats_table(
         key_widths.append(key_w)
         val_widths.append(val_w)
     if not any(key_widths) and not any(val_widths):
-        return [], warnings
+        return [], warnings, None
     if text_h <= 1e-9:
         text_h = HEIGHT_MM
 
@@ -167,9 +183,19 @@ def render_stats_table(
             ys = [y for pl in block for _, y in pl]
             dy = top + (text_h - (max(ys) - min(ys))) / 2.0 - min(ys)
             lines.extend([[(_map(x + col_x, y + dy)) for x, y in pl] for pl in block])
+    # Keep-out: margin corner -> table far edge (+gap) on both axes.
+    t_x1 = x0 + table_w * fit
+    t_y1 = y0 + table_h * fit
+    area_bottom = page_h - margin_mm - max(reserve_bottom_mm, 0.0)
+    keepout: Rect = (
+        margin_mm if pos.endswith("left") else x0 - TABLE_GAP_MM,
+        margin_mm if pos.startswith("top") else y0 - TABLE_GAP_MM,
+        t_x1 + TABLE_GAP_MM if pos.endswith("left") else page_w - margin_mm,
+        t_y1 + TABLE_GAP_MM if pos.startswith("top") else area_bottom,
+    )
     # Deduplicate warnings (one row per layer keeps them nearly unique anyway).
     seen: list[str] = []
     for w in warnings:
         if w not in seen:
             seen.append(w)
-    return lines, seen
+    return lines, seen, keepout
