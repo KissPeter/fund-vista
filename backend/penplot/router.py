@@ -36,6 +36,7 @@ from backend.penplot.schemas import (
     ConvertStats,
     HealthResponse,
     ImageMetaResponse,
+    ResultMetaResponse,
     RetainResponse,
     TokenRequest,
     TokenResponse,
@@ -381,6 +382,34 @@ async def get_result(filename: str) -> Response:
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
         )
     return Response(content=svg, media_type="image/svg+xml")
+
+
+@router.get("/results/{filename}/meta", response_model=ResultMetaResponse,
+            dependencies=[Depends(require_rate_limit)])
+async def get_result_meta(filename: str) -> ResultMetaResponse | JSONResponse:
+    """Stored convert stats (pen-down length, plot time, …) for a result file.
+
+    The shop reads this server-side to price a design from what the plotter
+    will actually do, and the designer reads the same endpoint for the live
+    price. Same filename gate as the SVG route: server-generated names only.
+    """
+    if not filename.endswith("_optimized.svg") or "/" in filename or "\\" in filename:
+        return _error_response(
+            HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
+        )
+    meta = store.get_result_meta(filename)
+    if meta is None or not store.has_result(filename):
+        return _error_response(
+            HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
+        )
+    try:
+        return ResultMetaResponse(
+            stats=ConvertStats(**meta["stats"]), warnings=list(meta.get("warnings", []))
+        )
+    except (KeyError, TypeError, ValueError):
+        return _error_response(
+            HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
+        )
 
 
 @router.post("/tokens", response_model=TokenResponse,

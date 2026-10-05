@@ -308,6 +308,13 @@ class ConvertResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class ResultMetaResponse(BaseModel):
+    """Stats of a stored convert result — the shop prices a design from these."""
+
+    stats: ConvertStats
+    warnings: list[str] = Field(default_factory=list)
+
+
 class TokenRequest(BaseModel):
     """Mint a signed design token for a known image (shop bridge, §2)."""
 
