@@ -12,7 +12,20 @@ const setStatus = (msg, cls) => { statusEl.textContent = msg; statusEl.className
 
 function readParams() {
   const num = (id) => parseFloat($(id).value);
+  // Technical-drawing controls exist on /penplot only (citymap/airports share
+  // this block), so read them when present and otherwise leave the defaults.
+  const drawing = $("ocr_enabled") ? {
+    thin_lines: $("thin_lines").checked,
+    circles: $("circles").checked,
+    trace_upscale: parseInt($("trace_upscale").value, 10),
+    ocr_text: {
+      enabled: $("ocr_enabled").checked,
+      min_conf: num("ocr_min_conf"),
+      min_chars: parseInt($("ocr_min_chars").value, 10),
+    },
+  } : {};
   return {
+    ...drawing,
     methods: ["contour", "centerline", "hatch", "flow"].filter((m) => $("m_" + m).checked),
     threshold: parseInt($("threshold").value, 10),
     blur_radius: num("blur_radius"),
@@ -174,3 +187,31 @@ $("resetBtn").addEventListener("click", () => {
   syncOutputs();
   scheduleConvert();
 });
+
+// "Technical drawing" preset (/penplot only): one click sets the same values the
+// img2plot CLI uses (server-injected from drawing.DRAWING_PRESET), so a result
+// made locally can be reproduced here.
+if ($("presetDrawingBtn")) {
+  $("presetDrawingBtn").addEventListener("click", () => {
+    const p = JSON.parse($("drawingPreset").textContent);
+    const setVal = (id, v) => { if ($(id) !== null && v !== undefined) $(id).value = v; };
+    const setChk = (id, v) => { if ($(id) !== null && v !== undefined) $(id).checked = !!v; };
+    ["contour", "centerline", "hatch", "flow"].forEach((m) => setChk("m_" + m, (p.methods || []).includes(m)));
+    ["threshold", "blur_radius", "contour_simplify", "centerline_prune_px", "curve_smooth", "trace_upscale"]
+      .forEach((k) => setVal(k, p[k]));
+    setChk("thin_lines", p.thin_lines);
+    setChk("circles", p.circles);
+    const o = p.ocr_text || {};
+    if (!$("ocr_enabled").disabled) setChk("ocr_enabled", o.enabled);
+    setVal("ocr_min_conf", o.min_conf);
+    setVal("ocr_min_chars", o.min_chars);
+    const pg = p.page || {};
+    setVal("page_size", pg.size);
+    setVal("page_orientation", pg.orientation);
+    setVal("page_margin_mm", pg.margin_mm);
+    setVal("page_padding_mm", pg.padding_mm);
+    setChk("page_frame", pg.frame);
+    syncOutputs();
+    scheduleConvert();
+  });
+}

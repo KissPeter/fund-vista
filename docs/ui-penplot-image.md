@@ -72,6 +72,21 @@ warnings, vpype recipe, download link).
 | `page_frame` checkbox, `page_frame_radius_mm` 0–20 | `page.frame`, `page.frame_radius_mm` | Whole-page rounded border. |
 | `draw_speed_mm_s` 5–200, `travel_speed_mm_s` 10–500, `pen_lift_s` 0–2 | `pen.*` | Stats-only: estimated plot time (`pen_down/up_mm`, `estimated_time_s`). No geometry effect. |
 
+### 1b. Technical drawing — opt-in (`partials/_drawing.html`)
+
+All default off (the legacy convert path is untouched). Raster inputs only.
+Full write-up: `docs/F-005-technical-drawing.md`.
+
+| Control | Backend field | Function |
+|---|---|---|
+| `presetDrawingBtn` | — | Fills the form from `drawing.DRAWING_PRESET` (the same values the `img2plot` CLI uses) and converts. |
+| `ocr_enabled` | `ocr_text.enabled` | Read dimension labels and redraw them in ZnikoSL. Disabled (with a note) when the server has no OCR backend. |
+| `ocr_min_conf` 5–100 | `ocr_text.min_conf` | Reading agreement (%) needed to replace a label; weaker ones stay traced. |
+| `ocr_min_chars` 1–8 | `ocr_text.min_chars` | Shortest accepted reading (`7°` always passes). |
+| `circles` | `circles` | Hough + ring-support circle detection → exact circles (wheels, hubs). |
+| `thin_lines` | `thin_lines` | Binarise first, smooth the mask: keeps pale 1 px strokes. |
+| `trace_upscale` 1–3 | `trace_upscale` | Supersample before thinning (rounder curves); clamped to `PENPLOT_TRACE_MAX_PIXELS`. |
+
 ### 5. Label — title block (`partials/_label.html`)
 
 | Control | Backend field | Function |

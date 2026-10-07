@@ -137,6 +137,32 @@ class StatsTableParams(BaseModel):
     pad_bottom_mm: float = Field(default=0.0, ge=0.0, le=20.0)
 
 
+class OcrTextParams(BaseModel):
+    """Technical-drawing text: read printed labels (dimension numerals, slope
+    marks) and re-draw them in the ZnikoSL single-stroke face instead of
+    tracing the glyph outlines. Raster inputs only; needs the ``tesseract``
+    binary (degrades to a warning when it is missing)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    min_chars: int = Field(
+        default=3, ge=1, le=8,
+        description=(
+            "Shortest reading to accept. Real dimension labels are almost "
+            "always 3+ characters; 1-2 character readings are usually clutter "
+            "(a degree label like 7° is always accepted)."
+        ),
+    )
+    min_conf: float = Field(
+        default=20.0, ge=5.0, le=100.0,
+        description=(
+            "Minimum reading agreement (%) to replace a label. Weaker readings "
+            "stay as traced lines, so a misread never overwrites the artwork."
+        ),
+    )
+
+
 class ConvertParams(BaseModel):
     """Slider state. Defaults match the spec §2.3 example.
 
@@ -208,6 +234,32 @@ class ConvertParams(BaseModel):
             "vtracer spline mode. 0 disables (identity)."
         ),
     )
+    thin_lines: bool = Field(
+        default=False,
+        description=(
+            "Keep thin/pale lines (dimension lines, seat outlines): binarise at "
+            "``threshold`` first and smooth the black/white mask by "
+            "``blur_radius`` instead of blurring the greyscale, which lifts "
+            "pale 1 px strokes over the threshold and drops them."
+        ),
+    )
+    trace_upscale: int = Field(
+        default=1, ge=1, le=3,
+        description=(
+            "Supersample the image N-fold before tracing so thinned curves "
+            "(wheels, arcs) follow sub-pixel curvature. Clamped so the "
+            "supersampled long side stays within the server's pixel cap."
+        ),
+    )
+    circles: bool = Field(
+        default=False,
+        description=(
+            "Detect wheels/hubs/round holes on the raster (Hough + ring "
+            "support) and draw them as exact circles instead of a faceted "
+            "trace. Raster inputs only."
+        ),
+    )
+    ocr_text: OcrTextParams = Field(default_factory=OcrTextParams)
     linemerge_tolerance_mm: float = Field(default=0.5, ge=0.0, le=5.0)
     linesimplify_tolerance_mm: float = Field(default=0.1, ge=0.0, le=2.0)
     linesort: bool = True

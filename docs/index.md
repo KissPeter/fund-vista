@@ -13,10 +13,12 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 | F-002 | feature | Dropped aeroway elements (stands/stopways) + surrounding context | done | 2026-09-14 |
 | F-003 | feature | Freeform + IATA airport search | done | 2026-09-14 |
 | F-004 | feature | Airport layer toggles (tick any) | in progress | 2026-09-14 |
+| F-005 | feature | Technical-drawing convert: OCR labels → single-stroke font, exact circles, thin lines (`/penplot` opt-in) | in progress | 2026-10-07 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
 Doc: `docs/F-001-airport-diagrams.md`.
+Doc: `docs/F-005-technical-drawing.md`.
 
 ## Research notes (untracked, no ID)
 

@@ -14,6 +14,8 @@
   <form id="params" action="javascript:void(0)">
   {% with legend_method="1. Method" %}{% include "partials/_method.html" %}{% endwith %}
 
+  {% with legend_drawing="1b. Technical drawing (opt-in)" %}{% include "partials/_drawing.html" %}{% endwith %}
+
   {% with legend_cleanup="2. Cleanup (vpype chain)" %}{% include "partials/_cleanup.html" %}{% endwith %}
 
   {% with legend_page_pen="3. Page & pen" %}{% include "partials/_page_pen.html" %}{% endwith %}

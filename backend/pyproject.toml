@@ -32,6 +32,10 @@ dependencies = [
     "jinja2>=3.1",
 ]
 
+[project.optional-dependencies]
+# OCR text stage (needs the tesseract binary on PATH). Apache-2.0.
+ocr = ["pytesseract>=0.3.10"]
+
 [dependency-groups]
 test = [
     "pytest>=8.0",

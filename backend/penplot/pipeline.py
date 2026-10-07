@@ -8,6 +8,7 @@ from the result cache — same input always yields byte-identical SVG.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -15,6 +16,7 @@ import time
 
 import numpy as np
 
+from backend.penplot import drawing
 from backend.penplot import imaging
 from backend.penplot import labels
 from backend.penplot import stats_table
@@ -27,6 +29,7 @@ from backend.penplot.optimize import (
     build_vpype_command,
     count_points,
     curvesmooth,
+    densify,
     layout,
     layout_scale,
     linemerge,
@@ -77,6 +80,10 @@ _VECTOR_IGNORED_PARAMS = frozenset({
     "hatch_angle_deg",
     "contour_simplify",
     "centerline_prune_px",
+    "thin_lines",
+    "trace_upscale",
+    "circles",
+    "ocr_text",
 })
 # Default-off stages for the fast vector preview path (see P2 / gh #27).
 _SKIPPABLE_TRAVEL_STAGES = frozenset({"linesort", "reloop_tolerance_mm"})
@@ -96,6 +103,13 @@ def is_fast_preview(params: ConvertParams, is_vector: bool) -> bool:
 def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
     """Canonical param dict as actually executed (drives signature + cache key)."""
     data = params.model_dump(mode="json", exclude_none=True)
+    # Drawing-stage params at their defaults are dropped so cache keys (and
+    # stored result filenames) from before they existed stay valid.
+    if not data.get("ocr_text", {}).get("enabled"):
+        data.pop("ocr_text", None)
+    for field, default in (("thin_lines", False), ("circles", False), ("trace_upscale", 1)):
+        if data.get(field) == default:
+            data.pop(field, None)
     if is_vector:
         for field in _VECTOR_IGNORED_PARAMS:
             data.pop(field, None)
@@ -175,6 +189,10 @@ def run_convert(
         if reserve_bottom_mm > 0.0:
             # +1 mm so image strokes can't linemerge into divider/frame.
             reserve_bottom_mm += labels.LABEL_ARTWORK_GAP_MM
+    extra_px: list = []   # OCR text + detected circles (drawing mode), working px
+    drawing_mode = (not is_vector) and drawing.is_drawing_mode(params)
+    stack = contextlib.ExitStack()   # holds the heavy-trace slot in drawing mode
+    up = 1                # trace supersampling factor actually used
     try:
         if is_vector:
             _poll("vpype:decode")
@@ -207,17 +225,49 @@ def run_convert(
             if params.remove_background:
                 gray = imaging.remove_background(gray)
                 warnings.append("background_removed")
-            gray = imaging.blur(gray, params.blur_radius)
-            gray = imaging.adjust_contrast(gray, params.contrast)
-            gray = imaging.adjust_brightness(gray, params.brightness)
-            mask = imaging.threshold_mask(gray, params.threshold)
+            # Technical-drawing mode (all opt-in; off = the legacy path below,
+            # byte-identical): tone first, then OCR text / circles are lifted
+            # out of the raster, then the ink mask is built (optionally
+            # supersampled, thin lines kept). See ``drawing``.
+            trace_upscale = params.trace_upscale
+            if drawing_mode:
+                if not stack.enter_context(drawing.trace_slot(settings, cancelled)):
+                    # Another heavy trace holds the memory budget: do this one at
+                    # 1x rather than risk an out-of-memory kill.
+                    trace_upscale = 1
+                    warnings.append(drawing.WARNING_TRACE_BUSY)
+                tone = imaging.adjust_brightness(
+                    imaging.adjust_contrast(gray, params.contrast), params.brightness)
+                if params.circles or params.ocr_text.enabled:
+                    _poll("drawing:analyse")
+                    analysis = drawing.analyse(
+                        tone, ocr=params.ocr_text, circles=params.circles,
+                        settings=settings, image_id=image_id,
+                        tone_args=(params.contrast, params.brightness,
+                                   params.remove_background),
+                        cancelled=cancelled)
+                    tone = analysis.cleaned
+                    extra_px = analysis.text_px + analysis.circle_px
+                    warnings.extend(analysis.warnings)
+                    _timed("drawing", image_id, method_label, t0)
+                    t0 = time.perf_counter()
+                gray, mask, up, ink_warnings = drawing.build_ink(
+                    tone, threshold=params.threshold, blur=params.blur_radius,
+                    thin_lines=params.thin_lines, upscale=trace_upscale,
+                    max_pixels=settings.trace_max_pixels)
+                warnings.extend(ink_warnings)
+            else:
+                gray = imaging.blur(gray, params.blur_radius)
+                gray = imaging.adjust_contrast(gray, params.contrast)
+                gray = imaging.adjust_brightness(gray, params.brightness)
+                mask = imaging.threshold_mask(gray, params.threshold)
             if params.strip_hatch_px > 0:
                 # Morphological opening on the ink mask: erases anything
                 # thinner than strip_hatch_px (hatch/cross-hatch strokes)
                 # while regenerating thicker strokes (outlines, solid fills)
                 # at full width. Deliberately grouped into the "preprocess"
                 # timing bucket below, same as blur/contrast/threshold.
-                mask = imaging.strip_hatch(mask, params.strip_hatch_px)
+                mask = imaging.strip_hatch(mask, params.strip_hatch_px * up)
                 warnings.append("hatch_stripped")
             _timed("preprocess", image_id, method_label, t0)
             t0 = time.perf_counter()
@@ -235,14 +285,16 @@ def run_convert(
                 # Extreme page/image combos can request a sub-satisfiable pitch;
                 # surface the silent clamp instead of just doing it (C.2.4a).
                 warnings.append("hatch_pitch_clamped")
+            # Pixel-valued knobs follow the supersampling factor ``up`` (1 on
+            # the legacy path), so a value tuned at 1x means the same thing.
             ctx = MethodContext(
                 threshold=params.threshold,
-                blur_radius=params.blur_radius,
+                blur_radius=params.blur_radius * up,
                 hatch_pitch_mm=params.hatch_pitch_mm,
-                contour_simplify=params.contour_simplify,
+                contour_simplify=params.contour_simplify * up,
                 hatch_angle_deg=params.hatch_angle_deg,
-                hatch_pitch_px=pitch_px_clamped,
-                centerline_prune_px=params.centerline_prune_px,
+                hatch_pitch_px=pitch_px_clamped * up,
+                centerline_prune_px=params.centerline_prune_px * up,
             )
             # Every selected generator runs on the same (mask, gray) in the
             # requested order; outputs concatenate before the shared optimize
@@ -254,9 +306,13 @@ def run_convert(
                 generator = METHOD_REGISTRY[method]
                 raw_px.extend(generator.generate(mask, gray, ctx))
                 _timed(f"method-{method}", image_id, method_label, t0)
+            if up > 1:  # back to working-image pixels
+                raw_px = [[(x / up, y / up) for x, y in line] for line in raw_px]
+            del mask, gray
+            stack.close()  # arrays freed; let the next heavy trace in
 
-        points_before = count_points(raw_px)
-        segments_before = len(raw_px)
+        points_before = count_points(raw_px) + count_points(extra_px)
+        segments_before = len(raw_px) + len(extra_px)
 
         t0 = time.perf_counter()
         # Layout FIRST (px -> mm) so tolerances behave exactly like vpype's
@@ -269,6 +325,17 @@ def run_convert(
             reserve_bottom_mm=reserve_bottom_mm,
             padding_mm=params.page.padding_mm,
         )
+        extra_laid: list = []
+        if extra_px:
+            # Same px -> mm transform as the artwork, so text/circles register.
+            extra_laid, _, _ = layout(
+                extra_px, src_w, src_h,
+                size=params.page.size,
+                orientation=params.page.orientation,
+                margin_mm=params.page.margin_mm,
+                reserve_bottom_mm=reserve_bottom_mm,
+                padding_mm=params.page.padding_mm,
+            )
         _timed("layout", image_id, method_label, t0)
         if params.label.enabled and params.label.text.strip():
             # Title-block label (mm space already): joins quantize and the
@@ -330,7 +397,8 @@ def run_convert(
         # Page furniture rejoins AFTER linesimplify below: simplify would
         # eat the 2 mm frame-radius arcs (0.04 mm chord sagitta < 0.1 mm
         # tolerance) and leave lathe chamfers, so it only ever sees artwork.
-        static_lines = lab_lines + frame_lines + table_lines
+        # OCR text and exact circles keep their drawn shape like labels do.
+        static_lines = lab_lines + frame_lines + table_lines + extra_laid
         static_merged: list = (
             linemerge(quantize(static_lines, q), tol) if static_lines else []
         )
@@ -338,7 +406,11 @@ def run_convert(
         t0 = time.perf_counter()
         _poll("vpype:curvesmooth")
         smoothed = (
-            curvesmooth(merged, params.curve_smooth)
+            curvesmooth(
+                # Drawing mode: cap segment length first so Chaikin cannot
+                # balloon long straight edges (legacy converts are unchanged).
+                densify(merged, drawing.SMOOTH_SEG_MM) if drawing_mode else merged,
+                params.curve_smooth)
             if params.curve_smooth > 0
             else merged
         )
@@ -409,3 +481,5 @@ def run_convert(
             raise
         log.exception("pipeline.convert failed image=%s method=%s", image_id[:12], method_label)
         raise processing_failed() from exc
+    finally:
+        stack.close()  # never leave the heavy-trace slot held (idempotent)

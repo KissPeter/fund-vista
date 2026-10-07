@@ -90,6 +90,34 @@ class Settings(BaseSettings):
     # every convert; re-parsing is wasted once the result cache (P1) serves the
     # hourly-repeated slider tweaks. Same fixed-window TTL model as images.
     parsed_svg_ttl_hours: int = 48
+    # Technical-drawing stage (OCR text -> single-stroke font, Hough circles).
+    # Sized for a 1-2 CPU instance: Tesseract reads one contact sheet per
+    # variant instead of one process per crop, the whole OCR step has a
+    # wall-clock budget (a slow box returns what it has plus a warning rather
+    # than risking the request timeout), and only ``ocr_max_concurrent``
+    # OCR runs execute at once per worker process.
+    ocr_budget_s: float = 20.0
+    # Longest a request waits for a free OCR slot before skipping OCR with an
+    # ``ocr_busy`` warning (worst case per request ~ queue + budget + trace).
+    ocr_queue_s: float = 10.0
+    ocr_workers: int = 2
+    ocr_max_concurrent: int = 1  # machine-wide (flock), not per worker
+    # Text-recognition backend (see ``drawing.OCR_BACKENDS``); "none" disables.
+    ocr_backend: str = "tesseract"
+    # Drawing-mode traces running at once, machine-wide. Each holds up to
+    # ``trace_max_pixels`` of working arrays, so on a 512 MB box this is 1; a
+    # request that cannot get the slot in ``ocr_queue_s`` falls back to 1x.
+    trace_max_concurrent: int = 1
+    # OCR/circle detection run on an image scaled so its long side is at most
+    # this; label glyph sizes are tuned for ~7-15 px at that scale.
+    ocr_max_dim_px: int = 1600
+    # Cache of OCR words per (image, tone settings): slider tweaks re-trace
+    # but never re-OCR.
+    ocr_ttl_hours: int = 48
+    # Supersampled tracing never exceeds this many pixels in total (the
+    # requested upscale is clamped, with a warning): thinning scales with area
+    # (~60 bytes/pixel peak), so 4 MP keeps a request near 300 MB.
+    trace_max_pixels: int = 4_000_000
 
     @field_validator("rate_limit_whitelist", mode="before")
     @classmethod
@@ -111,6 +139,10 @@ class Settings(BaseSettings):
     @property
     def parsed_dir(self) -> str:
         return os.path.join(self.data_dir, "parsed")
+
+    @property
+    def ocr_dir(self) -> str:
+        return os.path.join(self.data_dir, "ocr")
 
 
 ALLOWED_RASTER_EXTS = frozenset({"png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"})

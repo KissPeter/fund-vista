@@ -242,6 +242,28 @@ def curvesmooth(lines: list[Polyline], iterations: int) -> list[Polyline]:
     return out
 
 
+def densify(lines: list[Polyline], max_seg: float) -> list[Polyline]:
+    """Split segments longer than ``max_seg`` into equal collinear pieces.
+
+    Chaikin removes a fixed fraction of each adjacent segment, so on a long,
+    sparsely sampled polyline (a page frame, a ground line, a simplified long
+    edge) corner cutting rounds corners into huge blobs. Capping segment
+    length bounds the rounding radius and leaves straight runs straight.
+    """
+    out: list[Polyline] = []
+    for line in lines:
+        if not line:
+            out.append(line)
+            continue
+        pts = [line[0]]
+        for (x0, y0), (x1, y1) in zip(line, line[1:]):
+            n = max(int(math.hypot(x1 - x0, y1 - y0) // max_seg) + 1, 1)
+            pts.extend((x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n)
+                       for k in range(1, n + 1))
+        out.append(pts)
+    return out
+
+
 # -- linesort (greedy nearest-neighbour incl. reversal) ------------------
 
 def _cell_min_dist(pen: tuple[float, float], cell: tuple[int, int], cell_size: float) -> float:

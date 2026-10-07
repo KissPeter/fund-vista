@@ -22,6 +22,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from backend.penplot import drawing
 from backend.penplot.backgrounds import BACKGROUNDS, LINE_COLORS
 from backend.penplot.config import PAGE_SIZES_MM
 from backend.penplot.labels import LABEL_FONTS
@@ -43,6 +44,8 @@ async def penplot_ui(request: Request) -> HTMLResponse:
         "penplot.html",
         {
             "defaults": defaults,
+            "preset": drawing.DRAWING_PRESET,
+            "ocr_available": drawing.ocr_available(),
             "methods": ["contour", "centerline", "hatch", "flow"],
             "page_sizes": sorted(PAGE_SIZES_MM),
             "orientations": ["portrait", "landscape"],

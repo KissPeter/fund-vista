@@ -30,10 +30,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /srv/fund-vista
 
+# Tesseract: the "technical drawing" convert option reads dimension labels with
+# it (pytesseract is just the binding). eng data ships with the package; digits
+# are all we need. Without it the option degrades to an ``ocr_unavailable``
+# warning instead of failing the request.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
 # Dependency layer first (rebuild-cache friendly: code changes below
-# do not re-run pip).
+# do not re-run pip). The [ocr] extra adds pytesseract.
 COPY backend/pyproject.toml ./backend/pyproject.toml
-RUN pip install --upgrade pip && pip install ./backend
+RUN pip install --upgrade pip && pip install "./backend[ocr]"
 
 COPY backend ./backend
 COPY main.py ./

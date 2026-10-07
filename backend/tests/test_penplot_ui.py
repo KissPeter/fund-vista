@@ -115,3 +115,29 @@ def test_ui_no_control_shadows_form_builtins(http_client):
     assert not (names & shadowers), names & shadowers
     # And the reset handler must call the real form.reset().
     assert '$("params").reset()' in html
+
+
+def test_drawing_preset_values_fit_their_sliders(http_client):
+    """The preset button sets slider values; a value off the slider's step grid
+    would be silently snapped by the browser and the page would stop matching
+    the CLI. Every numeric preset value must sit on its slider's grid."""
+    import re
+
+    from backend.penplot import drawing
+
+    html = http_client.get("/penplot").text
+    p = drawing.DRAWING_PRESET
+    flat = {k: p[k] for k in ("threshold", "blur_radius", "contour_simplify",
+                              "centerline_prune_px", "curve_smooth", "trace_upscale")}
+    flat["ocr_min_conf"] = p["ocr_text"]["min_conf"]
+    flat["ocr_min_chars"] = p["ocr_text"]["min_chars"]
+    flat["page_margin_mm"] = p["page"]["margin_mm"]
+    flat["page_padding_mm"] = p["page"]["padding_mm"]
+    for sid, value in flat.items():
+        m = re.search(
+            rf'id="{sid}" min="([-\d.]+)" max="([-\d.]+)" step="([\d.]+)"', html)
+        assert m, f"slider {sid} not found"
+        lo, hi, step = map(float, m.groups())
+        assert lo <= value <= hi, sid
+        assert abs((value - lo) / step - round((value - lo) / step)) < 1e-6, (sid, value, step)
+    assert 'id="drawingPreset"' in html and 'id="ocr_enabled"' in html
