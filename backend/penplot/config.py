@@ -102,8 +102,10 @@ class Settings(BaseSettings):
     ocr_queue_s: float = 10.0
     ocr_workers: int = 2
     ocr_max_concurrent: int = 1  # machine-wide (flock), not per worker
-    # Text-recognition backend (see ``drawing.OCR_BACKENDS``); "none" disables.
-    ocr_backend: str = "tesseract"
+    # Text-recognition backend (see ``drawing.OCR_BACKENDS``): "auto" = the
+    # tesserocr wheel if present, else the tesseract binary; or a name;
+    # anything unavailable (e.g. "none") disables the step with a warning.
+    ocr_backend: str = "auto"
     # Drawing-mode traces running at once, machine-wide. Each holds up to
     # ``trace_max_pixels`` of working arrays, so on a 512 MB box this is 1; a
     # request that cannot get the slot in ``ocr_queue_s`` falls back to 1x.

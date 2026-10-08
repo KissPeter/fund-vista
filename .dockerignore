@@ -8,3 +8,4 @@ node_modules/
 .wrangler/
 test-results/
 playwright-report/
+**/.venv/

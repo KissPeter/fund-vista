@@ -335,3 +335,37 @@ def test_convert_endpoint_accepts_the_options_and_rejects_bad_ones(http_client):
     bad2 = http_client.post("/v1/convert", json={
         "image_id": image_id, "params": {"ocr_text": {"enabled": True, "bogus": 1}}})
     assert bad2.status_code == 422
+
+
+# ------------------------------------------------------------ OCR backends
+
+def test_auto_backend_prefers_the_wheel_then_the_binary(monkeypatch):
+    calls = {"wheel": True, "binary": True}
+    monkeypatch.setitem(drawing.OCR_BACKENDS, "tesserocr", (lambda: calls["wheel"], lambda: None))
+    monkeypatch.setitem(drawing.OCR_BACKENDS, "tesseract", (lambda: calls["binary"], lambda: None))
+    s = Settings(ocr_backend="auto")
+    assert drawing.resolve_backend(s) == "tesserocr"
+    calls["wheel"] = False
+    assert drawing.resolve_backend(s) == "tesseract"
+    calls["binary"] = False
+    assert drawing.resolve_backend(s) is None and not drawing.ocr_available(s)
+    # An explicit name that is unavailable also disables (never silently swaps).
+    assert drawing.resolve_backend(Settings(ocr_backend="none")) is None
+
+
+@pytest.mark.skipif(ocr_text._tesserocr is None, reason="tesserocr wheel not installed (Linux only)")
+def test_tesserocr_reader_reads_rows_and_survives_empty_ones():
+    rows = []
+    for text in ("2100", "", "8600"):  # the middle row is blank paper
+        img = np.full((40, 200), 255, np.uint8)
+        if text:
+            cv2.putText(img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, 0, 2)
+        rows.append(img)
+    sheet = np.vstack(rows)
+    bounds = [(i * 40, (i + 1) * 40) for i in range(3)]
+    out = ocr_text.tesserocr_reader(sheet, bounds, "0123456789°")
+    assert out[0] == "2100" and out[1] == "" and out[2] == "8600"
+    # Same call from a worker thread (the pipeline runs on threads).
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(1) as pool:
+        assert pool.submit(ocr_text.tesserocr_reader, sheet, bounds, "0123456789°").result()[0] == "2100"

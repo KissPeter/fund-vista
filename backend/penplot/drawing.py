@@ -102,20 +102,33 @@ def _tesseract_available() -> bool:
             and shutil.which("tesseract") is not None)
 
 
-#: name -> (available(), reader factory). To try another recogniser, register
-#: it here (or monkeypatch in tests) and select it with ``PENPLOT_OCR_BACKEND``;
-#: the reader contract is ``ocr_text.SheetReader``. Hosts that cannot install a
-#: system binary (FastAPI Cloud) need a pure-Python/wheel backend here.
+def _tesserocr_available() -> bool:
+    """The ``tesserocr`` wheel (bundled engine) plus the vendored model."""
+    return ocr_text._tesserocr is not None and ocr_text.tessdata_present()
+
+
+#: name -> (available(), reader factory). Order matters for ``auto``: the
+#: in-process wheel first (no system package needed), then the system binary.
+#: To try another recogniser, register it here (or monkeypatch in tests) and
+#: select it with ``PENPLOT_OCR_BACKEND``; the contract is ``ocr_text.SheetReader``.
 OCR_BACKENDS: dict[str, tuple] = {
+    "tesserocr": (_tesserocr_available, lambda: ocr_text.tesserocr_reader),
     "tesseract": (_tesseract_available, lambda: ocr_text.tesseract_reader),
 }
 
 
-def ocr_available(settings: Settings | None = None) -> bool:
-    """Is the configured text-recognition backend usable on this host?"""
+def resolve_backend(settings: Settings | None = None) -> str | None:
+    """Backend name to use (``auto`` = first available), or None."""
     name = (settings or Settings()).ocr_backend
+    if name == "auto":
+        return next((n for n, (ok, _f) in OCR_BACKENDS.items() if ok()), None)
     entry = OCR_BACKENDS.get(name)
-    return bool(entry and entry[0]())
+    return name if entry and entry[0]() else None
+
+
+def ocr_available(settings: Settings | None = None) -> bool:
+    """Is a text-recognition backend usable on this host?"""
+    return resolve_backend(settings) is not None
 
 
 def _acquire_slot(settings: Settings, cancelled, give_up: float, *,
@@ -231,7 +244,7 @@ def _read_words(
         return None
     try:
         engine = ocr_text.SheetEngine(
-            reader=OCR_BACKENDS[settings.ocr_backend][1](),
+            reader=OCR_BACKENDS[resolve_backend(settings)][1](),
             workers=max(1, min(settings.ocr_workers, os.cpu_count() or 1)),
             deadline=time.monotonic() + settings.ocr_budget_s,
             cancelled=cancelled)

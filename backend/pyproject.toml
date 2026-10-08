@@ -30,11 +30,14 @@ dependencies = [
     # Server-rendered UI for the pen-plot endpoints (Jinja2 templates).
     # BSD-3-Clause — permissive, meets spec §7.
     "jinja2>=3.1",
+    # Technical-drawing OCR (F-005), Apache-2.0. ``tesserocr`` ships Linux
+    # wheels with libtesseract bundled (no apt needed - FastAPI Cloud installs
+    # Python dependencies only); the English model is vendored in
+    # penplot/tessdata. ``pytesseract`` + a ``tesseract`` binary is the
+    # fallback elsewhere (macOS dev: brew install tesseract).
+    "tesserocr>=2.8; sys_platform == 'linux'",
+    "pytesseract>=0.3.10",
 ]
-
-[project.optional-dependencies]
-# OCR text stage (needs the tesseract binary on PATH). Apache-2.0.
-ocr = ["pytesseract>=0.3.10"]
 
 [dependency-groups]
 test = [

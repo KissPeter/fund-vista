@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -26,6 +27,17 @@ from backend.penplot import svgfont
 from backend.penplot.methods import Polyline
 
 log = logging.getLogger(__name__)
+
+# tesserocr (bundled libtesseract) pulls in cysignals, which installs signal
+# handlers at import and therefore must be imported on the MAIN thread; the
+# convert runs on worker threads. So import it here, once, at app start (this
+# module is imported by backend.main). OMP_THREAD_LIMIT must be set before
+# libtesseract loads. Absent on hosts without the wheel -> None.
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+try:
+    import tesserocr as _tesserocr
+except Exception:  # not installed / wheel unavailable on this platform
+    _tesserocr = None
 
 WARNING_UNSUPPORTED = "ocr_unsupported_characters"
 WARNING_LOW_CONF = "ocr_low_confidence_words_kept_as_lines"
@@ -271,6 +283,59 @@ def tesseract_reader(sheet: np.ndarray, bounds, whitelist: str) -> list[str]:
             if y0 <= cy < y1:
                 per[k].append((left, t))
                 break
+    return ["".join(t for _, t in sorted(p)) for p in per]
+
+
+TESSDATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tessdata")
+_tls = threading.local()
+
+
+def tessdata_present() -> bool:
+    """The vendored English model (``eng.traineddata``, tessdata_fast, Apache-2.0)."""
+    return os.path.exists(os.path.join(TESSDATA_DIR, "eng.traineddata"))
+
+
+def tesserocr_reader(sheet: np.ndarray, bounds, whitelist: str) -> list[str]:
+    """In-process Tesseract via the ``tesserocr`` wheel (bundles libtesseract).
+
+    Needs no system package and no subprocess, so it works on hosts that only
+    install Python dependencies (FastAPI Cloud); the model is vendored under
+    ``penplot/tessdata``. One API object per thread (they are not thread-safe).
+    """
+    tesserocr = _tesserocr
+    if tesserocr is None:
+        raise RuntimeError("tesserocr is not installed")
+    from PIL import Image  # noqa: PLC0415
+
+    api = getattr(_tls, "api", None)
+    if api is None or getattr(_tls, "whitelist", None) != whitelist:
+        if api is not None:
+            api.End()
+        api = tesserocr.PyTessBaseAPI(
+            path=TESSDATA_DIR, lang="eng", psm=tesserocr.PSM.SINGLE_BLOCK,
+            oem=tesserocr.OEM.LSTM_ONLY)
+        api.SetVariable("tessedit_char_whitelist", whitelist)
+        _tls.api, _tls.whitelist = api, whitelist
+    api.SetImage(Image.fromarray(sheet))
+    api.Recognize()
+    per: list[list[tuple[int, str]]] = [[] for _ in bounds]
+    level = tesserocr.RIL.WORD
+    it = api.GetIterator()
+    if it is not None:
+        for word in tesserocr.iterate_level(it, level):
+            try:  # tesserocr raises (not "") for a word with no text
+                text = (word.GetUTF8Text(level) or "").strip()
+                box = word.BoundingBox(level)
+            except RuntimeError:
+                continue
+            if not text or box is None:
+                continue
+            left, top, _right, bottom = box
+            cy = (top + bottom) / 2
+            for k, (y0, y1) in enumerate(bounds):
+                if y0 <= cy < y1:
+                    per[k].append((left, text))
+                    break
     return ["".join(t for _, t in sorted(p)) for p in per]
 
 

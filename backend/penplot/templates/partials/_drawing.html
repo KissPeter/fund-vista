@@ -3,8 +3,8 @@
     <script type="application/json" id="drawingPreset">{{ preset | tojson }}</script>
     <p class="meta">Opt-in, for CAD-style dimension drawings. Raster images only; the first run of a new image reads its labels (a few seconds), later slider tweaks reuse that result.</p>
     <button type="button" id="presetDrawingBtn">Apply technical-drawing preset</button>
-    <label>ocr_text (labels → single-stroke font) <input type="checkbox" id="ocr_enabled"{% if defaults.ocr_text.enabled %} checked{% endif %}{% if not ocr_available %} disabled title="tesseract is not installed on this server"{% endif %}></label>
-    {% if not ocr_available %}<span class="meta">⚠ text recognition unavailable on this server (no tesseract) — the toggle would only add a warning.</span>{% endif %}
+    <label>ocr_text (labels → single-stroke font) <input type="checkbox" id="ocr_enabled"{% if defaults.ocr_text.enabled %} checked{% endif %}{% if not ocr_available %} disabled title="no text-recognition backend on this server"{% endif %}></label>
+    {% if not ocr_available %}<span class="meta">⚠ text recognition unavailable on this server (no OCR backend) — the toggle would only add a warning.</span>{% endif %}
     <label>ocr_min_conf <input type="range" id="ocr_min_conf" min="5" max="100" step="5" value="{{ defaults.ocr_text.min_conf }}"><output id="ocr_min_conf_val">{{ defaults.ocr_text.min_conf }}</output></label>
     <label>ocr_min_chars <input type="range" id="ocr_min_chars" min="1" max="8" step="1" value="{{ defaults.ocr_text.min_chars }}"><output id="ocr_min_chars_val">{{ defaults.ocr_text.min_chars }}</output></label>
     <label>circles (exact wheels / holes) <input type="checkbox" id="circles"{% if defaults.circles %} checked{% endif %}></label>

@@ -5,7 +5,9 @@
 Defaults are ``drawing.DRAWING_PRESET`` (the /penplot "Technical drawing"
 preset), and the conversion is ``pipeline.run_convert`` itself, so a result
 produced here can be reproduced on the page by pressing that preset button.
-Needs the ``ocr`` extra and the ``tesseract`` binary for the text step.
+Text step: the ``tesserocr`` wheel (Linux, bundled engine) or, elsewhere, the
+``tesseract`` binary (macOS: ``brew install tesseract``); without either the
+step is skipped with an ``ocr_unavailable`` warning.
 """
 
 from __future__ import annotations

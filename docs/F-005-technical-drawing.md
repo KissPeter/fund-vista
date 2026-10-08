@@ -36,7 +36,8 @@ python -m backend.penplot.img2plot <url|file> -o out.svg   # same run_convert as
 ## Resource model (1–2 CPU, 512 MB)
 
 Measured with the repo image under `fastapi run` (what FastAPI Cloud runs),
-`--memory 512m`, 1000×707 drawing:
+`--memory 512m`, 1000×707 drawing, **subprocess-Tesseract route** (the in-process
+`tesserocr` route, now the default, is faster — see Deployment):
 
 | Case | Latency | Peak mem |
 |---|---|---|
@@ -67,13 +68,41 @@ Guards (all env-tunable, see `.env.example`):
 
 ## Deployment
 
-- **Docker (NAS / `Dockerfile`)**: installs `tesseract-ocr` (apt) and
-  `pip install ./backend[ocr]`.
-- **FastAPI Cloud**: builds from `pyproject.toml`/`uv.lock` and documents no
-  way to install system packages, so there is **no Tesseract binary**: the
-  option returns `ocr_unavailable` (request still succeeds) and the page
-  disables the toggle with a note. Circles / thin lines / upscale work there.
-  Text recognition on that host needs a backend that is a pure-Python wheel.
+OCR needs **no system package**: the `tesserocr` Linux wheel (x86_64 and
+aarch64, ~5 MB) bundles libtesseract 5.5 and leptonica, and the English model
+is vendored in `penplot/tessdata/` (tessdata_fast, Apache-2.0). Both are plain
+Python-dependency installs, so it works wherever dependencies come from
+`pyproject.toml`/`uv.lock`:
+
+- **FastAPI Cloud** (`fastapi deploy` / `fastapi run`): verified in a container
+  that imitates it (python:3.13-slim, deps from `uv.lock` only, no apt, no
+  `tesseract` binary, `fastapi run`, 512 MB, 1 CPU) — OCR available, same
+  strokes as the local run.
+- **Docker image** (NAS): `pip install ./backend`, no apt step.
+- **macOS dev**: no wheel; `pytesseract` + `brew install tesseract` is the
+  fallback (`PENPLOT_OCR_BACKEND=auto` picks the wheel, else the binary).
+- No backend usable -> `ocr_unavailable` warning, page toggle disabled.
+
+Gotchas the container test found (both fixed, covered by tests):
+
+- `tesserocr` imports `cysignals`, which installs signal handlers and so must
+  be imported on the **main thread** — `ocr_text` imports it at app start (the
+  convert itself runs on worker threads).
+- `tesserocr` raises `RuntimeError` for a word with no text (pytesseract returned
+  `""`); the reader skips those.
+- `.dockerignore` now excludes `**/.venv/` (a host venv was being copied over
+  the image's environment).
+
+Measured under `fastapi run`, 512 MB, 1 CPU, no Tesseract binary:
+
+| Case | Latency | Peak mem |
+|---|---|---|
+| Ikarus 1000x707, cold | ~5 s | ~190 MiB |
+| locomotive 1024x374, cold | ~3 s | ~130 MiB |
+| 3 simultaneous (Ikarus) | all 200, <=18 s | ~340 MiB |
+
+(The subprocess `pytesseract` route measured ~22 s cold for Ikarus: in-process
+`tesserocr` avoids ~1000 process launches.)
 
 ## Pluggable OCR backend
 
@@ -83,7 +112,7 @@ Guards (all env-tunable, see `.env.example`):
 `SheetEngine` builds the sheets (one row per candidate crop, several
 scale/shear/binarisation variants) and does the voting, so a replacement only
 has to read rows; a per-crop classifier can slice `sheet[y0:y1]`. Requirements
-for the alternatives: wheel-only install, ≲100 MB RAM at inference, digits and
+for further alternatives: wheel-only install, ≲100 MB RAM at inference, digits and
 `°` suffice (labels are 7–15 px italic CAD digits).
 
 ## Known limits

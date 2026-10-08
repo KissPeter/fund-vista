@@ -88,6 +88,18 @@ wheels = [
 ]
 
 [[package]]
+name = "cysignals"
+version = "1.13.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/dd/9157e0e6138e395405c7ef56a55b0edcc292e2a9e7f8c90e8b2d912e9a1d/cysignals-1.13.1.tar.gz", hash = "sha256:6444b86ddd1f31c7b15e4f0a3dafb973507759676a00f2cc599f0d75062d9eb0", size = 77348, upload-time = "2026-10-02T19:22:05.285Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7d/d8/715d5c61c77fac3cfa8fa5338c2bef37788420c6b362be6046567bc7a8e2/cysignals-1.13.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4ef8e2d972026ff84db31bef7263d2d0a5d2827a17e18b625d2c27ecbf349643", size = 262696, upload-time = "2026-10-02T19:21:16.886Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/73/0716f9d202c049910d475d8dafe7f30733cf954b89ac43738f2f7d2c4992/cysignals-1.13.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0dea8b08ce68aa408ae4b41180ed111414a6f510320d37db0e94134ce9b16a71", size = 271263, upload-time = "2026-10-02T19:21:18.133Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/c7/1f44e3d3d7b0cff1fce522e52e58a991da3b2ea416ef092993c8e169f2ac/cysignals-1.13.1-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:de1c8826bbc2baffa3a1777b95245b50b7d1d1e14080b4b36cc5f0974edf4455", size = 265258, upload-time = "2026-10-02T19:21:19.334Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/7f/33b9291d35802aad2bb92021c62f8541c24ff737acb77867c7857c81ac0f/cysignals-1.13.1-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:3fea21f455b09464269540af72bec6f79714c1c6cbc25b501990ba1caa8357cf", size = 274179, upload-time = "2026-10-02T19:21:20.565Z" },
+]
+
+[[package]]
 name = "defusedxml"
 version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -248,14 +260,11 @@ dependencies = [
     { name = "opencv-python-headless" },
     { name = "pillow" },
     { name = "pydantic-settings" },
+    { name = "pytesseract" },
     { name = "python-multipart" },
     { name = "redis" },
+    { name = "tesserocr", marker = "sys_platform == 'linux'" },
     { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-ocr = [
-    { name = "pytesseract" },
 ]
 
 [package.dev-dependencies]
@@ -276,12 +285,12 @@ requires-dist = [
     { name = "opencv-python-headless", specifier = ">=4.8" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
-    { name = "pytesseract", marker = "extra == 'ocr'", specifier = ">=0.3.10" },
+    { name = "pytesseract", specifier = ">=0.3.10" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "redis", specifier = "==5.1.1" },
+    { name = "tesserocr", marker = "sys_platform == 'linux'", specifier = ">=2.8" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.30.6" },
 ]
-provides-extras = ["ocr"]
 
 [package.metadata.requires-dev]
 test = [
@@ -734,6 +743,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/42/b4/e25c3b688ef703d85e55017c6edd0cbf38e5770ab748234363d54ff0251a/starlette-0.38.6.tar.gz", hash = "sha256:863a1588f5574e70a821dadefb41e4881ea451a47a3cd1b4df359d4ffefe5ead", size = 2569491, upload-time = "2024-09-22T17:01:45.422Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/9c/93f7bc03ff03199074e81974cc148908ead60dcf189f68ba1761a0ee35cf/starlette-0.38.6-py3-none-any.whl", hash = "sha256:4517a1409e2e73ee4951214ba012052b9e16f60e90d73cfb06192c19203bbb05", size = 71451, upload-time = "2024-09-22T17:01:43.076Z" },
+]
+
+[[package]]
+name = "tesserocr"
+version = "2.11.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cysignals" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/11/33/0d74c9cfc525779bb761a474cd958bbbda057654fec686c05e7a82b8c51b/tesserocr-2.11.0.tar.gz", hash = "sha256:1c1ae89c589fddf3a25dbcc21031aea18bd82259e42ef491c43a44f2bef811b3", size = 76094, upload-time = "2026-08-04T12:26:09.763Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f5/10/760c4df94727192bca0b39e456e183720ccdae342537263d56b309c7ca6c/tesserocr-2.11.0-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:2276b8eaf4011ba4be3b1890bd9a0e6a9dc707b31adcdb76586079f75b3bd553", size = 5189952, upload-time = "2026-08-04T12:25:45.071Z" },
+    { url = "https://files.pythonhosted.org/packages/70/b7/6b0041a865a42817a63a8667fecd13fd5645bea7444475fe40934b7ddb8b/tesserocr-2.11.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f6d316b371b1bf9fbd6e3bd43de14974650761e8d0f43b0aeb5f0bceb2e729af", size = 5490246, upload-time = "2026-08-04T12:25:46.832Z" },
+    { url = "https://files.pythonhosted.org/packages/08/8a/689f4c81cece978f257c48e147b5432119bd424e46da68d6413e2810d93f/tesserocr-2.11.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:ed89fde24fc18252efba988a17ec459018174c1deef2efa3f7759a08b7d1b77b", size = 6869246, upload-time = "2026-08-04T12:25:48.574Z" },
 ]
 
 [[package]]
