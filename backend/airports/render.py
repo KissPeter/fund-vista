@@ -35,7 +35,12 @@ from backend.airports.geometry import (
     runway_heading_deg,
 )
 from backend.airports.ourairports import FT_TO_M, heading_from_ident
-from backend.airports.overpass import CONTEXT_CLASSES
+from backend.airports.overpass import (
+    CONTEXT_CLASSES,
+    extract_taxiway_refs,
+    split_aeroway,
+    split_context,
+)
 from backend.airports.schemas import AIRFIELD_LAYERS
 from backend.http import fnum
 
@@ -562,6 +567,72 @@ def render_diagram(
 
     parts.append("</svg>")
     return "\n".join(parts) + "\n", counts, rotation, warnings
+
+
+def _build_svg(
+    airport: dict,
+    runway_rows: list[dict],
+    freq_rows: list[dict],
+    elements: list[dict],
+    width: int,
+    min_path_len_m: float,
+    context_elements: list[dict] | None = None,
+    zoom: float = 1.0,
+    layers: list[str] | None = None,
+    taxiway_labels: bool = False,
+    cancelled: object = None,
+    geoms: dict[str, list[list[tuple[float, float]]]] | None = None,
+    raw_counts: dict[str, int] | None = None,
+    ctx_geoms: dict[str, list[list[tuple[float, float]]]] | None = None,
+) -> tuple[str, dict[str, int], dict[str, int], float, list[str],
+           tuple[dict, dict] | None, dict | None]:
+    """Split polygons and render the blueprint SVG (shared by the airport
+    render/import endpoints via ``_render_uncached``; moved verbatim from
+    the router in REF-002 Phase 2 — pure composition, no HTTP in here).
+
+    Reuses cached split outputs when given; otherwise splits here and
+    returns what was computed so the caller can persist it next to the
+    render cache.
+    """
+    computed_aer: tuple[dict, dict] | None = None
+    if geoms is None:
+        geoms, raw_counts = split_aeroway(
+            elements, cancelled=cancelled if callable(cancelled) else None)
+        computed_aer = (geoms, raw_counts)
+    assert raw_counts is not None
+    twy_refs = extract_taxiway_refs(elements) if taxiway_labels else None
+    computed_ctx: dict | None = None
+    if context_elements:
+        if ctx_geoms is None:
+            ctx_geoms = split_context(context_elements)
+            computed_ctx = ctx_geoms
+        raw_counts = {
+            **raw_counts,
+            "context_ways": sum(len(v) for v in ctx_geoms.values()),
+        }
+    else:
+        ctx_geoms = {}
+    svg, path_counts, rotation, warnings = render_diagram(
+        airport=airport,
+        runways=runway_rows,
+        frequencies=[
+            {
+                "type": r["type"],
+                "description": r["description"],
+                "frequency_mhz": r["frequency_mhz"],
+            }
+            for r in freq_rows
+        ],
+        osm_geoms=geoms,
+        context_geoms=ctx_geoms,
+        width=width,
+        min_path_len_m=min_path_len_m,
+        zoom=zoom,
+        layers=layers,
+        taxiway_refs=twy_refs,
+        taxiway_labels=taxiway_labels,
+    )
+    return svg, path_counts, raw_counts, rotation, warnings, computed_aer, computed_ctx
 
 
 __all__ = ["render_diagram"]

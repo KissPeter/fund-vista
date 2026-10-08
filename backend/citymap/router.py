@@ -13,7 +13,6 @@ and must not be anonymously hammerable.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 import time
@@ -25,18 +24,11 @@ from backend.cancel import (
     ClientCancelled,
     check_cancelled,
     log_and_499,
-    race_cancel,
     start_disconnect_watcher,
 )
-from backend.citymap.cache import (
-    KEY_PREFIX,
-    cache_get,
-    cache_get_many,
-    cache_set,
-    cache_set_many,
-    citymap_cache_key,
-)
+from backend.citymap.cache import KEY_PREFIX, cache_get
 from backend.citymap.config import settings
+from backend.citymap.fetching import _load_raw
 from backend.citymap.geocode import (
     BBoxTooLargeError,
     CityNotFoundError,
@@ -46,17 +38,15 @@ from backend.citymap.geocode import (
     search_places,
 )
 from backend.citymap.layers import LAYER_ORDER, LAYERS
-from backend.citymap.osm_api import OsmApiError, fetch_osm_api, merge_elements
-from backend.citymap.overpass import (
-    BBox,
-    OverpassError,
-    bbox_str,
-    fetch_overpass,
-    split_elements,
-    union_members,
-    wrap_query,
+from backend.citymap.overpass import BBox, bbox_str, split_elements
+from backend.citymap.render import render_svg
+from backend.citymap.render_cache import (
+    _load_cached_render,
+    _load_cached_split,
+    _render_keys,
+    _store_render,
+    _store_split,
 )
-from backend.citymap.render import render_source_version, render_svg
 from backend.citymap.schemas import (
     ATTRIBUTION,
     GeocodeCandidate,
@@ -71,16 +61,7 @@ from backend.citymap.schemas import (
 from backend.citymap.schemas import (
     BBox as BBoxSchema,
 )
-from backend.citymap.tiles import (
-    assign_to_tiles,
-    clip_elements,
-    covering_rects,
-    rect_bbox,
-    snap_bbox,
-    tile_deg_for_bbox,
-    tile_ref,
-    tiles_for_bbox,
-)
+from backend.citymap.tiles import snap_bbox
 from backend.http import error_response
 from backend.penplot import imaging
 from backend.penplot.errors import ErrorCode, PenPlotError
@@ -130,261 +111,6 @@ async def _resolve_area(
     if snapped != bbox:
         warnings.append("bbox_snapped")
     return city, display_name, snapped
-
-
-def _tile_key(tile: tuple[int, int], deg: float, layer: str) -> str:
-    return citymap_cache_key("tile", tile_ref(tile, deg), layer)
-
-
-# P5: split_elements output is cached separately from the rendered SVG. The
-# SVG cache key includes width/min_path_len, so sliding those controls with
-# the same area+layers re-renders from the tiles every time; the split is
-# independent of both, so a hit skips ``_load_raw`` and ``split_elements``
-# entirely. The key binds the exact (bbox, layer set) — adding a layer can
-# reassign a way to a different layer via the ordering in match_way_layer, so
-# per-layer keys would be unsound. Bump the version when split semantics or
-# render geometry change.
-SPLIT_VERSION = "split-v1"
-
-
-def _split_key(bbox: BBox, layers: list[str]) -> str:
-    return citymap_cache_key(
-        "split", bbox_str(bbox), ",".join(sorted(layers)), SPLIT_VERSION
-    )
-
-
-async def _load_cached_split(
-    bbox: BBox, layers: list[str], warnings: list[str],
-) -> tuple[dict[str, list[list[tuple[float, float]]]], dict[str, int]] | None:
-    key = _split_key(bbox, layers)
-    raw = await cache_get(key)
-    if raw is None:
-        return None
-    try:
-        data = json.loads(raw)
-        geoms = {
-            layer: [
-                [tuple(pt) for pt in pl]
-                for pl in data["geoms"][layer]
-            ]
-            for layer in layers
-        }
-        raw_counts = dict(data["raw_counts"])
-    except (ValueError, KeyError, TypeError):
-        return None
-    warnings.append("split_cache_hit")
-    return geoms, raw_counts
-
-
-async def _store_split(
-    bbox: BBox, layers: list[str],
-    geoms: dict[str, list[list[tuple[float, float]]]],
-    raw_counts: dict[str, int],
-) -> None:
-    await cache_set(
-        _split_key(bbox, layers),
-        json.dumps({"geoms": geoms, "raw_counts": raw_counts}, separators=(",", ":")),
-    )
-
-
-async def _fetch_missing(
-    missing: dict[str, set[tuple[int, int]]], deg: float, warnings: list[str],
-    request: Request | None = None,
-    endpoint: str = "/v1/citymap/render",
-    started_mono: float = 0.0,
-) -> tuple[dict[str, list[dict]] | None, set[tuple[int, int]], JSONResponse | None]:
-    """Fetch the missing ``(layer -> tiles)`` work in as few queries as we can.
-
-    Missing tiles are decomposed into rectangles and unioned into a single
-    Overpass query, so a cold render still costs one round-trip exactly as
-    it used to — only a warm one gets cheaper.
-
-    P2: the Overpass ``httpx`` fetch is raced against a disconnect watcher
-    (``race_cancel``) — on abort the fetch task is cancelled and 499 raised
-    with no partial cache write.
-
-    Returns ``(elements per layer, tiles fully covered by the fetch, error)``.
-    The covered set matters: a way whose nodes straddle the edge of the
-    fetched region would otherwise be filed under an outside tile, and
-    caching that tile would pin a payload missing everything else there.
-    """
-    all_tiles: set[tuple[int, int]] = set()
-    for tiles in missing.values():
-        all_tiles |= tiles
-    rects = covering_rects(all_tiles)
-    layers = sorted(missing)
-
-    covered: set[tuple[int, int]] = set()
-    for row0, col0, row1, col1 in rects:
-        for r in range(row0, row1 + 1):
-            for c in range(col0, col1 + 1):
-                covered.add((r, c))
-
-    members: list[str] = []
-    for rect in rects:
-        members.extend(union_members(rect_bbox(rect, deg), layers))
-    try:
-        # Checkpoint 2/3 boundary: race the Overpass fetch so abort stops
-        # the httpx wait instead of running to completion (P2.3).
-        elements = await race_cancel(
-            request, fetch_overpass(wrap_query(members)),
-            endpoint=endpoint, stage="overpass", started_mono=started_mono,
-        )
-    except OverpassError as exc:
-        log.warning("citymap overpass failed, trying OSM API: %s", exc.detail)
-        chunks: list[list[dict]] = []
-        try:
-            for rect in rects:
-                chunks.append(await race_cancel(
-                    request, fetch_osm_api(rect_bbox(rect, deg)),
-                    endpoint=endpoint, stage="overpass",
-                    started_mono=started_mono,
-                ))
-        except OsmApiError as exc2:
-            return None, set(), error_response(
-                502,
-                "overpass_unavailable",
-                f"Map data fetch failed (Overpass: {exc.detail}; "
-                f"OSM API: {exc2.detail}). "
-                "(Upstreams busy — retry in a minute, with fewer layers or a smaller area).",
-            )
-        elements = merge_elements(chunks)
-        warnings.append("osm_api_fallback")
-
-    # One query returns every layer at once, and the OSM Main API fallback
-    # is not layer-aware at all, so each tile key gets only its own layer —
-    # otherwise the per-layer reuse this scheme buys would be a lie.
-    per_layer = {layer: _select_layer(elements, layer) for layer in layers}
-    return per_layer, covered, None
-
-
-def _select_layer(elements: list[dict], layer: str) -> list[dict]:
-    """Elements belonging to ``layer``, plus the nodes they reference.
-
-    A union query returns every layer at once; each tile key must hold only
-    its own layer or the per-layer reuse this whole scheme buys would be a
-    lie. Uses the same predicates the renderer does.
-    """
-    from backend.citymap.overpass import match_relation_layer, match_way_layer
-
-    nodes: dict[int, dict] = {}
-    ways: dict[int, dict] = {}
-    relations: list[dict] = []
-    for el in elements:
-        kind = el.get("type")
-        if kind == "node":
-            nodes[el["id"]] = el
-        elif kind == "way":
-            ways[el["id"]] = el
-        elif kind == "relation":
-            relations.append(el)
-
-    only = [layer]
-    kept: dict[tuple[str, int], dict] = {}
-
-    def keep_way(way: dict) -> None:
-        kept[("way", way["id"])] = way
-        for ref in way.get("nodes", []):
-            node = nodes.get(ref)
-            if node is not None:
-                kept[("node", ref)] = node
-
-    for rel in relations:
-        if match_relation_layer(rel.get("tags", {}) or {}, only) is None:
-            continue
-        kept[("relation", rel["id"])] = rel
-        for member in rel.get("members", []):
-            if member.get("type") == "way" and member.get("ref") in ways:
-                keep_way(ways[member["ref"]])
-    for way in ways.values():
-        if match_way_layer(way.get("tags", {}) or {}, only) is not None:
-            keep_way(way)
-    return list(kept.values())
-
-
-async def _load_raw(
-    bbox: BBox, layers: list[str], warnings: list[str],
-    request: Request | None = None,
-    endpoint: str = "/v1/citymap/render",
-    started_mono: float = 0.0,
-) -> tuple[list[dict] | None, JSONResponse | None]:
-    """Tile-cached fetch with OSM Main API fallback.
-
-    Raw OSM is held per ``(tile, layer)`` rather than per
-    ``(exact bbox, layer set)``, so a pan refetches only the new tiles and
-    ticking a layer on reuses the layers already held. The result is
-    clipped back to ``bbox`` so the element set — and therefore the
-    renderer's extent — is identical to what one query over ``bbox`` would
-    have produced, whatever the cache happened to hold.
-
-    Returns (elements, None) or (None, error response) when Overpass *and*
-    the OSM Main API both fail. Fallback hits append ``osm_api_fallback``
-    so clients can tell the data came from chunked ``/api/0.6/map`` reads.
-    """
-    deg = tile_deg_for_bbox(bbox, settings.tile_max_tiles)
-    tiles = tiles_for_bbox(bbox, deg)
-
-    keys = {
-        (layer, tile): _tile_key(tile, deg, layer)
-        for layer in layers
-        for tile in tiles
-    }
-    found = await cache_get_many(list(keys.values()))
-
-    payloads: dict[tuple[str, tuple[int, int]], list[dict]] = {}
-    missing: dict[str, set[tuple[int, int]]] = {}
-    for (layer, tile), key in keys.items():
-        raw = found.get(key)
-        if raw is not None:
-            try:
-                payloads[(layer, tile)] = json.loads(raw)
-                continue
-            except ValueError:
-                pass
-        missing.setdefault(layer, set()).add(tile)
-
-    hit_count = len(keys) - sum(len(v) for v in missing.values())
-    if hit_count:
-        warnings.append("overpass_cache_hit")
-
-    if missing:
-        per_layer, covered, err = await _fetch_missing(
-            missing, deg, warnings,
-            request=request, endpoint=endpoint, started_mono=started_mono,
-        )
-        if err is not None:
-            return None, err
-        assert per_layer is not None
-        writes: dict[str, str] = {}
-        for layer, elements in per_layer.items():
-            by_tile = assign_to_tiles(elements, deg, limit_to=covered)
-            # Cache every tile the fetch covered, not just the ones this
-            # request lacked — the rectangle is already paid for and the
-            # neighbours are what the next pan will ask for. A covered tile
-            # with no features of this layer is a real answer, not a miss;
-            # storing the empty list stops it being re-fetched forever.
-            for tile in covered:
-                payload = by_tile.get(tile, [])
-                writes[_tile_key(tile, deg, layer)] = json.dumps(payload)
-                if tile in missing[layer]:
-                    payloads[(layer, tile)] = payload
-        await cache_set_many(writes, settings.tile_cache_ttl_hours * 3600)
-
-    # Assemble in a fixed (layer, tile) order rather than in whatever order
-    # the cache answered. Assembly order decides the order of <path>
-    # elements in the SVG, and the same request must render identically
-    # whether it was served entirely from cache or partly refetched.
-    chunks = [
-        payloads.get((layer, tile), [])
-        for layer in layers
-        for tile in tiles
-    ]
-    log.info(
-        "citymap.tiles z=%g tiles=%d layers=%d hit=%d miss=%d",
-        deg, len(tiles), len(layers), hit_count,
-        sum(len(v) for v in missing.values()),
-    )
-    return clip_elements(merge_elements(chunks), bbox), None
 
 
 @router.get("/layers", response_model=LayersResponse)
@@ -463,67 +189,85 @@ async def geocode(city: str = Query(min_length=1, max_length=120)) -> GeocodeRes
     )
 
 
-def _render_keys(
-    bbox: BBox, layers: list[str], body: RenderRequest
-) -> tuple[str, str]:
-    """``(svg key, counts key)`` for one render.
+async def _render_uncached(
+    bbox: BBox, layers: list[str], body: RenderRequest,
+    svg_key: str, counts_key: str, warnings: list[str],
+    request: Request | None = None,
+    endpoint: str = "/v1/citymap/render",
+    started_mono: float = 0.0,
+) -> tuple[str, dict[str, int], dict[str, int], bool] | JSONResponse:
+    """Shared fetch-render-store path for ``render`` and ``import_map``.
 
-    The counts sidecar holds the path/raw totals the response reports. It
-    exists so an SVG hit costs two small reads instead of re-parsing a
-    multi-MB payload and re-running ``split_elements`` purely to fill in
-    numbers the renderer already computed once.
-
-    The renderer source version rides every key (same convention as the
-    airports diagram version): a framing change must never keep serving
-    art drawn under the old geometry.
+    SVG-cache hit, split-cache, tile fetch, threaded SVG build, store.
+    Returns ``(svg_text, path_counts, raw_counts, cache_hit)`` or an
+    error response. P2 checkpoints and no-partial-cache discipline
+    identical for both callers.
     """
-    parts = (
-        render_source_version(),
-        bbox_str(bbox), ",".join(sorted(layers)),
-        f"minlen={body.min_path_len_m}", f"width={body.width}",
-    )
-    # Bearing/aspect join the key only when rotation is active, so the
-    # overwhelming north-up traffic keeps its existing cache entries.
-    bearing = (body.bearing_deg or 0.0) % 360.0
-    if not (bearing < 1e-9 or bearing > 360.0 - 1e-9):
-        parts += (f"bearing={bearing:.2f}", f"aspect={(body.viewport_aspect or 0.0):.4f}")
-    return citymap_cache_key("svg", *parts), citymap_cache_key("counts", *parts)
+    cached = await _load_cached_render(svg_key, counts_key, layers, warnings)
+    if cached is not None:
+        svg_text, path_counts, raw_counts = cached
+        return svg_text, path_counts, raw_counts, True
+    # 1 — before any network/CPU work.
+    await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started_mono)
+    # P5: same area+layers with different width/minlen reuses the split
+    # and skips the Overpass/tile fetch entirely.
+    split_cache = await _load_cached_split(bbox, layers, warnings)
+    raw_elements = None
+    geoms_pre: dict | None = None
+    raw_counts_pre: dict | None = None
+    if split_cache is not None:
+        geoms_pre, raw_counts_pre = split_cache
+    else:
+        raw_elements, err = await _load_raw(
+            bbox, layers, warnings,
+            request=request, endpoint=endpoint, started_mono=started_mono,
+        )
+        if err is not None:
+            return err
+        assert raw_elements is not None
+    # 3 — after fetch, before SVG build.
+    await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
 
+    stop = threading.Event()
+    watch = start_disconnect_watcher(request, stop)
+    watcher = asyncio.create_task(watch())
 
-async def _load_cached_render(
-    svg_key: str, counts_key: str, layers: list[str], warnings: list[str]
-) -> tuple[str, dict[str, int], dict[str, int]] | None:
-    """Cached SVG plus its counts, or None when the SVG is not held."""
-    found = await cache_get_many([svg_key, counts_key])
-    svg_text = found.get(svg_key)
-    if svg_text is None:
-        return None
-    warnings.append("svg_cache_hit")
-    raw_counts: dict[str, int] = {"nodes": -1, "ways": -1, "relations": -1}
-    counts_json = found.get(counts_key)
-    if counts_json is not None:
-        try:
-            meta = json.loads(counts_json)
-            return svg_text, meta["path_counts"], meta["raw_counts"]
-        except (ValueError, KeyError):
-            pass
-    # Sidecar missing or unreadable (an SVG cached before this existed, or
-    # an expiry race): count paths in the document rather than re-fetching.
-    warnings.append("counts_from_cached_svg")
-    return svg_text, _count_paths_in_svg(svg_text, layers), raw_counts
+    def _build() -> tuple[str, dict[str, int], dict[str, int],
+                          tuple[dict, dict] | None]:
+        store_me: tuple[dict, dict] | None = None
+        if raw_elements is None:
+            assert geoms_pre is not None and raw_counts_pre is not None
+            geoms, raw_counts_ = geoms_pre, raw_counts_pre
+        else:
+            geoms, raw_counts_ = split_elements(
+                raw_elements, layers, cancelled=stop.is_set)
+            store_me = (geoms, raw_counts_)
+        svg, path_counts_ = render_svg(
+            geoms, bbox, layers,
+            width=body.width, min_path_len_m=body.min_path_len_m,
+            bearing_deg=body.bearing_deg or 0.0,
+            viewport_aspect=body.viewport_aspect,
+            cancelled=stop.is_set,
+        )
+        return svg, path_counts_, raw_counts_, store_me
 
-
-async def _store_render(
-    svg_key: str, counts_key: str, svg_text: str,
-    path_counts: dict[str, int], raw_counts: dict[str, int],
-) -> None:
-    """Store the SVG and its counts sidecar in one pipelined write."""
-    await cache_set_many({
-        svg_key: svg_text,
-        counts_key: json.dumps(
-            {"path_counts": path_counts, "raw_counts": raw_counts}
-        ),
-    })
+    try:
+        svg_text, path_counts, raw_counts, store_me = await asyncio.to_thread(_build)
+    except ClientCancelled as exc:
+        raise log_and_499(
+            endpoint=endpoint, stage=exc.stage or "svg_build",
+            request=request, started_mono=started_mono,
+        )
+    finally:
+        stop.set()
+        watcher.cancel()
+    # Thread may have finished just as the client went away — do not
+    # poison the cache with a run nobody will use.
+    await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
+    if store_me is not None:
+        await _store_split(bbox, layers, store_me[0], store_me[1])
+    await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
+    return svg_text, path_counts, raw_counts, False
 
 
 @router.post("/render", response_model=RenderResponse,
@@ -549,75 +293,13 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
 
     layers = list(body.layers)
     svg_key, counts_key = _render_keys(bbox, layers, body)
-
-    cached = await _load_cached_render(svg_key, counts_key, layers, warnings)
-    if cached is not None:
-        svg_text, path_counts, raw_counts = cached
-        cache_hit = True
-    else:
-        cache_hit = False
-        # 1 — before any network/CPU work.
-        await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started)
-        # P5: same area+layers with different width/minlen reuses the split
-        # and skips the Overpass/tile fetch entirely.
-        split_cache = await _load_cached_split(bbox, layers, warnings)
-        raw_elements = None
-        geoms_pre: dict | None = None
-        raw_counts_pre: dict | None = None
-        if split_cache is not None:
-            geoms_pre, raw_counts_pre = split_cache
-        else:
-            raw_elements, err = await _load_raw(
-                bbox, layers, warnings,
-                request=request, endpoint=endpoint, started_mono=started,
-            )
-            if err is not None:
-                return err
-        # 3 — after fetch, before SVG build.
-        await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
-
-        stop = threading.Event()
-        watch = start_disconnect_watcher(request, stop)
-        watcher = asyncio.create_task(watch())
-
-        def _build() -> tuple[str, dict[str, int], dict[str, int],
-                              tuple[dict, dict] | None]:
-            from backend.citymap.overpass import split_elements as _split
-            from backend.citymap.render import render_svg as _render
-
-            store_me: tuple[dict, dict] | None = None
-            if raw_elements is None:
-                assert geoms_pre is not None and raw_counts_pre is not None
-                geoms, raw_counts_ = geoms_pre, raw_counts_pre
-            else:
-                geoms, raw_counts_ = _split(
-                    raw_elements, layers, cancelled=stop.is_set)
-                store_me = (geoms, raw_counts_)
-            svg, path_counts_ = _render(
-                geoms, bbox, layers,
-                width=body.width, min_path_len_m=body.min_path_len_m,
-                bearing_deg=body.bearing_deg or 0.0,
-                viewport_aspect=body.viewport_aspect,
-                cancelled=stop.is_set,
-            )
-            return svg, path_counts_, raw_counts_, store_me
-
-        try:
-            svg_text, path_counts, raw_counts, store_me = await asyncio.to_thread(_build)
-        except ClientCancelled as exc:
-            raise log_and_499(
-                endpoint=endpoint, stage=exc.stage or "svg_build",
-                request=request, started_mono=started,
-            )
-        finally:
-            stop.set()
-            watcher.cancel()
-        # Thread may have finished just as the client went away — do not
-        # poison the cache with a run nobody will use.
-        await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
-        if store_me is not None:
-            await _store_split(bbox, layers, store_me[0], store_me[1])
-        await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
+    built = await _render_uncached(
+        bbox, layers, body, svg_key, counts_key, warnings,
+        request=request, endpoint=endpoint, started_mono=started,
+    )
+    if isinstance(built, JSONResponse):
+        return built
+    _, path_counts, raw_counts, cache_hit = built
 
     base = resolve_public_base(request)
     token = svg_key.rsplit(":", 1)[-1]
@@ -665,68 +347,13 @@ async def import_map(body: RenderRequest, request: Request) -> ImportResponse | 
     # The UI calls /render and then /import with the same payload, so this
     # is nearly always the render we just produced. Reading it back beats
     # rendering the same document a second time.
-    cached = await _load_cached_render(svg_key, counts_key, layers, warnings)
-    if cached is not None:
-        svg_text, path_counts, raw_counts = cached
-    else:
-        await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started)
-        split_cache = await _load_cached_split(bbox, layers, warnings)
-        elements = None
-        geoms_pre: dict | None = None
-        raw_counts_pre: dict | None = None
-        if split_cache is not None:
-            geoms_pre, raw_counts_pre = split_cache
-        else:
-            elements, err = await _load_raw(
-                bbox, layers, warnings,
-                request=request, endpoint=endpoint, started_mono=started,
-            )
-            if err is not None:
-                return err
-            assert elements is not None
-        await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
-
-        stop = threading.Event()
-        watch = start_disconnect_watcher(request, stop)
-        watcher = asyncio.create_task(watch())
-
-        def _build() -> tuple[str, dict[str, int], dict[str, int],
-                              tuple[dict, dict] | None]:
-            from backend.citymap.overpass import split_elements as _split
-
-            store_me: tuple[dict, dict] | None = None
-            if elements is None:
-                assert geoms_pre is not None and raw_counts_pre is not None
-                geoms, raw_counts_ = geoms_pre, raw_counts_pre
-            else:
-                geoms, raw_counts_ = _split(
-                    elements, layers, cancelled=stop.is_set)
-                store_me = (geoms, raw_counts_)
-            svg, path_counts_ = render_svg(
-                geoms, bbox, layers,
-                width=body.width, min_path_len_m=body.min_path_len_m,
-                bearing_deg=body.bearing_deg or 0.0,
-                viewport_aspect=body.viewport_aspect,
-                cancelled=stop.is_set,
-            )
-            return svg, path_counts_, raw_counts_, store_me
-
-        # Off the event loop: a dense render is seconds of CPU and used to
-        # block the whole worker here, unlike the /render path.
-        try:
-            svg_text, path_counts, raw_counts, store_me = await asyncio.to_thread(_build)
-        except ClientCancelled as exc:
-            raise log_and_499(
-                endpoint=endpoint, stage=exc.stage or "svg_build",
-                request=request, started_mono=started,
-            )
-        finally:
-            stop.set()
-            watcher.cancel()
-        await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started)
-        if store_me is not None:
-            await _store_split(bbox, layers, store_me[0], store_me[1])
-        await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
+    built = await _render_uncached(
+        bbox, layers, body, svg_key, counts_key, warnings,
+        request=request, endpoint=endpoint, started_mono=started,
+    )
+    if isinstance(built, JSONResponse):
+        return built
+    svg_text, path_counts, raw_counts, _ = built
 
     if sum(path_counts.values()) == 0:
         return error_response(
@@ -755,20 +382,6 @@ async def import_map(body: RenderRequest, request: Request) -> ImportResponse | 
         attribution=ATTRIBUTION,
         warnings=warnings,
     )
-
-
-def _count_paths_in_svg(svg_text: str, layers: list[str]) -> dict[str, int]:
-    """Fallback path counter for the cached-SVG-only branch."""
-    counts = {layer: 0 for layer in layers}
-    for layer in layers:
-        marker = f'id="citymap-{layer}"'
-        start = svg_text.find(marker)
-        if start == -1:
-            continue
-        group_end = svg_text.find("</g>", start)
-        segment = svg_text[start:group_end] if group_end != -1 else svg_text[start:]
-        counts[layer] = segment.count("<path")
-    return counts
 
 
 @router.get("/results/{token}", dependencies=[Depends(require_rate_limit)])

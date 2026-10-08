@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 
 import backend.airports.router as airports_router
+import backend.citymap.fetching as citymap_fetching
 import backend.citymap.router as citymap_router
 from backend.airports.cache import configure_airports_redis
 from backend.citymap.cache import configure_citymap_redis
@@ -52,8 +53,8 @@ class _CountingUpstream:
 
 
 def _patch(monkeypatch_target, upstream):
-    orig = citymap_router.fetch_overpass
-    citymap_router.fetch_overpass = upstream
+    orig = citymap_fetching.fetch_overpass
+    citymap_fetching.fetch_overpass = upstream
     return orig
 
 

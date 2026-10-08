@@ -18,7 +18,7 @@ from backend.citymap.cache import (
     configure_citymap_redis,
 )
 from backend.citymap.chrome import strip_city_roads_chrome
-from backend.citymap.layers import LAYERS, LAYER_ORDER
+from backend.citymap.layers import LAYER_ORDER, LAYERS
 from backend.citymap.overpass import (
     bbox_str,
     build_overpass_query,
@@ -226,6 +226,7 @@ def test_render_keys_carry_the_renderer_version(monkeypatch):
     same inputs under a different renderer source must miss, never hit
     art drawn under the old geometry.
     """
+    import backend.citymap.render_cache as render_cache_mod
     import backend.citymap.router as citymap_router
     from backend.citymap.render import render_source_version
     from backend.citymap.schemas import BBox as BBoxSchema
@@ -237,7 +238,7 @@ def test_render_keys_carry_the_renderer_version(monkeypatch):
     body = CityRequest(bbox=BBoxSchema(south=47.45, west=19.00, north=47.55, east=19.10),
                        layers=["roads"])
     svg_key, counts_key = citymap_router._render_keys(bbox, ["roads"], body)
-    monkeypatch.setattr(citymap_router, "render_source_version", lambda: "0" * 12)
+    monkeypatch.setattr(render_cache_mod, "render_source_version", lambda: "0" * 12)
     svg_next, counts_next = citymap_router._render_keys(bbox, ["roads"], body)
     assert svg_next != svg_key and counts_next != counts_key
 
@@ -439,6 +440,7 @@ def test_merge_elements_dedups_overlapping_cells():
 
 
 def test_load_raw_falls_back_to_osm_api_on_overpass_outage():
+    import backend.citymap.fetching as fetching_mod
     import backend.citymap.router as router_mod
     from backend.citymap.overpass import OverpassError
 
@@ -449,8 +451,8 @@ def test_load_raw_falls_back_to_osm_api_on_overpass_outage():
         async def fallback(_bbox, _client=None):
             return list(_elements())
 
-        orig_overpass, orig_osm = router_mod.fetch_overpass, router_mod.fetch_osm_api
-        router_mod.fetch_overpass, router_mod.fetch_osm_api = boom, fallback
+        orig_overpass, orig_osm = fetching_mod.fetch_overpass, fetching_mod.fetch_osm_api
+        fetching_mod.fetch_overpass, fetching_mod.fetch_osm_api = boom, fallback
         try:
             warnings: list[str] = []
             # The bbox must contain the fixture's nodes (lat 47.5-47.6,
@@ -461,7 +463,7 @@ def test_load_raw_falls_back_to_osm_api_on_overpass_outage():
                 (47.45, 18.95, 47.65, 19.15), ["highways"], warnings
             )
         finally:
-            router_mod.fetch_overpass, router_mod.fetch_osm_api = (
+            fetching_mod.fetch_overpass, fetching_mod.fetch_osm_api = (
                 orig_overpass,
                 orig_osm,
             )
@@ -478,6 +480,7 @@ def test_load_raw_falls_back_to_osm_api_on_overpass_outage():
 
 
 def test_load_raw_502_when_both_upstreams_fail():
+    import backend.citymap.fetching as fetching_mod
     import backend.citymap.router as router_mod
     from backend.citymap.osm_api import OsmApiError
     from backend.citymap.overpass import OverpassError
@@ -489,15 +492,15 @@ def test_load_raw_502_when_both_upstreams_fail():
         async def bust(_bbox, _client=None):
             raise OsmApiError("osm api 509")
 
-        orig_overpass, orig_osm = router_mod.fetch_overpass, router_mod.fetch_osm_api
-        router_mod.fetch_overpass, router_mod.fetch_osm_api = boom, bust
+        orig_overpass, orig_osm = fetching_mod.fetch_overpass, fetching_mod.fetch_osm_api
+        fetching_mod.fetch_overpass, fetching_mod.fetch_osm_api = boom, bust
         try:
             warnings: list[str] = []
             elements, err = await router_mod._load_raw(
                 (47.5, 19.1, 47.55, 19.15), ["highways"], warnings
             )
         finally:
-            router_mod.fetch_overpass, router_mod.fetch_osm_api = (
+            fetching_mod.fetch_overpass, fetching_mod.fetch_osm_api = (
                 orig_overpass,
                 orig_osm,
             )
