@@ -165,7 +165,9 @@ def test_delete_while_running_cancels_and_stays_cancelled(client, monkeypatch):
         assert release.wait(timeout=15)
         return real_run(**kwargs)
 
-    monkeypatch.setattr(pipeline_mod, "run_convert", blocking_run_convert)
+    import backend.jobs._exec_convert as exec_convert_mod
+
+    monkeypatch.setattr(exec_convert_mod, "run_convert", blocking_run_convert)
 
     resp, _ = _post_job(
         client, "convert",
@@ -213,7 +215,9 @@ def test_cancel_previous_supersedes_same_ip_type(client, monkeypatch):
             raise ClientCancelled("/v1/convert", "vpype:linesort")
         return real_run(**kwargs)
 
-    monkeypatch.setattr(pipeline_mod, "run_convert", gated_run)
+    import backend.jobs._exec_convert as exec_convert_mod
+
+    monkeypatch.setattr(exec_convert_mod, "run_convert", gated_run)
 
     resp_a, _ = _post_job(
         client, "convert",
