@@ -314,6 +314,42 @@ def test_async_citymap_result_matches_sync_keys(client, monkeypatch):
     assert "/v1/citymap/results/" in result["svg_url"]
 
 
+def test_async_airport_render_cold_cache_completes(client, monkeypatch):
+    """Regression: airport jobs failed on SVG-cache miss.
+
+    The shared path unpacked _render_uncached's 8-tuple into 4 names
+    (ValueError → processing_failed); the hit path masked it in prod
+    because the UI renders sync first. A cold cache + stubbed fetch must
+    complete with the sync result shape. The fake ident keeps the cache
+    key unique so the miss path is taken regardless of test order.
+    """
+    import backend.airports.router as airports_router
+    import backend.jobs._exec_airports as exec_airports_mod
+
+    airport = {
+        "ident": "LHDC", "name": "Test Field", "municipality": "Test",
+        "iso_country": "HU", "latitude_deg": 47.4369, "longitude_deg": 19.2556,
+    }
+
+    async def fake_lookup(icao):
+        return airport, [], [], [], False
+
+    async def fake_polygons(lat, lon, radius_m, warnings, kind="overpass", **kw):
+        return [], None
+
+    monkeypatch.setattr(exec_airports_mod, "_lookup", fake_lookup)
+    monkeypatch.setattr(airports_router, "_load_polygons", fake_polygons)
+
+    resp, _ = _post_job(client, "airport_render", {"icao": "LHDC"}, cancel_previous=False)
+    assert resp.status_code == 202, resp.text
+    final = _wait_done(client, resp.json()["job_id"])
+    assert final["status"] == "done", final
+    result = final["result"]
+    assert result["icao"] == "LHDC"
+    assert result["rotation_deg"] == 0.0
+    assert "/v1/airports/results/" in result["svg_url"]
+
+
 def test_system_curl_recipe_documented():
     """System acceptance via curl (NAS/staging, same deploy as P2):
 

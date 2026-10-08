@@ -3,13 +3,6 @@
 Pure move from :mod:`backend.jobs.runner` — identical behavior, no
 functional change. The render/import pair shares one private that takes
 the endpoint string; each entry point only builds its own result dict.
-
-NOTE (preserved defect, filed separately — not fixed in this refactor):
-on an SVG-cache *miss* the shared path unpacks the 8-tuple returned by
-:func:`backend.airports.router._render_uncached` into 4 names, which
-raises ``ValueError`` and fails the job (hit path is unaffected). The
-verbatim move below keeps that behavior; the fix belongs in its own
-ticket with a miss-path regression test.
 """
 
 from __future__ import annotations
@@ -30,6 +23,7 @@ from backend.airports.router import (
     _render_uncached,
     _runway_infos,
     _store_render,
+    _store_splits,
 )
 from backend.airports.schemas import RenderRequest
 from backend.jobs import store as _store
@@ -67,8 +61,7 @@ async def _render_document(
     """Shared lookup → radius → keys → cached-or-build → store path.
 
     Raises :class:`_JobError` on error responses; ``ClientCancelled``
-    propagates for the runner to map to cancelled. (On a cache miss the
-    4-name unpack below raises — preserved defect, see module note.)
+    propagates for the runner to map to cancelled.
     """
     _ = cancelled  # stage loops live inside the router pipeline
     started = time.monotonic()
@@ -97,9 +90,11 @@ async def _render_document(
         )
         if isinstance(built, JSONResponse):
             raise _job_err(built)
-        svg_text, path_counts, raw_counts, rotation = built
+        svg_text, path_counts, raw_counts, rotation, \
+            computed_aer, computed_ctx, aer_key, ctx_key = built
         _raise_if_cancelled(stop, endpoint, "svg_build")
         await _store.set_progress(job_id, "svg_build")
+        await _store_splits(aer_key, ctx_key, computed_aer, computed_ctx)
         await _store_render(svg_key, meta_key, svg_text, path_counts, raw_counts, rotation)
     return _AirportDocument(
         svg_text, path_counts, raw_counts, rotation, airport, runway_rows,
