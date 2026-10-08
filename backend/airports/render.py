@@ -34,7 +34,7 @@ from backend.airports.geometry import (
     rotation_for_heading,
     runway_heading_deg,
 )
-from backend.airports.ourairports import FT_TO_M, heading_from_ident
+from backend.airports.ourairports import FT_TO_M, heading_from_ident, runway_endpoints
 from backend.airports.overpass import (
     CONTEXT_CLASSES,
     extract_taxiway_refs,
@@ -99,20 +99,15 @@ def render_diagram(
     Returns ``(svg_text, path_counts, rotation_deg, warnings)``. ``airport``
     needs ``latitude_deg/longitude_deg``. ``runways`` are raw ``runways.csv``
     rows; endpoints come from :func:`runway_endpoints` (authoritative coords
-    or ident-heading fallback). ``frequencies`` is accepted for signature
+    or ident-heading fallback). ``    frequencies`` is accepted for signature
     stability but not drawn. ``taxiway_refs`` are ``(ref, way-lonlat)`` pairs
     (see :func:`extract_taxiway_refs`); a ref draws iff its way survives the
     min-detail filter and the taxiway layer is selected.
     """
-    from backend.airports.ourairports import runway_endpoints
-
     warnings: list[str] = []
     selected = set(layers) if layers is not None else set(AIRFIELD_LAYERS)
     lat0 = float(airport["latitude_deg"])
     lon0 = float(airport["longitude_deg"])
-
-    def proj(lonlat: tuple[float, float]) -> tuple[float, float]:
-        return project(lonlat[0], lonlat[1], lon0, lat0)
 
     # -- authoritative runway strips -------------------------------------
     strips: list[dict] = []
@@ -121,7 +116,7 @@ def render_diagram(
             le_ll, he_ll, derived = runway_endpoints(row, lat0, lon0)
         except Exception:
             continue
-        le, he = proj(le_ll), proj(he_ll)
+        le, he = project(le_ll[0], le_ll[1], lon0, lat0), project(he_ll[0], he_ll[1], lon0, lat0)
         length_m = (fnum(row.get("length_ft")) or 0.0) * FT_TO_M
         width_m = (fnum(row.get("width_ft")) or 0.0) * FT_TO_M
         if width_m <= 0:
@@ -166,7 +161,7 @@ def render_diagram(
     ) -> list[list[tuple[float, float]]]:
         kept: list[list[tuple[float, float]]] = []
         for lonlat in polys:
-            pts = [proj(ll) for ll in lonlat]
+            pts = [project(ll[0], ll[1], lon0, lat0) for ll in lonlat]
             if closed:
                 # Area outlines: perimeter misleads (a 12×12 m shed has a
                 # ~48 m perimeter and would survive a 30 m cutoff). Filter
