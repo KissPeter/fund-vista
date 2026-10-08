@@ -83,6 +83,7 @@ Full write-up: `docs/F-005-technical-drawing.md`.
 | `ocr_enabled` | `ocr_text.enabled` | Read dimension labels and redraw them in ZnikoSL. Disabled (with a note) when the server has no OCR backend. |
 | `ocr_min_conf` 5–100 | `ocr_text.min_conf` | Reading agreement (%) needed to replace a label; weaker ones stay traced. |
 | `ocr_min_chars` 1–8 | `ocr_text.min_chars` | Shortest accepted reading (`7°` always passes). |
+| `strip_frame` | `strip_frame` | Detect the drawing's own border and crop to inside it (page frame/label/radius below stay in charge). |
 | `circles` | `circles` | Hough + ring-support circle detection → exact circles (wheels, hubs). |
 | `thin_lines` | `thin_lines` | Binarise first, smooth the mask: keeps pale 1 px strokes. |
 | `trace_upscale` 1–3 | `trace_upscale` | Supersample before thinning (rounder curves); clamped to `PENPLOT_TRACE_MAX_PIXELS`. |

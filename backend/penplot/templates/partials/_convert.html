@@ -17,6 +17,7 @@ function readParams() {
   const drawing = $("ocr_enabled") ? {
     thin_lines: $("thin_lines").checked,
     circles: $("circles").checked,
+    strip_frame: $("strip_frame").checked,
     trace_upscale: parseInt($("trace_upscale").value, 10),
     ocr_text: {
       enabled: $("ocr_enabled").checked,
@@ -201,6 +202,7 @@ if ($("presetDrawingBtn")) {
       .forEach((k) => setVal(k, p[k]));
     setChk("thin_lines", p.thin_lines);
     setChk("circles", p.circles);
+    setChk("strip_frame", p.strip_frame);
     const o = p.ocr_text || {};
     if (!$("ocr_enabled").disabled) setChk("ocr_enabled", o.enabled);
     setVal("ocr_min_conf", o.min_conf);

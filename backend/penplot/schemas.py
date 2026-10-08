@@ -251,6 +251,15 @@ class ConvertParams(BaseModel):
             "supersampled long side stays within the server's pixel cap."
         ),
     )
+    strip_frame: bool = Field(
+        default=False,
+        description=(
+            "Detect a border drawn around the artwork (long lines near the "
+            "edges, double borders included) and crop to the inside of it, so "
+            "the page's own frame/label/radius controls are the only frame. "
+            "Raster inputs only; no frame found -> page_frame_not_found."
+        ),
+    )
     circles: bool = Field(
         default=False,
         description=(

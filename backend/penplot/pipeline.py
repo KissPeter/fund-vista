@@ -84,6 +84,7 @@ _VECTOR_IGNORED_PARAMS = frozenset({
     "trace_upscale",
     "circles",
     "ocr_text",
+    "strip_frame",
 })
 # Default-off stages for the fast vector preview path (see P2 / gh #27).
 _SKIPPABLE_TRAVEL_STAGES = frozenset({"linesort", "reloop_tolerance_mm"})
@@ -107,7 +108,8 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
     # stored result filenames) from before they existed stay valid.
     if not data.get("ocr_text", {}).get("enabled"):
         data.pop("ocr_text", None)
-    for field, default in (("thin_lines", False), ("circles", False), ("trace_upscale", 1)):
+    for field, default in (("thin_lines", False), ("circles", False),
+                           ("trace_upscale", 1), ("strip_frame", False)):
         if data.get(field) == default:
             data.pop(field, None)
     if is_vector:
@@ -222,6 +224,12 @@ def run_convert(
             if scaled:
                 warnings.append("image_downscaled_for_performance")
                 src_w, src_h = float(gray.shape[1]), float(gray.shape[0])
+            if params.strip_frame:
+                # Before everything else: all later coordinates (OCR boxes,
+                # circles, layout scale) live in the cropped image's space.
+                gray, frame_warnings = drawing.strip_frame(gray)
+                warnings.extend(frame_warnings)
+                src_w, src_h = float(gray.shape[1]), float(gray.shape[0])
             if params.remove_background:
                 gray = imaging.remove_background(gray)
                 warnings.append("background_removed")
@@ -243,8 +251,10 @@ def run_convert(
                     analysis = drawing.analyse(
                         tone, ocr=params.ocr_text, circles=params.circles,
                         settings=settings, image_id=image_id,
+                        # Word boxes are in this image's pixel space, so the
+                        # (possibly frame-cropped) size is part of the key.
                         tone_args=(params.contrast, params.brightness,
-                                   params.remove_background),
+                                   params.remove_background, tone.shape[0], tone.shape[1]),
                         cancelled=cancelled)
                     tone = analysis.cleaned
                     extra_px = analysis.text_px + analysis.circle_px

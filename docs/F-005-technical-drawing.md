@@ -11,6 +11,7 @@ all default off, so the legacy path (and every cached result key) is untouched.
 |---|---|
 | `ocr_text.enabled` (+ `min_conf`, `min_chars`) | Read labels, mask them out of the raster, redraw them in the ZnikoSL single-stroke face (`svgfont`) fitted to the source box/rotation. Weak or <`min_chars` readings stay traced lines (`ocr_low_confidence_words_kept_as_lines`). |
 | `circles` | Hough circles → ring-support filter → concentric completion; the ring is blanked from the raster and drawn as an exact circle. |
+| `strip_frame` | Detect a border drawn around the artwork (long lines near the edges, double borders included, >=3 of 4 sides) and crop to the inside of it, so the page's own frame/label/radius are the only frame. Warns `page_frame_removed` / `page_frame_not_found`. In the preset. OCR-word cache keys include the cropped size. |
 | `thin_lines` | Binarise at `threshold` first, smooth the **mask** (not the greyscale), so pale 1 px strokes survive. Re-binarise level follows `blur_radius` (`drawing.mask_level`). |
 | `trace_upscale` 1–3 | Supersample before thinning for rounder curves; clamped by `PENPLOT_TRACE_MAX_PIXELS`. |
 
@@ -19,8 +20,11 @@ Reproduce a local result on the page: upload the same image, press
 **Apply technical-drawing preset**.
 
 ```bash
-python -m backend.penplot.img2plot <url|file> -o out.svg   # same run_convert as the API
+python -m backend.penplot.img2plot <url|file|folder> -o out.svg   # same run_convert as the API
 ```
+
+Batch/automation manual (folders, `--out-dir`, JSON report, exit codes, cron/CI
+recipes): `docs/img2plot-cli.md`.
 
 ## Where it lives
 

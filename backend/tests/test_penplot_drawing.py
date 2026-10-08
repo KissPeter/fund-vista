@@ -97,6 +97,78 @@ def test_preset_is_a_valid_param_set():
     assert p.ocr_text.enabled and p.circles and p.thin_lines and p.trace_upscale == 3
 
 
+# ------------------------------------------------------------------ page frame
+
+def _framed_sheet(double: bool = False, sides: str = "tblr") -> np.ndarray:
+    img = np.full((300, 400), 255, np.uint8)
+    for off in ((6, 12) if double else (6,)):
+        if "t" in sides:
+            img[off:off + 2, 6:394] = 90
+        if "b" in sides:
+            img[300 - off - 2:300 - off, 6:394] = 90
+        if "l" in sides:
+            img[6:294, off:off + 2] = 90
+        if "r" in sides:
+            img[6:294, 400 - off - 2:400 - off] = 90
+    cv2.rectangle(img, (150, 120), (260, 180), 0, 1)  # artwork inside
+    return img
+
+
+def test_detect_frame_finds_single_and_double_borders():
+    x0, y0, x1, y1 = drawing.detect_frame(_framed_sheet())
+    assert (x0, y0) == (10, 10) and (x1, y1) == (390, 290)
+    # Double border: the crop clears BOTH lines.
+    x0, y0, x1, y1 = drawing.detect_frame(_framed_sheet(double=True))
+    assert (x0, y0, x1, y1) == (16, 16, 384, 284)  # inside the inner of the two lines
+
+
+def test_detect_frame_tolerates_one_missing_side_but_not_two():
+    box = drawing.detect_frame(_framed_sheet(sides="tlr"))
+    assert box is not None and box[3] == 300  # missing bottom keeps the image edge
+    assert drawing.detect_frame(_framed_sheet(sides="tb")) is None
+
+
+def test_a_lone_ground_line_is_not_a_frame():
+    img = np.full((200, 400), 255, np.uint8)
+    img[170:172, 5:395] = 0           # long line near the bottom edge
+    cv2.rectangle(img, (100, 50), (200, 120), 0, 1)
+    assert drawing.detect_frame(img) is None
+    assert drawing.detect_frame(np.full((200, 400), 255, np.uint8)) is None
+
+
+def test_strip_frame_crops_and_reports(tmp_path):
+    img = _framed_sheet()
+    cropped, warns = drawing.strip_frame(img)
+    assert cropped.shape == (280, 380) and warns == [drawing.WARNING_FRAME_REMOVED]
+    same, warns = drawing.strip_frame(np.full((50, 50), 255, np.uint8))
+    assert same.shape == (50, 50) and warns == [drawing.WARNING_FRAME_NOT_FOUND]
+
+
+def test_pipeline_removes_the_frame_and_ocr_cache_follows_the_crop(tmp_path, monkeypatch):
+    """Cached OCR boxes are in the image's pixel space: a frame-cropped run and an
+    uncropped run of the same file must not share (and misplace) them."""
+    ok, buf = cv2.imencode(".png", _framed_sheet())
+    data = buf.tobytes()
+    seen = []
+
+    def read(small, *, settings, cancelled, warnings):
+        seen.append(small.shape)
+        return [ocr_text.Word("1234", 150.0, 120.0, 40.0, 12.0, conf=90.0)]
+
+    monkeypatch.setattr(drawing, "ocr_available", lambda *a, **k: True)
+    monkeypatch.setattr(drawing, "_read_words", read)
+    base = dict(methods=["centerline"], thin_lines=True, ocr_text={"enabled": True})
+    on = _convert(ConvertParams(strip_frame=True, **base), tmp_path, data=data)
+    off = _convert(ConvertParams(strip_frame=False, **base), tmp_path, data=data)
+    assert drawing.WARNING_FRAME_REMOVED in on.warnings
+    assert len(seen) == 2 and seen[0] != seen[1]  # two sizes -> two reads, no stale hit
+    assert on.svg_text != off.svg_text
+    # Frame off by default; key unchanged for legacy callers.
+    assert "strip_frame" not in effective_params_dump(ConvertParams(), is_vector=False)
+    assert "strip_frame" in effective_params_dump(ConvertParams(strip_frame=True), is_vector=False)
+    assert params_hash(ConvertParams()) == LEGACY_DEFAULT_HASH
+
+
 # --------------------------------------------------------------------- ink mask
 
 def test_thin_lines_keeps_pale_strokes_the_greyscale_blur_drops():
