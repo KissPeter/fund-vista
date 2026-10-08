@@ -27,6 +27,12 @@ dependencies = [
     # documents are parsed directly via fontTools (no rasterizer can draw
     # OT-SVG). MIT — permissive, meets spec §7.
     "fonttools>=4.50",
+    # Boolean ops for the negative-space wordmark renderer
+    # (backend/wordmark: glyph unions, gap-ring cuts, knockout/layered
+    # modes). Pure wheels for every supported Python (no system libs —
+    # FastAPI Cloud installs Python dependencies only).
+    # BSD-3-Clause — permissive, meets spec §7.
+    "skia-pathops>=0.8",
     # Server-rendered UI for the pen-plot endpoints (Jinja2 templates).
     # BSD-3-Clause — permissive, meets spec §7.
     "jinja2>=3.1",

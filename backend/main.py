@@ -21,6 +21,8 @@ from backend.citymap.ui import ui_router as citymap_ui_router
 from backend.airports.cache import configure_airports_redis
 from backend.airports.router import router as airports_router
 from backend.airports.ui import ui_router as airports_ui_router
+from backend.wordmark.cache import configure_wordmark_redis
+from backend.wordmark.router import router as wordmark_router
 from backend.jobs.router import router as jobs_router
 from backend.jobs.store import configure_jobs_redis
 from backend.penplot.errors import PenPlotError
@@ -137,6 +139,8 @@ app.include_router(citymap_ui_router)
 # Airport diagrams last: same versioned-before-catch-all rule.
 app.include_router(airports_router)
 app.include_router(airports_ui_router)
+# Negative-space wordmarks: pure local CPU, same rule.
+app.include_router(wordmark_router)
 app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
 
@@ -174,12 +178,14 @@ async def _startup() -> None:
         configure_redis(redis_client)
         configure_citymap_redis(redis_client)
         configure_airports_redis(redis_client)
+        configure_wordmark_redis(redis_client)
         configure_jobs_redis(redis_client)
     except Exception as exc:
         redis_client = None
         configure_redis(None)
         configure_citymap_redis(None)
         configure_airports_redis(None)
+        configure_wordmark_redis(None)
         configure_jobs_redis(None)
         print(f"Redis unavailable, continuing without cache: {exc}")
 
