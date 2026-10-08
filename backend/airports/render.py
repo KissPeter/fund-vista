@@ -37,6 +37,8 @@ from backend.airports.geometry import (
 from backend.airports.ourairports import FT_TO_M, heading_from_ident
 from backend.airports.overpass import CONTEXT_CLASSES
 from backend.airports.schemas import AIRFIELD_LAYERS
+from backend.http import fnum
+
 
 # Version of the rendered output, baked into the SVG cache key so clients
 # never see a stale layout. Derived from this file's own source: EVERY code
@@ -70,15 +72,6 @@ _RUNWAY_INFILL_FRACS = tuple(-1.0 + 2.0 * i / 8 for i in range(9))
 
 def _esc(text: object) -> str:
     return _xml_escape(str(text), {'"': "&quot;"})
-
-
-def _fnum(value: object) -> float | None:
-    try:
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return None
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
 
 
 def render_diagram(
@@ -124,8 +117,8 @@ def render_diagram(
         except Exception:
             continue
         le, he = proj(le_ll), proj(he_ll)
-        length_m = (_fnum(row.get("length_ft")) or 0.0) * FT_TO_M
-        width_m = (_fnum(row.get("width_ft")) or 0.0) * FT_TO_M
+        length_m = (fnum(row.get("length_ft")) or 0.0) * FT_TO_M
+        width_m = (fnum(row.get("width_ft")) or 0.0) * FT_TO_M
         if width_m <= 0:
             width_m = 45.0  # standard runway width fallback
             warnings.append("runway_width_fallback")
@@ -141,10 +134,10 @@ def render_diagram(
                 "length_m": length_m,
                 "le_ident": le_ident,
                 "he_ident": he_ident,
-                "le_deg": _fnum(row.get("le_heading_degT")) or heading_from_ident(le_ident),
-                "he_deg": _fnum(row.get("he_heading_degT")) or heading_from_ident(he_ident),
-                "le_disp_m": (_fnum(row.get("le_displaced_threshold_ft")) or 0.0) * FT_TO_M,
-                "he_disp_m": (_fnum(row.get("he_displaced_threshold_ft")) or 0.0) * FT_TO_M,
+                "le_deg": fnum(row.get("le_heading_degT")) or heading_from_ident(le_ident),
+                "he_deg": fnum(row.get("he_heading_degT")) or heading_from_ident(he_ident),
+                "le_disp_m": (fnum(row.get("le_displaced_threshold_ft")) or 0.0) * FT_TO_M,
+                "he_disp_m": (fnum(row.get("he_displaced_threshold_ft")) or 0.0) * FT_TO_M,
             }
         )
 

@@ -21,14 +21,6 @@ import time
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
 
-from backend.cancel import (
-    ClientCancelled,
-    check_cancelled,
-    log_and_499,
-    race_cancel,
-    start_disconnect_watcher,
-)
-
 from backend.airports import cache as cache_mod
 from backend.airports.cache import (
     KEY_PREFIX,
@@ -61,21 +53,22 @@ from backend.airports.schemas import (
     RenderResponse,
     SearchResponse,
 )
+from backend.cancel import (
+    ClientCancelled,
+    check_cancelled,
+    log_and_499,
+    race_cancel,
+    start_disconnect_watcher,
+)
+from backend.http import error_response, fnum
 from backend.penplot import imaging
 from backend.penplot.errors import ErrorCode, PenPlotError
-from backend.penplot.router import require_rate_limit
-from backend.penplot.router import resolve_public_base
+from backend.penplot.router import require_rate_limit, resolve_public_base
 from backend.penplot.router import store as penplot_store
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/airports", tags=["airports-v1"])
-
-
-def _error(status: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status, content={"error": {"code": code, "message": message}}
-    )
 
 
 def render_diagram_version() -> str:
@@ -161,15 +154,6 @@ async def _store_splits(
         await cache_set_many(items)
 
 
-def _fnum(value: object) -> float | None:
-    try:
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return None
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-
-
 async def _lookup(icao: str) -> tuple[dict, list[dict], list[dict], list[str], bool] | JSONResponse:
     """Resolve airport + runways + frequencies (cached CSVs).
 
@@ -182,9 +166,9 @@ async def _lookup(icao: str) -> tuple[dict, list[dict], list[dict], list[str], b
         runway_rows, hit_rwy = await airport_runways(airport["ident"])
         freq_rows, hit_freq = await airport_frequencies(airport["ident"])
     except AirportNotFoundError:
-        return _error(404, "airport_not_found", f"No airport found for ICAO '{icao}'.")
+        return error_response(404, "airport_not_found", f"No airport found for ICAO '{icao}'.")
     except OurAirportsError as exc:
-        return _error(502, "ourairports_unavailable", f"Airport data fetch failed: {exc.detail}")
+        return error_response(502, "ourairports_unavailable", f"Airport data fetch failed: {exc.detail}")
     cache_hit = bool(hit_airport and hit_rwy and hit_freq)
     if cache_hit:
         warnings.append("ourairports_cache_hit")
@@ -202,12 +186,12 @@ def _runway_infos(runway_rows: list[dict]) -> list[dict]:
             {
                 "le_ident": le_ident,
                 "he_ident": he_ident,
-                "length_ft": _fnum(row.get("length_ft")),
-                "width_ft": _fnum(row.get("width_ft")),
+                "length_ft": fnum(row.get("length_ft")),
+                "width_ft": fnum(row.get("width_ft")),
                 "surface": (row.get("surface") or "").strip(),
-                "le_heading_deg": _fnum(row.get("le_heading_degT"))
+                "le_heading_deg": fnum(row.get("le_heading_degT"))
                 or heading_from_ident(le_ident),
-                "he_heading_deg": _fnum(row.get("he_heading_degT"))
+                "he_heading_deg": fnum(row.get("he_heading_degT"))
                 or heading_from_ident(he_ident),
                 "endpoints_derived": False,
             }
@@ -255,7 +239,7 @@ async def _load_polygons(
         if kind != "overpass":
             warnings.append("context_unavailable")
             return [], None
-        return None, _error(
+        return None, error_response(
             502,
             "overpass_unavailable",
             f"Ground-layout fetch failed ({exc.detail}). "
@@ -395,7 +379,7 @@ async def _render_uncached(
         request=request, endpoint=endpoint, started_mono=started_mono,
     )
     if err is not None or elements is None:
-        return err if err is not None else _error(
+        return err if err is not None else error_response(
             502, "overpass_unavailable", "Ground-layout fetch failed."
         )
     ctx_elements = None
@@ -505,7 +489,7 @@ async def search(
     try:
         candidates, hit = await search_airports(q, limit)
     except OurAirportsError as exc:
-        return _error(
+        return error_response(
             502, "ourairports_unavailable",
             f"Airport search failed: {exc.detail}",
         )
@@ -524,7 +508,7 @@ async def lookup(
     try:
         code = normalize_icao(icao)
     except ValueError as exc:
-        return _error(422, ErrorCode.INVALID_PARAMS, str(exc))
+        return error_response(422, ErrorCode.INVALID_PARAMS, str(exc))
     resolved = await _lookup(code)
     if isinstance(resolved, JSONResponse):
         return resolved
@@ -537,7 +521,7 @@ async def lookup(
         iso_country=airport.get("iso_country", ""),
         latitude_deg=float(airport["latitude_deg"]),
         longitude_deg=float(airport["longitude_deg"]),
-        elevation_ft=_fnum(airport.get("elevation_ft")),
+        elevation_ft=fnum(airport.get("elevation_ft")),
         iata=(airport.get("iata_code") or "").strip(),
         runways=_runway_infos(runway_rows),  # type: ignore[arg-type]
         frequencies=freq_rows,  # type: ignore[arg-type]
@@ -673,7 +657,7 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
                             raw_counts, rotation)
 
     if sum(path_counts.values()) == 0 and not runway_rows:
-        return _error(
+        return error_response(
             422, ErrorCode.INVALID_PARAMS,
             f"No diagram features found for '{icao}' — "
             "unknown field or empty OSM coverage.",
@@ -681,7 +665,7 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
     try:
         imaging.parse_svg_vectors(svg_text.encode("utf-8"))
     except PenPlotError as exc:
-        return _error(exc.status, exc.code, exc.message)
+        return error_response(exc.status, exc.code, exc.message)
     image_id = penplot_store.put_image_bytes(svg_text.encode("utf-8"), "svg")
     log.info(
         "airports.import icao=%r paths=%d image=%s",
@@ -704,10 +688,10 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
 async def get_result(token: str) -> Response:
     """Serve a cached rendered SVG (sha1 token from ``svg_url``)."""
     if len(token) != 40 or any(c not in "0123456789abcdef" for c in token.lower()):
-        return _error(404, "result_not_found", "Unknown diagram result.")
+        return error_response(404, "result_not_found", "Unknown diagram result.")
     svg_text = await cache_get(f"{KEY_PREFIX}:svg:{token.lower()}")
     if svg_text is None:
-        return _error(
+        return error_response(
             404, "result_not_found",
             "Diagram result expired or unknown — re-run POST /v1/airports/render.",
         )

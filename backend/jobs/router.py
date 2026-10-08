@@ -27,9 +27,9 @@ import secrets
 import time
 
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from backend.http import client_ip, error_response
 from backend.jobs import runner as _runner
 from backend.jobs import store as _store
 from backend.jobs.schemas import (
@@ -40,39 +40,12 @@ from backend.jobs.schemas import (
     JobStatusResponse,
     JobType,
 )
+from backend.penplot.router import _settings as _penplot_settings
 from backend.penplot.router import require_rate_limit
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs-v1"])
-
-
-def _error(status: int, code: str, message: str, headers: dict | None = None):
-    return JSONResponse(
-        status_code=status,
-        content={"error": {"code": code, "message": message}},
-        headers=headers,
-    )
-
-
-def _client_ip(request: Request) -> str:
-    try:
-        from backend.penplot.router import _settings as _penplot_settings
-
-        if _penplot_settings.trust_forwarded_for:
-            fwd = request.headers.get("x-forwarded-for")
-            if fwd:
-                head = fwd.split(",")[0].strip()
-                if head:
-                    return head
-    except Exception:
-        pass
-    try:
-        if request.client is not None:
-            return request.client.host
-    except Exception:
-        pass
-    return "unknown"
 
 
 def _validate_job_request(job_type: JobType, payload: dict) -> str | None:
@@ -114,12 +87,12 @@ async def create_job(body: JobCreateRequest, request: Request, response: Respons
     t0 = time.perf_counter()
     msg = _validate_job_request(body.type, body.request)
     if msg is not None:
-        return _error(422, "invalid_params", msg)
-    client_ip = _client_ip(request)
+        return error_response(422, "invalid_params", msg)
+    client = client_ip(request, trust_forwarded_for=_penplot_settings.trust_forwarded_for)
 
-    nonterminal = await _store.count_nonterminal_by_ip(client_ip)
+    nonterminal = await _store.count_nonterminal_by_ip(client)
     if nonterminal >= MAX_NONTERMINAL_PER_IP:
-        return _error(
+        return error_response(
             429, "rate_limited", "Too many requests. Retry after 60s.",
             headers={"Retry-After": "60"},
         )
@@ -128,7 +101,7 @@ async def create_job(body: JobCreateRequest, request: Request, response: Respons
     superseded: list[str] = []
     if body.cancel_previous:
         try:
-            old_ids = await _store.list_nonterminal_by_ip_type(client_ip, body.type)
+            old_ids = await _store.list_nonterminal_by_ip_type(client, body.type)
         except Exception:
             old_ids = []
         for old_id in old_ids:
@@ -140,7 +113,7 @@ async def create_job(body: JobCreateRequest, request: Request, response: Respons
                 continue
 
     await _store.create_job(
-        job_id, body.type, body.request, client_ip,
+        job_id, body.type, body.request, client,
         superseded=superseded,
     )
     # This worker runs it; other workers see it in Redis and can GET/DELETE.
@@ -154,7 +127,7 @@ async def create_job(body: JobCreateRequest, request: Request, response: Respons
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     log.info(
         "jobs.enqueue id=%s type=%s ip=%s superseded=%d ms=%.1f",
-        job_id[:12], body.type, client_ip, len(superseded), elapsed_ms,
+        job_id[:12], body.type, client, len(superseded), elapsed_ms,
     )
     return JobCreateResponse(
         job_id=job_id,
@@ -171,7 +144,7 @@ async def get_job(job_id: str):
     """Poll a job. Unknown/expired id → 404 job_not_found."""
     doc = await _store.get_job(job_id)
     if doc is None:
-        return _error(404, "job_not_found", f"Unknown or expired job '{job_id}'.")
+        return error_response(404, "job_not_found", f"Unknown or expired job '{job_id}'.")
     status = doc.get("status", "queued")
     # Internal "cancelling" is a transient instant of "cancelled" for pollers.
     if status == "cancelling":
@@ -194,7 +167,7 @@ async def delete_job(job_id: str):
     killed, partial files deleted, status → cancelled. Done jobs expire."""
     doc = await _store.get_job(job_id)
     if doc is None:
-        return _error(404, "job_not_found", f"Unknown or expired job '{job_id}'.")
+        return error_response(404, "job_not_found", f"Unknown or expired job '{job_id}'.")
     status = doc.get("status")
     if status in ("queued", "running", "cancelling"):
         await _store.request_cancel(job_id)

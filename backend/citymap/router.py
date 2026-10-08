@@ -28,7 +28,6 @@ from backend.cancel import (
     race_cancel,
     start_disconnect_watcher,
 )
-
 from backend.citymap.cache import (
     KEY_PREFIX,
     cache_get,
@@ -46,7 +45,8 @@ from backend.citymap.geocode import (
     geocode_city,
     search_places,
 )
-from backend.citymap.layers import LAYERS, LAYER_ORDER
+from backend.citymap.layers import LAYER_ORDER, LAYERS
+from backend.citymap.osm_api import OsmApiError, fetch_osm_api, merge_elements
 from backend.citymap.overpass import (
     BBox,
     OverpassError,
@@ -56,8 +56,21 @@ from backend.citymap.overpass import (
     union_members,
     wrap_query,
 )
-from backend.citymap.osm_api import OsmApiError, fetch_osm_api, merge_elements
 from backend.citymap.render import render_source_version, render_svg
+from backend.citymap.schemas import (
+    ATTRIBUTION,
+    GeocodeCandidate,
+    GeocodeResponse,
+    GeocodeSearchResponse,
+    ImportResponse,
+    LayerInfo,
+    LayersResponse,
+    RenderRequest,
+    RenderResponse,
+)
+from backend.citymap.schemas import (
+    BBox as BBoxSchema,
+)
 from backend.citymap.tiles import (
     assign_to_tiles,
     clip_elements,
@@ -68,33 +81,15 @@ from backend.citymap.tiles import (
     tile_ref,
     tiles_for_bbox,
 )
-from backend.citymap.schemas import (
-    ATTRIBUTION,
-    BBox as BBoxSchema,
-    GeocodeCandidate,
-    GeocodeResponse,
-    GeocodeSearchResponse,
-    ImportResponse,
-    LayersResponse,
-    LayerInfo,
-    RenderRequest,
-    RenderResponse,
-)
+from backend.http import error_response
 from backend.penplot import imaging
 from backend.penplot.errors import ErrorCode, PenPlotError
-from backend.penplot.router import require_rate_limit
-from backend.penplot.router import resolve_public_base
+from backend.penplot.router import require_rate_limit, resolve_public_base
 from backend.penplot.router import store as penplot_store
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/citymap", tags=["citymap-v1"])
-
-
-def _error(status: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status, content={"error": {"code": code, "message": message}}
-    )
 
 
 async def _resolve_area(
@@ -107,9 +102,9 @@ async def _resolve_area(
         try:
             result = await geocode_city(city)
         except CityNotFoundError:
-            return _error(404, "city_not_found", f"No place found for '{city}'.")
+            return error_response(404, "city_not_found", f"No place found for '{city}'.")
         except GeocodeError as exc:
-            return _error(502, "nominatim_unavailable", f"Place lookup failed: {exc.detail}")
+            return error_response(502, "nominatim_unavailable", f"Place lookup failed: {exc.detail}")
         if result["cache_hit"]:
             warnings.append("geocode_cache_hit")
         bbox: BBox = result["bbox"]
@@ -121,7 +116,7 @@ async def _resolve_area(
     try:
         check_bbox_span(bbox)
     except BBoxTooLargeError:
-        return _error(
+        return error_response(
             422, ErrorCode.INVALID_PARAMS,
             f"Area too large (max {settings.max_bbox_deg} deg per side) — "
             "use a district or neighbourhood instead of a whole region.",
@@ -246,7 +241,7 @@ async def _fetch_missing(
                     started_mono=started_mono,
                 ))
         except OsmApiError as exc2:
-            return None, set(), _error(
+            return None, set(), error_response(
                 502,
                 "overpass_unavailable",
                 f"Map data fetch failed (Overpass: {exc.detail}; "
@@ -422,10 +417,10 @@ async def geocode_search(
         result = await search_places(city, limit)
     except CityNotFoundError:
         exc = PenPlotError(status=404, code="city_not_found", message=f"No place found for '{city}'.")
-        return _error(exc.status, exc.code, exc.message)
+        return error_response(exc.status, exc.code, exc.message)
     except GeocodeError as exc:
         err = PenPlotError(status=502, code="nominatim_unavailable", message=f"Place lookup failed: {exc.detail}")
-        return _error(err.status, err.code, err.message)
+        return error_response(err.status, err.code, err.message)
     return GeocodeSearchResponse(
         city=city,
         candidates=[
@@ -453,10 +448,10 @@ async def geocode(city: str = Query(min_length=1, max_length=120)) -> GeocodeRes
         result = await geocode_city(city)
     except CityNotFoundError:
         exc = PenPlotError(status=404, code="city_not_found", message=f"No place found for '{city}'.")
-        return _error(exc.status, exc.code, exc.message)
+        return error_response(exc.status, exc.code, exc.message)
     except GeocodeError as exc:
         err = PenPlotError(status=502, code="nominatim_unavailable", message=f"Place lookup failed: {exc.detail}")
-        return _error(err.status, err.code, err.message)
+        return error_response(err.status, err.code, err.message)
     south, west, north, east = result["bbox"]
     return GeocodeResponse(
         city=city,
@@ -734,7 +729,7 @@ async def import_map(body: RenderRequest, request: Request) -> ImportResponse | 
         await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
 
     if sum(path_counts.values()) == 0:
-        return _error(
+        return error_response(
             422, ErrorCode.INVALID_PARAMS,
             "No map features found for these layers in this area — "
             "tick more layers or use a bigger area.",
@@ -742,7 +737,7 @@ async def import_map(body: RenderRequest, request: Request) -> ImportResponse | 
     try:
         imaging.parse_svg_vectors(svg_text.encode("utf-8"))
     except PenPlotError as exc:
-        return _error(exc.status, exc.code, exc.message)
+        return error_response(exc.status, exc.code, exc.message)
     image_id = penplot_store.put_image_bytes(svg_text.encode("utf-8"), "svg")
     log.info(
         "citymap.import city=%r layers=%s paths=%d image=%s",
@@ -780,10 +775,10 @@ def _count_paths_in_svg(svg_text: str, layers: list[str]) -> dict[str, int]:
 async def get_result(token: str) -> Response:
     """Serve a cached rendered SVG (sha1 token from ``svg_url``)."""
     if len(token) != 40 or any(c not in "0123456789abcdef" for c in token.lower()):
-        return _error(404, "result_not_found", "Unknown map result.")
+        return error_response(404, "result_not_found", "Unknown map result.")
     svg_text = await cache_get(f"{KEY_PREFIX}:svg:{token.lower()}")
     if svg_text is None:
-        return _error(
+        return error_response(
             404, "result_not_found",
             "Map result expired or unknown — re-run POST /v1/citymap/render.",
         )

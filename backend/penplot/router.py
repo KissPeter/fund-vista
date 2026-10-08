@@ -24,10 +24,22 @@ from starlette.status import (
     HTTP_422_UNPROCESSABLE_ENTITY,
 )
 
+from backend.cancel import (
+    ClientCancelled,
+    check_cancelled,
+    log_and_499,
+    start_disconnect_watcher,
+)
+from backend.http import client_ip, error_response
 from backend.penplot import imaging
 from backend.penplot import tokens as design_tokens
 from backend.penplot.config import ALLOWED_RASTER_EXTS, Settings
-from backend.penplot.errors import ErrorCode, PenPlotError, image_not_found, rate_limited
+from backend.penplot.errors import (
+    ErrorCode,
+    PenPlotError,
+    image_not_found,
+    rate_limited,
+)
 from backend.penplot.pipeline import convert_result_filename, run_convert
 from backend.penplot.ratelimit import RateLimiter, get_redis
 from backend.penplot.schemas import (
@@ -85,39 +97,14 @@ def resolve_public_base(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-def _client_ip(request: Request) -> str:
-    # Review D.1.2: the X-Forwarded-For first hop is trusted unconditionally by
-    # default. That is correct only behind a proxy that OVERWRITES the header;
-    # when PENPLOT_TRUST_FORWARDED_FOR=0 the limiter keys off the socket peer
-    # instead, so a directly-exposed instance can't be walked around by
-    # rotating XFF values.
-    if _settings.trust_forwarded_for:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            head = forwarded.split(",")[0].strip()
-            if head:
-                return head
-    return request.client.host if request.client else "unknown"
-
-
 async def require_rate_limit(request: Request) -> None:
     """Per-IP fixed-window throttle; 429 + Retry-After when exhausted."""
-    client_ip = _client_ip(request)
-    if client_ip in _settings.rate_limit_whitelist:
+    client = client_ip(request, trust_forwarded_for=_settings.trust_forwarded_for)
+    if client in _settings.rate_limit_whitelist:
         return
-    allowed, retry_after = await _limiter.consume(client_ip)
+    allowed, retry_after = await _limiter.consume(client)
     if not allowed:
         raise rate_limited(retry_after or 1)
-
-
-def _error_response(
-    status: int, code: str, message: str, headers: dict[str, str] | None = None
-) -> JSONResponse:
-    return JSONResponse(
-        status_code=status,
-        content={"error": {"code": code, "message": message}},
-        headers=headers,
-    )
 
 
 async def penplot_error_handler(_: Request, exc: PenPlotError) -> JSONResponse:
@@ -126,7 +113,7 @@ async def penplot_error_handler(_: Request, exc: PenPlotError) -> JSONResponse:
         headers["Retry-After"] = str(exc.retry_after)
         headers["X-Rate-Limit-Limit"] = str(_limiter.limit)
         headers["X-Rate-Limit-Requests-Left"] = "0"
-    return _error_response(exc.status, exc.code, exc.message, headers=headers)
+    return error_response(exc.status, exc.code, exc.message, headers=headers)
 
 
 async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
@@ -140,7 +127,7 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
     except Exception:
         first = ""
     msg = f"Invalid parameters. {first}".strip()
-    return _error_response(HTTP_422_UNPROCESSABLE_ENTITY, ErrorCode.INVALID_PARAMS, msg)
+    return error_response(HTTP_422_UNPROCESSABLE_ENTITY, ErrorCode.INVALID_PARAMS, msg)
 
 
 def _image_meta(
@@ -172,7 +159,7 @@ def _warnings_for(width: int, height: int, is_vector: bool) -> list[str]:
 async def upload_image(file: UploadFile = File(...)) -> ImageMetaResponse | JSONResponse:
     data = await file.read()
     if len(data) > _settings.max_upload_bytes:
-        return _error_response(
+        return error_response(
             HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             ErrorCode.PAYLOAD_TOO_LARGE,
             f"File exceeds {_settings.max_upload_bytes // (1024 * 1024)} MB limit.",
@@ -180,7 +167,7 @@ async def upload_image(file: UploadFile = File(...)) -> ImageMetaResponse | JSON
     ext = imaging.sniff_extension(data, file.filename)
     if ext is None:
         allowed = sorted(set(ALLOWED_RASTER_EXTS) | {"svg"})
-        return _error_response(
+        return error_response(
             HTTP_422_UNPROCESSABLE_ENTITY,
             ErrorCode.UNSUPPORTED_MEDIA_TYPE,
             f"Unsupported format. Allowed: {allowed}.",
@@ -197,7 +184,7 @@ async def upload_image(file: UploadFile = File(...)) -> ImageMetaResponse | JSON
             w, h, _fmt = imaging.probe_raster(data)
             width, height, is_vector = w, h, False
     except PenPlotError as exc:
-        return _error_response(exc.status, exc.code, exc.message)
+        return error_response(exc.status, exc.code, exc.message)
     if ext == "svg" and svg_warnings:
         warnings = list(svg_warnings)
     else:
@@ -216,11 +203,11 @@ async def upload_image(file: UploadFile = File(...)) -> ImageMetaResponse | JSON
             dependencies=[Depends(require_rate_limit)])
 async def get_image(image_id: str) -> ImageMetaResponse | JSONResponse:
     if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id.lower()):
-        return _error_response(404, ErrorCode.IMAGE_NOT_FOUND, "Unknown image id.")
+        return error_response(404, ErrorCode.IMAGE_NOT_FOUND, "Unknown image id.")
     path = store.find_image(image_id.lower())
     if path is None:
         exc = image_not_found(image_id)
-        return _error_response(exc.status, exc.code, exc.message)
+        return error_response(exc.status, exc.code, exc.message)
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else "png"
     try:
         with open(path, "rb") as fh:
@@ -233,7 +220,7 @@ async def get_image(image_id: str) -> ImageMetaResponse | JSONResponse:
             w, h, _fmt = imaging.probe_raster(data)
             width, height, is_vector = w, h, False
     except PenPlotError as exc:
-        return _error_response(exc.status, exc.code, exc.message)
+        return error_response(exc.status, exc.code, exc.message)
     if ext == "svg" and svg_warnings:
         warnings = list(svg_warnings)
     else:
@@ -255,15 +242,8 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
     nothing is parsed, probed or re-rendered. Misses run the pipeline with
     the same P2 checkpoints: 1. after validation + image lookup, before any
     CPU work; 2. before image decode; 3. after decode; 4. inside the CPU
-    loop via ``cancelled``. Abort → 499 with no partial ``svg_url`` file.
+    loop via ``cancelled``.     Abort → 499 with no partial ``svg_url`` file.
     """
-    from backend.cancel import (
-        ClientCancelled,
-        check_cancelled,
-        log_and_499,
-        start_disconnect_watcher,
-    )
-
     endpoint = "/v1/convert"
     started = time.monotonic()
     image_id = body.image_id.lower()
@@ -271,7 +251,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
     path = store.find_image(image_id)
     if path is None:
         exc = image_not_found(image_id)
-        return _error_response(exc.status, exc.code, exc.message)
+        return error_response(exc.status, exc.code, exc.message)
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else "png"
     is_vector = ext == "svg"
     filename = convert_result_filename(image_id, body.params, is_vector)
@@ -310,7 +290,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
         try:
             w, h, _fmt = imaging.probe_raster(data)
         except PenPlotError as exc:
-            return _error_response(exc.status, exc.code, exc.message)
+            return error_response(exc.status, exc.code, exc.message)
         src_w, src_h = float(w), float(h)
     await check_cancelled(request, endpoint=endpoint, stage="vpype", started_mono=started)
 
@@ -331,7 +311,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
         )
     except PenPlotError as exc:
         log.warning("convert failed id=%s: %s", image_id[:12], exc.code)
-        return _error_response(exc.status, exc.code, exc.message)
+        return error_response(exc.status, exc.code, exc.message)
     finally:
         stop.set()
         watcher.cancel()
@@ -370,7 +350,7 @@ async def get_result(filename: str) -> Response:
     # Filenames are server-generated ({sha}_{hash}_optimized.svg); anything
     # else is a 404, never a path traversal.
     if not filename.endswith("_optimized.svg") or "/" in filename or "\\" in filename:
-        return _error_response(
+        return error_response(
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
         )
     path = store.result_path(filename)
@@ -378,7 +358,7 @@ async def get_result(filename: str) -> Response:
         with open(path, "r", encoding="utf-8") as fh:
             svg = fh.read()
     except OSError:
-        return _error_response(
+        return error_response(
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
         )
     return Response(content=svg, media_type="image/svg+xml")
@@ -394,12 +374,12 @@ async def get_result_meta(filename: str) -> ResultMetaResponse | JSONResponse:
     price. Same filename gate as the SVG route: server-generated names only.
     """
     if not filename.endswith("_optimized.svg") or "/" in filename or "\\" in filename:
-        return _error_response(
+        return error_response(
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
         )
     meta = store.get_result_meta(filename)
     if meta is None or not store.has_result(filename):
-        return _error_response(
+        return error_response(
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
         )
     try:
@@ -407,7 +387,7 @@ async def get_result_meta(filename: str) -> ResultMetaResponse | JSONResponse:
             stats=ConvertStats(**meta["stats"]), warnings=list(meta.get("warnings", []))
         )
     except (KeyError, TypeError, ValueError):
-        return _error_response(
+        return error_response(
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
         )
 
@@ -424,9 +404,9 @@ async def mint_token(body: TokenRequest) -> TokenResponse | JSONResponse:
     image_id = body.image_id.lower()
     if store.find_image(image_id) is None:
         exc = image_not_found(image_id)
-        return _error_response(exc.status, exc.code, exc.message)
+        return error_response(exc.status, exc.code, exc.message)
     if not _settings.hmac_secret:
-        return _error_response(
+        return error_response(
             503,
             ErrorCode.TOKEN_SIGNING_UNAVAILABLE,
             "Design-token signing is not configured (PENPIXEL_HMAC_SECRET).",
@@ -476,11 +456,11 @@ async def retain_image(image_id: str) -> RetainResponse | JSONResponse:
     Idempotent.
     """
     if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id.lower()):
-        return _error_response(404, ErrorCode.IMAGE_NOT_FOUND, "Unknown image id.")
+        return error_response(404, ErrorCode.IMAGE_NOT_FOUND, "Unknown image id.")
     retained = store.retain_image(image_id.lower())
     if retained is None:
         exc = image_not_found(image_id)
-        return _error_response(exc.status, exc.code, exc.message)
+        return error_response(exc.status, exc.code, exc.message)
     _path, expires_at = retained
     log.info("images.retain id=%s expires=%s", image_id[:12], expires_at.isoformat())
     return RetainResponse(
