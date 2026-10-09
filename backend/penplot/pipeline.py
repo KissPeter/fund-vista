@@ -17,6 +17,7 @@ import time
 import numpy as np
 
 from backend.penplot import drawing
+from backend.penplot import svgmeta
 from backend.penplot import imaging
 from backend.penplot import labels
 from backend.penplot import stats_table
@@ -67,12 +68,13 @@ class ConvertResult:
 # Parameters that never reach the geometry for vector inputs: the
 # technical-drawing-mode stages stay raster-only (they analyse photo
 # pixels — OCR text, exact circles, thin-line keeping, supersampled
-# tracing — and have no FE sliders).
+# tracing, frame cropping — and have no FE sliders).
 _VECTOR_IGNORED_PARAMS = frozenset({
     "thin_lines",
     "trace_upscale",
     "circles",
     "ocr_text",
+    "strip_frame",
 })
 # Tone + trace-tuning sliders. They shape vector geometry only on the
 # rasterized path (see _vector_needs_raster): with a pure-contour method
@@ -127,7 +129,10 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
     # stored result filenames) from before they existed stay valid.
     if not data.get("ocr_text", {}).get("enabled"):
         data.pop("ocr_text", None)
-    for field, default in (("thin_lines", False), ("circles", False), ("trace_upscale", 1)):
+    if not any(data.get("svg_meta", {}).values()):
+        data.pop("svg_meta", None)
+    for field, default in (("thin_lines", False), ("circles", False),
+                           ("trace_upscale", 1), ("strip_frame", False)):
         if data.get(field) == default:
             data.pop(field, None)
     if is_vector:
@@ -145,15 +150,18 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
     return data
 
 
-def params_hash(params: ConvertParams, is_vector: bool = False) -> str:
+def params_hash(params: ConvertParams, is_vector: bool = False, salt: str = "") -> str:
     canonical = json.dumps(effective_params_dump(params, is_vector), sort_keys=True)
+    if salt:  # server-side ownership config (svgmeta.salt); "" keeps legacy keys
+        canonical += "|" + salt
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
 def convert_result_filename(
-    image_id: str, params: ConvertParams, is_vector: bool
+    image_id: str, params: ConvertParams, is_vector: bool,
+    settings: Settings | None = None,
 ) -> str:
-    return f"{image_id}_{params_hash(params, is_vector)}_optimized.svg"
+    return f"{image_id}_{params_hash(params, is_vector, svgmeta.salt(settings))}_optimized.svg"
 
 
 def _timed(label: str, image_id: str, method: str, started: float) -> None:
@@ -350,6 +358,12 @@ def run_convert(
             if scaled:
                 warnings.append("image_downscaled_for_performance")
                 src_w, src_h = float(gray.shape[1]), float(gray.shape[0])
+            if params.strip_frame:
+                # Before everything else: all later coordinates (OCR boxes,
+                # circles, layout scale) live in the cropped image's space.
+                gray, frame_warnings = drawing.strip_frame(gray)
+                warnings.extend(frame_warnings)
+                src_w, src_h = float(gray.shape[1]), float(gray.shape[0])
             if params.remove_background:
                 gray = imaging.remove_background(gray)
                 warnings.append("background_removed")
@@ -371,8 +385,10 @@ def run_convert(
                     analysis = drawing.analyse(
                         tone, ocr=params.ocr_text, circles=params.circles,
                         settings=settings, image_id=image_id,
+                        # Word boxes are in this image's pixel space, so the
+                        # (possibly frame-cropped) size is part of the key.
                         tone_args=(params.contrast, params.brightness,
-                                   params.remove_background),
+                                   params.remove_background, tone.shape[0], tone.shape[1]),
                         cancelled=cancelled)
                     tone = analysis.cleaned
                     extra_px = analysis.text_px + analysis.circle_px
@@ -543,6 +559,10 @@ def run_convert(
             stroke_color=params.line_color,
             background_data_uri=get_background_data_uri(params.background),
         )
+        # Ownership/licence notice (no-op unless configured or titled).
+        svg_text = svgmeta.stamp(
+            svg_text, settings, title=params.svg_meta.title,
+            description=params.svg_meta.description)
         vpype_command = build_vpype_command(
             linemerge_tol=params.linemerge_tolerance_mm,
             linesimplify_tol=params.linesimplify_tolerance_mm,
@@ -551,7 +571,7 @@ def run_convert(
             page_size=params.page.size.upper(),
             margin_mm=params.page.margin_mm,
         )
-        filename = convert_result_filename(image_id, params, is_vector)
+        filename = convert_result_filename(image_id, params, is_vector, settings)
         return ConvertResult(
             svg_text=svg_text, filename=filename, stats=stats,
             warnings=warnings, vpype_command=vpype_command,

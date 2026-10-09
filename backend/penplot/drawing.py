@@ -71,6 +71,7 @@ DRAWING_PRESET: dict = {
     "centerline_prune_px": 3,
     "curve_smooth": 3,
     "circles": True,
+    "strip_frame": True,
     "ocr_text": {"enabled": True, "min_conf": 20.0, "min_chars": 3},
     "page": {"size": "A4", "orientation": "landscape", "margin_mm": 10.0,
              "padding_mm": 0.0, "frame": False},
@@ -268,8 +269,9 @@ def analyse(
 ) -> Analysis:
     """OCR + circle detection on the tone-adjusted (un-blurred) image.
 
-    ``tone_args`` (contrast, brightness, remove_background ...) keys the OCR
-    cache: the words depend on them, nothing else.
+    ``tone_args`` (contrast, brightness, remove_background, image size ...) keys
+    the OCR cache: the words, and the pixel space their boxes live in, depend
+    on them and nothing else.
     """
     warnings: list[str] = []
     cleaned = tone
@@ -309,6 +311,76 @@ def analyse(
             cleaned = arcs.mask_circles(cleaned, rings)
             circle_px = [arcs.circle_polyline(*c) for c in rings]
     return Analysis(cleaned, text_px, circle_px, warnings)
+
+
+# ---------------------------------------------------------------- page frame
+
+WARNING_FRAME_REMOVED = "page_frame_removed"
+WARNING_FRAME_NOT_FOUND = "page_frame_not_found"
+
+
+def detect_frame(
+    gray: np.ndarray, *, band: float = 0.12, cover: float = 0.8, min_sides: int = 3,
+    paper: int = 235, inset_px: int = 2, max_gap_px: int = 12,
+) -> tuple[int, int, int, int] | None:
+    """Find a border drawn around the artwork; return the crop box *inside* it.
+
+    CAD sheets often carry their own frame (sometimes double). The project draws
+    its own frame/label/radius, so the source one should go. A frame side is a
+    straight line that spans >= ``cover`` of the image and sits in the outer
+    ``band`` of that edge; parallel lines within ``max_gap_px`` of each other
+    (double borders) are one frame. At least ``min_sides`` of the four sides must
+    be found (a lone ground line therefore never qualifies); a missing side
+    keeps the image edge. Returns ``(x0, y0, x1, y1)`` for ``gray[y0:y1, x0:x1]``
+    or None. Pure NumPy/OpenCV, O(pixels).
+    """
+    h, w = gray.shape[:2]
+    ink = (gray < paper).astype(np.uint8)
+    close = np.ones((1, 7), np.uint8)
+    hl = cv2.morphologyEx(cv2.morphologyEx(ink, cv2.MORPH_CLOSE, close), cv2.MORPH_OPEN,
+                          np.ones((1, max(int(cover * w), 3)), np.uint8))
+    vl = cv2.morphologyEx(cv2.morphologyEx(ink, cv2.MORPH_CLOSE, close.T), cv2.MORPH_OPEN,
+                          np.ones((max(int(cover * h), 3), 1), np.uint8))
+    rows = np.flatnonzero(hl.any(axis=1))
+    cols = np.flatnonzero(vl.any(axis=0))
+
+    def inner_edge(idx: np.ndarray, lo: int, hi: int, from_low: bool) -> int | None:
+        """Inner edge of the outermost line cluster inside [lo, hi)."""
+        cand = idx[(idx >= lo) & (idx < hi)]
+        if cand.size == 0 or cand.size > (hi - lo) * 0.5:  # solid fill, not a line
+            return None
+        cand = cand if from_low else cand[::-1]
+        edge = int(cand[0])
+        for c in cand[1:]:
+            if abs(int(c) - edge) <= max_gap_px:
+                edge = int(c)
+            else:
+                break
+        return edge
+
+    bh, bw = int(band * h), int(band * w)
+    top = inner_edge(rows, 0, bh, True)
+    bottom = inner_edge(rows, h - bh, h, False)
+    left = inner_edge(cols, 0, bw, True)
+    right = inner_edge(cols, w - bw, w, False)
+    if sum(v is not None for v in (top, bottom, left, right)) < min_sides:
+        return None
+    x0 = 0 if left is None else left + 1 + inset_px
+    y0 = 0 if top is None else top + 1 + inset_px
+    x1 = w if right is None else right - inset_px
+    y1 = h if bottom is None else bottom - inset_px
+    if x1 - x0 < w * 0.5 or y1 - y0 < h * 0.5:  # implausible: not a frame
+        return None
+    return x0, y0, x1, y1
+
+
+def strip_frame(gray: np.ndarray) -> tuple[np.ndarray, list[str]]:
+    """Crop ``gray`` to the inside of its page frame, if it has one."""
+    box = detect_frame(gray)
+    if box is None:
+        return gray, [WARNING_FRAME_NOT_FOUND]
+    x0, y0, x1, y1 = box
+    return np.ascontiguousarray(gray[y0:y1, x0:x1]), [WARNING_FRAME_REMOVED]
 
 
 # ------------------------------------------------------------------ the mask

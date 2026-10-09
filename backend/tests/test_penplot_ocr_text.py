@@ -1,6 +1,8 @@
 """Spike tests for the OCR -> single-stroke text stage (no OCR engine needed)."""
 
+import cv2
 import numpy as np
+import pytest
 
 from backend.penplot import ocr_text, svgfont
 
@@ -99,17 +101,70 @@ def test_find_repeats_copies_a_read_word_onto_its_twin():
     assert twins[0].text == "7\u00b0"
 
 
-def test_cli_builds_the_preset_params(monkeypatch):
+def test_cli_builds_the_preset_params():
     from backend.penplot import drawing, img2plot
     from backend.penplot.schemas import ConvertParams
 
-    ap_args = img2plot.argparse.Namespace(
-        threshold=None, contrast=None, brightness=None, blur=None, prune_px=None,
-        simplify=None, upscale=None, curve_smooth=None, linemerge_mm=None,
-        linesimplify_mm=None, min_conf=None, min_chars=None, size=None,
-        orientation=None, margin_mm=None, no_ocr=False, no_circles=False)
-    params = img2plot.build_params(ap_args)
-    assert params == ConvertParams(**drawing.DRAWING_PRESET)
-    ap_args.upscale, ap_args.no_ocr = 2, True
-    tweaked = img2plot.build_params(ap_args)
+    args = img2plot.make_parser().parse_args(["x.png"])
+    assert img2plot.build_params(args) == ConvertParams(**drawing.DRAWING_PRESET)
+    args = img2plot.make_parser().parse_args(
+        ["x.png", "--upscale", "2", "--no-ocr", "--keep-frame", "--frame",
+         "--frame-radius-mm", "6", "--label", "PLAN 1"])
+    tweaked = img2plot.build_params(args)
     assert tweaked.trace_upscale == 2 and not tweaked.ocr_text.enabled
+    assert tweaked.strip_frame is False and tweaked.page.frame and tweaked.page.frame_radius_mm == 6
+    assert tweaked.label.enabled and tweaked.label.text == "PLAN 1"
+
+
+def test_cli_plans_outputs_and_never_overwrites_same_stems(tmp_path):
+    from backend.penplot import img2plot
+
+    (tmp_path / "scans").mkdir()
+    for name in ("b.png", "a.JPG", "notes.txt"):
+        (tmp_path / "scans" / name).write_bytes(b"x")
+    srcs = img2plot.expand_sources([str(tmp_path / "scans"), "https://h.example/dir/a.jpg"])
+    assert [s.rsplit("/", 1)[-1] for s in srcs] == ["a.JPG", "b.png", "a.jpg"]  # folder sorted, txt ignored
+    plan = img2plot.plan_outputs(srcs, str(tmp_path / "out"))
+    outs = [o for _, o in plan]
+    assert len(set(outs)) == 3 and outs[0].endswith("a.svg") and outs[1].endswith("b.svg")
+    assert outs[2].rsplit("/", 1)[-1].startswith("a-") and outs[2].endswith(".svg")
+
+
+def test_cli_batch_survives_a_bad_file_and_reports(tmp_path):
+    import json
+
+    from backend.penplot import img2plot
+
+    good = tmp_path / "good.png"
+    img = np.full((120, 160), 255, np.uint8)
+    cv2.rectangle(img, (30, 30), (120, 90), 0, 2)
+    cv2.imwrite(str(good), img)
+    bad = tmp_path / "bad.png"
+    bad.write_bytes(b"not an image")
+    rc = img2plot.main([str(good), str(bad), "--out-dir", str(tmp_path / "o"),
+                        "--report", str(tmp_path / "r.json"), "--no-ocr", "-q"])
+    assert rc == img2plot.EXIT_FAILED
+    rep = json.loads((tmp_path / "r.json").read_text())
+    assert rep["summary"]["ok"] == 1 and rep["summary"]["failed"] == 1
+    by = {r["src"].rsplit("/", 1)[-1]: r for r in rep["results"]}
+    assert by["good.png"]["status"] == "ok" and by["good.png"]["strokes"] > 0
+    assert by["bad.png"]["status"] == "error" and "readable" in by["bad.png"]["error"]
+    assert (tmp_path / "o" / "good.svg").exists() and not (tmp_path / "o" / "bad.svg").exists()
+    assert not list((tmp_path / "o").glob("*.tmp"))  # atomic writes leave no temp files
+    # Rerun: the good one is skipped (output newer than input), the bad one retried.
+    rc = img2plot.main([str(good), str(bad), "--out-dir", str(tmp_path / "o"),
+                        "--skip-existing", "--no-ocr", "-q"])
+    assert rc == img2plot.EXIT_FAILED
+    assert img2plot.main([str(good), "--out-dir", str(tmp_path / "o"),
+                          "--skip-existing", "--no-ocr", "-q"]) == img2plot.EXIT_OK
+
+
+def test_cli_usage_errors_exit_2(tmp_path, capsys):
+    from backend.penplot import img2plot
+
+    with pytest.raises(SystemExit) as exc:
+        img2plot.main(["a.png", "b.png"])  # several inputs, no --out-dir
+    assert exc.value.code == 2
+    with pytest.raises(SystemExit) as exc:
+        img2plot.main(["a.png", "--upscale", "9", "--out-dir", str(tmp_path)])  # bad value
+    assert exc.value.code == 2  # clean usage error, not a traceback

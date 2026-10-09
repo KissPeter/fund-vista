@@ -163,6 +163,20 @@ class OcrTextParams(BaseModel):
     )
 
 
+class SvgMetaParams(BaseModel):
+    """Per-request descriptive metadata for the output SVG (``<title>``/``<desc>``).
+
+    Ownership (creator, rights, licence) is deliberately NOT a request field:
+    it is server configuration (``PENPLOT_SVG_*``) so it cannot be removed or
+    replaced by a client.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(default="", max_length=200)
+    description: str = Field(default="", max_length=500)
+
+
 class ConvertParams(BaseModel):
     """Slider state. Defaults match the spec §2.3 example.
 
@@ -251,6 +265,15 @@ class ConvertParams(BaseModel):
             "supersampled long side stays within the server's pixel cap."
         ),
     )
+    strip_frame: bool = Field(
+        default=False,
+        description=(
+            "Detect a border drawn around the artwork (long lines near the "
+            "edges, double borders included) and crop to the inside of it, so "
+            "the page's own frame/label/radius controls are the only frame. "
+            "Raster inputs only; no frame found -> page_frame_not_found."
+        ),
+    )
     circles: bool = Field(
         default=False,
         description=(
@@ -260,6 +283,7 @@ class ConvertParams(BaseModel):
         ),
     )
     ocr_text: OcrTextParams = Field(default_factory=OcrTextParams)
+    svg_meta: SvgMetaParams = Field(default_factory=SvgMetaParams)
     linemerge_tolerance_mm: float = Field(default=0.5, ge=0.0, le=5.0)
     linesimplify_tolerance_mm: float = Field(default=0.1, ge=0.0, le=2.0)
     linesort: bool = True
