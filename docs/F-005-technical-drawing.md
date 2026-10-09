@@ -26,6 +26,9 @@ python -m backend.penplot.img2plot <url|file|folder> -o out.svg   # same run_con
 Batch/automation manual (folders, `--out-dir`, JSON report, exit codes, cron/CI
 recipes): `docs/img2plot-cli.md`.
 
+Ownership/licence metadata (`<title>`, `<desc>`, RDF `dc:`/`cc:`, generator) is
+stamped into every result when configured: `docs/svg-metadata.md`.
+
 ## Where it lives
 
 - `penplot/drawing.py` — `analyse` (OCR + circles), `build_ink` (mask), slots,

@@ -254,7 +254,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
         return error_response(exc.status, exc.code, exc.message)
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else "png"
     is_vector = ext == "svg"
-    filename = convert_result_filename(image_id, body.params, is_vector)
+    filename = convert_result_filename(image_id, body.params, is_vector, _settings)
 
     # P1 fast path: both the SVG and its sidecar are cached — serve the
     # response from metadata (no image read, no probe, no CPU).

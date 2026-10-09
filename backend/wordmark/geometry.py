@@ -28,6 +28,7 @@ from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.pens.transformPen import TransformPen
 from fontTools.ttLib import TTFont
 
+from backend.penplot import svgmeta
 from backend.penplot.errors import invalid_params
 from backend.wordmark.schemas import FONTS, CutSpec
 
@@ -325,6 +326,7 @@ def render_wordmark(text: str, font: str, mode: str, tracking: float,
     requested = [(c.junction, c.y, c.r) for c in cuts] if cuts else auto_cuts(text)
     shape, applied, warnings = build(text, font, tracking, requested, gap, mode)
     svg, _height = to_svg(shape, width, f"{text} ({font}, {mode})")
+    svg = svgmeta.stamp(svg, title=f"{text} ({font}, {mode})", require_owner=True)
     letters = sum(1 for ch in text if ch != " ")
     path_counts = {"letters": letters, "cuts": len(applied)}
     raw_counts = {"contours": _count_contours(shape), "letters": letters}

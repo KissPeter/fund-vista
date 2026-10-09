@@ -156,6 +156,21 @@ All options are optional. Unset ones use the **technical-drawing preset**
 | `--size` / `--orientation` | `A4` / `landscape` | `A3`/`A4`/`A5`/`Letter`; `portrait`/`landscape` |
 | `--margin-mm` / `--padding-mm` | 10 / 0 | outer margin / padding inside it |
 
+**Ownership / licence metadata** (details: `docs/svg-metadata.md`)
+
+| Option | Meaning |
+|---|---|
+| `--creator NAME` | creator/owner stamped into `<metadata>` (overrides `PENPLOT_SVG_CREATOR`) |
+| `--rights TEXT` | rights line, e.g. `"(c) 2026 Name. All rights reserved."` |
+| `--license PRESET` | `all-rights-reserved`, `cc-by-nc-4.0` (no commercial use), `cc-by-nc-nd-4.0`, `cc-by-nc-sa-4.0`, `cc-by-4.0`, `cc-by-sa-4.0` |
+| `--license-url URL` / `--attribution-url URL` | custom terms URL / credit link (http/https) |
+| `--title TEXT` / `--no-title` | SVG `<title>`; default is each image's file name |
+| `--description TEXT` | SVG `<desc>` text |
+
+A bad `--license` or URL is a usage error (exit 2) before any image is converted.
+The same values can be set once through `PENPLOT_SVG_*` environment variables
+(handy for cron/CI); flags win.
+
 **Tracing**
 
 | Option | Default | Meaning |
@@ -198,6 +213,11 @@ img2plot scans/ --out-dir draft/ --no-ocr --no-circles --upscale 1
 
 # Portrait A3 sheets
 img2plot scans/ --out-dir plots/ --size A3 --orientation portrait --margin-mm 15
+
+# Stamp ownership + "no commercial use" into every SVG
+img2plot scans/ --out-dir plots/ --creator "Pen Pixel Shop" \
+    --rights "(c) 2026 Pen Pixel Shop. No commercial use without written permission." \
+    --license cc-by-nc-4.0
 
 # Resume after a crash / only convert new or changed inputs
 img2plot scans/ --out-dir plots/ --skip-existing --report plots/report.json

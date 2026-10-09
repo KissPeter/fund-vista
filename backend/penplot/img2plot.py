@@ -13,7 +13,9 @@ step is skipped with an ``ocr_unavailable`` warning.
 Batch use: several inputs (or a folder) need ``--out-dir``; each image becomes
 ``<stem>.svg``. ``--report`` writes one JSON record per image, ``--skip-existing``
 makes reruns resumable, ``--jobs N`` runs N images at once, and the exit code is
-non-zero if any image failed. Full manual: docs/img2plot-cli.md.
+non-zero if any image failed. Ownership/licence metadata (``--creator``,
+``--rights``, ``--license`` ...) is stamped into every SVG; each image's
+``<title>`` defaults to its file name. Full manual: docs/img2plot-cli.md.
 """
 
 from __future__ import annotations
@@ -113,6 +115,18 @@ def build_params(a: argparse.Namespace):
     return ConvertParams(**data)
 
 
+_META_FLAGS = (("creator", "svg_creator"), ("rights", "svg_rights"), ("license", "svg_license"),
+               ("license_url", "svg_license_url"), ("attribution_url", "svg_attribution_url"))
+
+
+def settings_from(argd: dict):
+    """``Settings`` with the ownership flags layered over the PENPLOT_SVG_* env."""
+    from backend.penplot.config import Settings  # noqa: PLC0415
+
+    return Settings(**{field: argd[flag] for flag, field in _META_FLAGS
+                       if argd.get(flag) is not None})
+
+
 def process_one(src: str, out: str, argd: dict) -> dict:
     """Convert one image; never raises (a batch must survive a bad file).
 
@@ -124,15 +138,19 @@ def process_one(src: str, out: str, argd: dict) -> dict:
     rec: dict = {"src": src, "out": out, "status": "error"}
     try:
         from backend.penplot import imaging  # noqa: PLC0415
-        from backend.penplot.config import Settings  # noqa: PLC0415
         from backend.penplot.pipeline import run_convert  # noqa: PLC0415
+        from backend.penplot.schemas import SvgMetaParams  # noqa: PLC0415
 
         data = load_bytes(src)
         width, height, _fmt = imaging.probe_raster(data)
         result = run_convert(
             image_id=hashlib.sha256(data).hexdigest(), image_bytes=data,
             is_vector=False, src_w=float(width), src_h=float(height),
-            params=build_params(argparse.Namespace(**argd)), settings=Settings())
+            params=build_params(argparse.Namespace(**argd)).model_copy(update={
+                "svg_meta": SvgMetaParams(
+                    title=(argd.get("title") or ("" if argd.get("no_title") else stem_of(src))),
+                    description=argd.get("description") or "")}),
+            settings=settings_from(argd))
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
         tmp = f"{out}.tmp"
         with open(tmp, "w") as fh:
@@ -173,6 +191,18 @@ def make_parser() -> argparse.ArgumentParser:
         ("label-font", str, "label font, default znikoslsvginot"),
     ):
         ap.add_argument(f"--{flag}", type=typ, default=None, help=help_)
+    for flag, help_ in (
+        ("creator", "ownership: creator/owner name stamped into the SVG metadata"),
+        ("rights", "ownership: rights line, e.g. '(c) 2026 Name. All rights reserved.'"),
+        ("license", "licence preset: all-rights-reserved, cc-by-nc-4.0, cc-by-nc-nd-4.0, "
+                    "cc-by-nc-sa-4.0, cc-by-4.0, cc-by-sa-4.0"),
+        ("license-url", "custom licence/terms URL (http/https)"),
+        ("attribution-url", "where credit should point (http/https)"),
+        ("title", "SVG <title> (default: the image's file name)"),
+        ("description", "SVG <desc> text"),
+    ):
+        ap.add_argument(f"--{flag}", default=None, help=help_)
+    ap.add_argument("--no-title", action="store_true", help="do not set a <title> from the file name")
     ap.add_argument("--no-ocr", action="store_true", help="skip text recognition")
     ap.add_argument("--no-circles", action="store_true", help="skip circle detection")
     ap.add_argument("--frame", action="store_true",
@@ -213,6 +243,7 @@ def main(argv=None) -> int:
         ap.error("several inputs need --out-dir")
     try:
         build_params(a)  # fail on bad flag values before touching any image
+        settings_from(vars(a))  # bad --license / URL fails here, not per image
     except ValueError as exc:  # pydantic.ValidationError is a ValueError
         ap.error("invalid option value: " + str(exc).replace("\n", " "))
 

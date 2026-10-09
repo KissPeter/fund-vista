@@ -121,6 +121,29 @@ class Settings(BaseSettings):
     # (~60 bytes/pixel peak), so 4 MP keeps a request near 300 MB.
     trace_max_pixels: int = 4_000_000
 
+    # Ownership / licence notice stamped into every deliverable SVG (see
+    # ``svgmeta``). All empty = nothing added (output byte-identical). Server
+    # side on purpose: clients cannot remove or replace it.
+    svg_creator: str = ""
+    svg_rights: str = ""          # e.g. "(c) 2026 Pen Pixel Shop. All rights reserved."
+    svg_license: str = ""         # all-rights-reserved | cc-by-nc-4.0 | ... (svgmeta.LICENSES)
+    svg_license_url: str = ""     # custom licence/terms URL (http/https)
+    svg_attribution_url: str = "" # where credit should point (http/https)
+
+    @field_validator("svg_license", mode="before")
+    @classmethod
+    def _check_svg_license(cls, value: object) -> object:
+        from backend.penplot.svgmeta import validate_license  # noqa: PLC0415
+
+        return validate_license(value) if isinstance(value, str) else value
+
+    @field_validator("svg_license_url", "svg_attribution_url", mode="before")
+    @classmethod
+    def _check_svg_urls(cls, value: object) -> object:
+        from backend.penplot.svgmeta import validate_url  # noqa: PLC0415
+
+        return validate_url(value) if isinstance(value, str) else value
+
     @field_validator("rate_limit_whitelist", mode="before")
     @classmethod
     def _split_whitelist(cls, value: object) -> object:

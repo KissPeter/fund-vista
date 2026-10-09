@@ -18,7 +18,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
 Doc: `docs/F-001-airport-diagrams.md`.
-Doc: `docs/F-005-technical-drawing.md`, CLI manual `docs/img2plot-cli.md`.
+Doc: `docs/F-005-technical-drawing.md`, CLI manual `docs/img2plot-cli.md`, SVG ownership metadata `docs/svg-metadata.md`.
 
 ## Research notes (untracked, no ID)
 
