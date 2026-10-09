@@ -16,6 +16,7 @@ import numpy as np
 from defusedxml import ElementTree as DefusedET
 from PIL import Image, UnidentifiedImageError
 from PIL.Image import DecompressionBombError
+from PIL import ImageDraw
 
 from backend.penplot.config import ALLOWED_RASTER_EXTS
 from backend.penplot.errors import ErrorCode, PenPlotError, image_too_large
@@ -226,6 +227,50 @@ def a4_dpi(width_px: int, a4_width_mm: float = 210.0) -> float:
     return width_px / (a4_width_mm / 25.4)
 
 
+def rasterize_polylines(
+    polylines: list[list[tuple[float, float]]],
+    vw: float, vh: float, max_dim_px: int,
+) -> np.ndarray:
+    """Render parsed vector polylines to a grayscale working image.
+
+    Vector inputs enter the same tone+method pipeline as rasters, so every
+    Style-rail slider (methods, threshold, blur, contrast, hatch pitch,
+    simplify, prune) shapes vector geometry too. Closed rings (first point
+    == last: SVG polygons, circles, Z-closed paths) rasterize FILLED; open
+    strokes draw as solid hairlines. Supersampled (capped so the buffer
+    stays small) with a LANCZOS downscale, so edges carry real antialiased
+    gray for threshold/blur/contrast to act on, while stroke cores stay
+    pure black at any default threshold.
+
+    Returns uint8 gray (0 = ink, 255 = paper) at the working resolution —
+    callers use its shape as the layout source size, exactly like a
+    downscaled raster upload.
+    """
+    scale = min(1.0, max_dim_px / max(float(vw), float(vh), 1.0))
+    w, h = max(8, int(round(vw * scale))), max(8, int(round(vh * scale)))
+    ss = 3 if max(w, h) * 3 <= 4096 else (2 if max(w, h) * 2 <= 4096 else 1)
+    sw, sh = w * ss, h * ss
+    img = Image.new("L", (sw, sh), 255)
+    draw = ImageDraw.Draw(img)
+    k = scale * ss
+    # Solid cores at any threshold: hairlines draw `ss` wide (== 1 working
+    # pixel), so only antialiased edges — never stroke bodies — respond to
+    # the threshold slider.
+    hair = max(1, ss)
+    for pl in polylines:
+        if len(pl) < 2:
+            continue
+        pts = [(x * k, y * k) for x, y in pl]
+        if len(pl) >= 3 and abs(pl[0][0] - pl[-1][0]) < 1e-9 \
+                and abs(pl[0][1] - pl[-1][1]) < 1e-9:
+            draw.polygon(pts, fill=0)
+        else:
+            draw.line(pts, fill=0, width=hair)
+    if ss > 1:
+        img = img.resize((w, h), Image.LANCZOS)
+    return np.asarray(img, dtype=np.uint8)
+
+
 __all__ = [
     "EXT_TO_PILLOW_FORMAT",
     "a4_dpi",
@@ -236,6 +281,7 @@ __all__ = [
     "looks_like_svg",
     "maybe_downscale",
     "probe_raster",
+    "rasterize_polylines",
     "remove_background",
     "sniff_extension",
     "strip_hatch",

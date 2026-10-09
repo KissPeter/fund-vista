@@ -154,8 +154,9 @@ Shared block included by all three pages:
   result, return `{image_id, svg_url, vpype_command, stats, warnings}`.
 - `run_convert` (`pipeline.py`): label strip reserve → raster branch
   (load → optional downscale to 3000 px → remove_background → gray
-  preprocess → ink mask) or vector branch (parse SVG paths directly,
-  shading sliders ignored) → run each selected method in order
+  preprocess → ink mask) or vector branch (pure contour traces the parsed
+  polylines directly; Centerline/Hatch/Flow rasterize first, then the same
+  gray preprocess → ink mask) → run each selected method in order
   (`methods.py`: `ContourMethod` via OpenCV findContours, `CenterlineMethod`
   via Zhang-Suen thinning + skeleton walk, `HatchMethod` tonal hatch +
   dark cross-hatch, `FlowMethod` deterministic streamlines) → `layout()`

@@ -20,7 +20,7 @@
       {% endfor %}
     <label>min detail (m) <input type="range" id="city_minlen" min="0" max="50" step="1" value="10"><output id="city_minlen_val">10</output></label>
     <button type="button" id="cityBtn">Load city map</button>
-    <p class="meta" id="meta">Pulls street geometry via <code>/v1/citymap/import</code> for the visible area and plots it with the settings below (vector input: shading sliders don't apply; pen, page, label and display do). First load can take a minute; repeats are served from cache. Credit: © OpenStreetMap contributors (ODbL).</p>
+    <p class="meta" id="meta">Pulls street geometry via <code>/v1/citymap/import</code> for the visible area and plots it with the settings below (vector input: every method applies — Contour traces directly, the rest rasterize first; pen, page, label and display do). First load can take a minute; repeats are served from cache. Credit: © OpenStreetMap contributors (ODbL).</p>
   </fieldset>
 
   {% with legend_method="2. Method" %}{% include "partials/_method.html" %}{% endwith %}

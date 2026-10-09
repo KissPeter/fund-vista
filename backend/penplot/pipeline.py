@@ -64,12 +64,21 @@ class ConvertResult:
         self.vpype_command = vpype_command
 
 
-# Raster-only parameters that never reach the geometry for vector inputs
-# (they feed the raster preprocessing pipeline). Stripped from the convert
-# signature so reshaping slider values the UI still shows for SVGs does not
-# invalidate the result cache.
+# Parameters that never reach the geometry for vector inputs: the
+# technical-drawing-mode stages stay raster-only (they analyse photo
+# pixels — OCR text, exact circles, thin-line keeping, supersampled
+# tracing — and have no FE sliders).
 _VECTOR_IGNORED_PARAMS = frozenset({
-    "methods",
+    "thin_lines",
+    "trace_upscale",
+    "circles",
+    "ocr_text",
+})
+# Tone + trace-tuning sliders. They shape vector geometry only on the
+# rasterized path (see _vector_needs_raster): with a pure-contour method
+# set vectors trace directly and there are no pixels to tone-map, so these
+# stay out of the contour-only cache key instead of fragmenting it.
+_VECTOR_TONE_PARAMS = frozenset({
     "threshold",
     "blur_radius",
     "contrast",
@@ -80,11 +89,22 @@ _VECTOR_IGNORED_PARAMS = frozenset({
     "hatch_angle_deg",
     "contour_simplify",
     "centerline_prune_px",
-    "thin_lines",
-    "trace_upscale",
-    "circles",
-    "ocr_text",
 })
+# Method generators that need fills: centerlines skeletons and hatch/flow
+# shadings only exist on raster ink, so selecting any of them rasterizes
+# the vector first (supersampled, antialiased). Plain contour traces the
+# parsed polylines directly — byte-identical, fast, and the default
+# everywhere (lineart preset, all designer tabs).
+_VECTOR_RASTER_METHODS = frozenset({"centerline", "hatch", "flow"})
+
+
+def _vector_needs_raster(methods: list[str] | None) -> bool:
+    """True when the selected generators need raster ink.
+
+    Mirrors run_convert's ``methods or ["hatch"]`` default: an empty set
+    means hatch, which needs the raster path.
+    """
+    return any(m in _VECTOR_RASTER_METHODS for m in (methods or ["hatch"]))
 # Default-off stages for the fast vector preview path (see P2 / gh #27).
 _SKIPPABLE_TRAVEL_STAGES = frozenset({"linesort", "reloop_tolerance_mm"})
 
@@ -113,6 +133,12 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
     if is_vector:
         for field in _VECTOR_IGNORED_PARAMS:
             data.pop(field, None)
+        if not _vector_needs_raster(data.get("methods")):
+            # Pure-contour vectors trace directly: no pixels exist to
+            # tone-map, so the tone sliders stay out of the key instead of
+            # fragmenting the result cache.
+            for field in _VECTOR_TONE_PARAMS:
+                data.pop(field, None)
         if not params.full_quality:
             for field in _SKIPPABLE_TRAVEL_STAGES:
                 data.pop(field, None)
@@ -135,6 +161,82 @@ def _timed(label: str, image_id: str, method: str, started: float) -> None:
         "pipeline.convert image=%s method=%s stage=%s ms=%.1f",
         image_id[:12], method, label, (time.perf_counter() - started) * 1000.0,
     )
+
+
+def _tone_to_mask(gray: np.ndarray, params: ConvertParams) -> tuple[np.ndarray, np.ndarray]:
+    """Legacy tone stack: blur → contrast → brightness → threshold mask.
+
+    Shared by the raster non-drawing path and the vector path (which feeds
+    rasterized polylines), so a slider value tunes identically for both
+    inputs.
+    """
+    gray = imaging.blur(gray, params.blur_radius)
+    gray = imaging.adjust_contrast(gray, params.contrast)
+    gray = imaging.adjust_brightness(gray, params.brightness)
+    return gray, imaging.threshold_mask(gray, params.threshold)
+
+
+def _generate_from_mask(
+    *, params: ConvertParams, mask: np.ndarray, gray: np.ndarray, up: int,
+    src_w: float, src_h: float, reserve_bottom_mm: float,
+    image_id: str, method_label: str, methods: list[str],
+    warnings: list[str], poll, started: float,
+) -> list:
+    """Shared method stage: hatch-strip → pitch/clamp → MethodContext →
+    every selected generator in order.
+
+    Runs on raster masks and on rasterized vectors alike, so the Style rail
+    means the same thing for both inputs. ``poll`` is the caller's P2
+    cancel checkpoint; ``started`` seeds the "preprocess" timing bucket.
+    """
+    if params.strip_hatch_px > 0:
+        # Morphological opening on the ink mask: erases anything
+        # thinner than strip_hatch_px (hatch/cross-hatch strokes)
+        # while regenerating thicker strokes (outlines, solid fills)
+        # at full width. Deliberately grouped into the "preprocess"
+        # timing bucket below, same as blur/contrast/threshold.
+        mask = imaging.strip_hatch(mask, params.strip_hatch_px * up)
+        warnings.append("hatch_stripped")
+    _timed("preprocess", image_id, method_label, started)
+    # Hatch pitch is authored in mm; convert to px with the same scale
+    # layout() will later use, so WYSIWYG holds on the page.
+    scale = layout_scale(
+        src_w, src_h,
+        params.page.size, params.page.orientation, params.page.margin_mm,
+        reserve_bottom_mm,
+        params.page.padding_mm,
+    )
+    pitch_px = params.hatch_pitch_mm / max(scale, 1e-9)
+    pitch_px_clamped = float(np.clip(pitch_px, 2.0, 200.0))
+    if pitch_px != pitch_px_clamped:
+        # Extreme page/image combos can request a sub-satisfiable pitch;
+        # surface the silent clamp instead of just doing it (C.2.4a).
+        warnings.append("hatch_pitch_clamped")
+    # Pixel-valued knobs follow the supersampling factor ``up`` (1 on
+    # the legacy path), so a value tuned at 1x means the same thing.
+    ctx = MethodContext(
+        threshold=params.threshold,
+        blur_radius=params.blur_radius * up,
+        hatch_pitch_mm=params.hatch_pitch_mm,
+        contour_simplify=params.contour_simplify * up,
+        hatch_angle_deg=params.hatch_angle_deg,
+        hatch_pitch_px=pitch_px_clamped * up,
+        centerline_prune_px=params.centerline_prune_px * up,
+    )
+    # Every selected generator runs on the same (mask, gray) in the
+    # requested order; outputs concatenate before the shared optimize
+    # chain below. Listed order is preserved here (e.g. shading first,
+    # outlines last) — linesort later only reorders for travel.
+    raw_px = []
+    t0 = time.perf_counter()
+    for method in methods:
+        poll(f"vpype:{method}")
+        generator = METHOD_REGISTRY[method]
+        raw_px.extend(generator.generate(mask, gray, ctx))
+        _timed(f"method-{method}", image_id, method_label, t0)
+    if up > 1:  # back to working-image pixels
+        raw_px = [[(x / up, y / up) for x, y in line] for line in raw_px]
+    return raw_px
 
 
 def run_convert(
@@ -210,8 +312,34 @@ def run_convert(
             src_w, src_h = vw, vh
             warnings.extend(svg_warnings)
             _timed("parse-svg", image_id, method_label, t0)
-            gray = None
-            mask = None
+            if not _vector_needs_raster(methods):
+                # Plain contour: the parsed polylines already ARE the plot
+                # geometry — trace them directly (byte-identical, fast).
+                # Tone sliders have no pixels to act on here.
+                gray = None
+                mask = None
+            else:
+                # Centerline/hatch/flow need raster ink: rasterize the parsed
+                # polylines (supersampled, antialiased) and run the same
+                # tone+method pipeline as rasters, so every Style-rail
+                # slider — threshold, blur, contrast, hatch pitch, simplify,
+                # prune — shapes this geometry too.
+                _poll("vector:rasterize")
+                gray = imaging.rasterize_polylines(raw_px, vw, vh, settings.max_image_dim_px)
+                src_w, src_h = float(gray.shape[1]), float(gray.shape[0])
+                if params.remove_background:
+                    gray = imaging.remove_background(gray)
+                    warnings.append("background_removed")
+                _timed("rasterize", image_id, method_label, t0)
+                t0 = time.perf_counter()
+                gray, mask = _tone_to_mask(gray, params)
+                raw_px = _generate_from_mask(
+                    params=params, mask=mask, gray=gray, up=1,
+                    src_w=src_w, src_h=src_h, reserve_bottom_mm=reserve_bottom_mm,
+                    image_id=image_id, method_label=method_label, methods=methods,
+                    warnings=warnings, poll=_poll, started=t0,
+                )
+                del mask, gray
         else:
             _poll("vpype:decode")
             gray, w, h, _fmt = imaging.load_raster(image_bytes)
@@ -257,57 +385,13 @@ def run_convert(
                     max_pixels=settings.trace_max_pixels)
                 warnings.extend(ink_warnings)
             else:
-                gray = imaging.blur(gray, params.blur_radius)
-                gray = imaging.adjust_contrast(gray, params.contrast)
-                gray = imaging.adjust_brightness(gray, params.brightness)
-                mask = imaging.threshold_mask(gray, params.threshold)
-            if params.strip_hatch_px > 0:
-                # Morphological opening on the ink mask: erases anything
-                # thinner than strip_hatch_px (hatch/cross-hatch strokes)
-                # while regenerating thicker strokes (outlines, solid fills)
-                # at full width. Deliberately grouped into the "preprocess"
-                # timing bucket below, same as blur/contrast/threshold.
-                mask = imaging.strip_hatch(mask, params.strip_hatch_px * up)
-                warnings.append("hatch_stripped")
-            _timed("preprocess", image_id, method_label, t0)
-            t0 = time.perf_counter()
-            # Hatch pitch is authored in mm; convert to px with the same scale
-            # layout() will later use, so WYSIWYG holds on the page.
-            scale = layout_scale(
-                src_w, src_h,
-                params.page.size, params.page.orientation, params.page.margin_mm,
-                reserve_bottom_mm,
-                params.page.padding_mm,
+                gray, mask = _tone_to_mask(gray, params)
+            raw_px = _generate_from_mask(
+                params=params, mask=mask, gray=gray, up=up,
+                src_w=src_w, src_h=src_h, reserve_bottom_mm=reserve_bottom_mm,
+                image_id=image_id, method_label=method_label, methods=methods,
+                warnings=warnings, poll=_poll, started=t0,
             )
-            pitch_px = params.hatch_pitch_mm / max(scale, 1e-9)
-            pitch_px_clamped = float(np.clip(pitch_px, 2.0, 200.0))
-            if pitch_px != pitch_px_clamped:
-                # Extreme page/image combos can request a sub-satisfiable pitch;
-                # surface the silent clamp instead of just doing it (C.2.4a).
-                warnings.append("hatch_pitch_clamped")
-            # Pixel-valued knobs follow the supersampling factor ``up`` (1 on
-            # the legacy path), so a value tuned at 1x means the same thing.
-            ctx = MethodContext(
-                threshold=params.threshold,
-                blur_radius=params.blur_radius * up,
-                hatch_pitch_mm=params.hatch_pitch_mm,
-                contour_simplify=params.contour_simplify * up,
-                hatch_angle_deg=params.hatch_angle_deg,
-                hatch_pitch_px=pitch_px_clamped * up,
-                centerline_prune_px=params.centerline_prune_px * up,
-            )
-            # Every selected generator runs on the same (mask, gray) in the
-            # requested order; outputs concatenate before the shared optimize
-            # chain below. Listed order is preserved here (e.g. shading first,
-            # outlines last) — linesort later only reorders for travel.
-            raw_px = []
-            for method in methods:
-                _poll(f"vpype:{method}")
-                generator = METHOD_REGISTRY[method]
-                raw_px.extend(generator.generate(mask, gray, ctx))
-                _timed(f"method-{method}", image_id, method_label, t0)
-            if up > 1:  # back to working-image pixels
-                raw_px = [[(x / up, y / up) for x, y in line] for line in raw_px]
             del mask, gray
             stack.close()  # arrays freed; let the next heavy trace in
 

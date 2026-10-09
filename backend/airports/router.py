@@ -284,8 +284,9 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
     """Render an airport diagram and register it as a penplot image.
 
     Returns ``image_id`` — convert it with ``POST /v1/convert`` exactly
-    like an uploaded SVG (vector branch: shading sliders are ignored,
-    pen/page/label/display all apply).
+    like an uploaded SVG (vector branch: every method applies — Contour
+    traces directly, Centerline/Hatch/Flow rasterize first so threshold
+    and tone shape them; pen/page/label/display all apply).
 
     Same P2 checkpoints as ``/render``.
     """
