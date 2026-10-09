@@ -145,7 +145,7 @@ def _text_candidates(gray: np.ndarray, ink_threshold: int = 140, *,
     small = np.zeros(n, bool)
     for i in range(1, n):
         _, _, w, h, _ = st[i]
-        big[i] = 6 <= max(w, h) <= 15 and 2 <= min(w, h) <= 13
+        big[i] = 5 <= max(w, h) <= 15 and 2 <= min(w, h) <= 13
         # degree rings / dots: only count next to a normal glyph (see below)
         small[i] = 3 <= max(w, h) <= 5 and 2 <= min(w, h)
     big_px = big[lab].astype(np.uint8)
@@ -157,7 +157,7 @@ def _text_candidates(gray: np.ndarray, ink_threshold: int = 140, *,
         for i in range(1, m):
             x, y, w, h, _ = (int(v) for v in s2[i])
             long_, short = (w, h) if orient == "h" else (h, w)
-            if not (long_ >= 10 and 8 <= short <= 22):
+            if not (long_ >= 10 and 6 <= short <= 22):
                 continue
             region = mlab[y:y + h, x:x + w] == i
             if not big_px[y:y + h, x:x + w][region].any():
@@ -173,6 +173,23 @@ def _overlap(a, b) -> float:
     ix = max(0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
     iy = max(0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
     return ix * iy / max(min(a[2] * a[3], b[2] * b[3]), 1)
+
+
+def _replaces(new: Word, clash: list[Word]) -> bool:
+    """Should ``new`` take over the boxes it overlaps (``clash``)?
+
+    More confident wins, except that a reading which is just a cut-off version
+    of the other ("197" from a clipped "1975") always loses to the longer one.
+    """
+    for m in clash:
+        a, b = new.text, m.text
+        if a != b and b in a and new.conf >= 25:
+            continue  # new extends m: acceptable even when less confident
+        if a != b and a in b:
+            return False  # new is a fragment of m
+        if new.conf <= m.conf:
+            return False
+    return True
 
 
 def find_repeats(gray: np.ndarray, words: list[Word], *, min_score: float = 0.8) -> list[Word]:
@@ -209,7 +226,7 @@ def find_repeats(gray: np.ndarray, words: list[Word], *, min_score: float = 0.8)
 #: candidate; round 2 only on cells whose round-1 reading was not decisive.
 _ROUNDS: tuple[tuple[tuple[int, float, str], ...], ...] = (
     # round 1: upright only - sheared variants of upright text are noise votes
-    tuple((sc, 0.0, post) for post in ("gray", "blurotsu") for sc in (3, 4, 5, 6)),
+    tuple((sc, 0.0, post) for post in ("soft3", "soft6", "blurotsu") for sc in (3, 4, 5, 6, 8)),
     tuple((sc, sh, post) for sc in (4, 6, 8) for sh in (0.0, 0.1, 0.2)
           for post in ("gray", "blurotsu")),
 )
@@ -245,13 +262,17 @@ def _sheet(cells: list[np.ndarray], scale: int, shear: float, post: str):
     """Stack upscaled crops in one column; return ``(sheet, row_bounds)``."""
     rows = []
     for crop in cells:
-        r = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        soft = post in ("soft3", "soft6")
+        r = cv2.resize(crop, None, fx=scale, fy=scale,
+                       interpolation=cv2.INTER_LANCZOS4 if soft else cv2.INTER_CUBIC)
         if shear:  # de-slant italic dimension text (top leans right)
             hh, ww = r.shape
             m = np.float32([[1, shear, -shear * hh / 2], [0, 1, 0]])
             r = cv2.warpAffine(r, m, (ww + int(shear * hh), hh), flags=cv2.INTER_CUBIC,
                                borderMode=cv2.BORDER_CONSTANT, borderValue=255)
-        if post == "blurotsu":
+        if soft:  # light blur, no binarisation: smooths thin serifs, keeps tone
+            r = cv2.GaussianBlur(r, (0, 0), scale * (0.3 if post == "soft3" else 0.6))
+        elif post == "blurotsu":
             r = cv2.GaussianBlur(r, (0, 0), scale * 0.5)
             _, r = cv2.threshold(r, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         rows.append(r)
@@ -347,6 +368,58 @@ def tesserocr_reader(sheet: np.ndarray, bounds, whitelist: str) -> list[str]:
     return ["".join(t for _, t in sorted(p)) for p in per]
 
 
+#: A line reader turns one padded single-line crop into its text ("" if none).
+LineReader = Callable[[np.ndarray, str], str]
+
+
+def tesseract_line(img: np.ndarray, whitelist: str) -> str:
+    """Single-line read through the ``tesseract`` binary (psm 7)."""
+    import pytesseract  # noqa: PLC0415
+
+    return pytesseract.image_to_string(
+        img, config=f"--psm 7 -c tessedit_char_whitelist={whitelist}").strip()
+
+
+def tesserocr_line(img: np.ndarray, whitelist: str) -> str:
+    """Single-line read through the in-process ``tesserocr`` wheel."""
+    tesserocr = _tesserocr
+    if tesserocr is None:
+        raise RuntimeError("tesserocr is not installed")
+    from PIL import Image  # noqa: PLC0415
+
+    api = getattr(_tls, "line_api", None)
+    if api is None or getattr(_tls, "line_whitelist", None) != whitelist:
+        if api is not None:
+            api.End()
+        api = tesserocr.PyTessBaseAPI(
+            path=TESSDATA_DIR, lang="eng", psm=tesserocr.PSM.SINGLE_LINE,
+            oem=tesserocr.OEM.LSTM_ONLY)
+        api.SetVariable("tessedit_char_whitelist", whitelist)
+        _tls.line_api, _tls.line_whitelist = api, whitelist
+    api.SetImage(Image.fromarray(img))
+    try:
+        return (api.GetUTF8Text() or "").strip()
+    except RuntimeError:
+        return ""
+
+
+_LINE_FOR: dict = {}  # sheet reader -> its line reader (filled below)
+
+#: Single-line re-read variants: (scale, blur sigma as a fraction of scale).
+_LINE_VARIANTS = tuple((sc, bl) for sc in (3, 4, 5, 6, 8) for bl in (0.3, 0.6))
+_LINE_MIN_VOTES = 3
+_LINE_MIN_SHARE = 0.4
+
+
+def _line_variant(crop: np.ndarray, scale: int, blur: float) -> np.ndarray:
+    r = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_LANCZOS4)
+    r = cv2.GaussianBlur(r, (0, 0), scale * blur)
+    return cv2.copyMakeBorder(r, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=255)
+
+
+_LINE_FOR.update({tesseract_reader: tesseract_line, tesserocr_reader: tesserocr_line})
+
+
 class SheetEngine:
     """Dimension-style OCR: blob detection + batched contact-sheet voting.
 
@@ -370,13 +443,16 @@ class SheetEngine:
     def __init__(self, whitelist: str = "0123456789°", *, workers: int = 2,
                  deadline: float | None = None,
                  cancelled: Callable[[], bool] | None = None,
-                 reader: SheetReader | None = None) -> None:
+                 reader: SheetReader | None = None,
+                 line_reader: LineReader | None = None) -> None:
         self.reader = reader or tesseract_reader
+        self.line_reader = line_reader or _LINE_FOR.get(self.reader)
         self.whitelist = whitelist
         self.workers = max(1, workers)
         self.deadline = deadline
         self.cancelled = cancelled
         self.budget_exceeded = False
+        self._t0 = time.monotonic()
 
     def _out_of_time(self) -> bool:
         if self.cancelled is not None and self.cancelled():
@@ -430,7 +506,7 @@ class SheetEngine:
         # an overlapping pair wins.
         wide = strip_lines(gray)
         merged: list[Word] = []
-        t0 = time.monotonic()
+        t0 = self._t0 = time.monotonic()
         for k, img in enumerate((wide, strip_lines(gray, grow=0))):
             if self._out_of_time():
                 break
@@ -443,9 +519,68 @@ class SheetEngine:
                 clash = [m for m in merged if _overlap((m.x, m.y, m.w, m.h), box) > 0.3]
                 if not clash:
                     merged.append(w)
-                elif w.conf > max(m.conf for m in clash):
+                elif _replaces(w, clash):
                     merged = [m for m in merged if m not in clash] + [w]
+        merged = self._refine(strip_lines(gray, grow=0), merged)
         return merged + find_repeats(wide, [w for w in merged if w.conf >= 20])
+
+    def _refine(self, gray: np.ndarray, words: list[Word]) -> list[Word]:
+        """Single-line re-read (psm 7) of horizontal boxes the sheets left unread
+        or unsure about. Tesseract is markedly better on one padded line than on
+        a stacked column, and plurality over scale/blur variants settles the
+        digits (1390 vs "190"). Replaces a word only with a better-agreed one."""
+        if self.line_reader is None:
+            return words
+        todo: list[tuple[int, int, int, int]] = []
+        for thr in reversed(INK_THRESHOLDS):  # loosest first: widest boxes
+            for x, y, w, h, orient in _text_candidates(gray, thr, stripped=True):
+                if orient != "h" or h > 20 or w < 12:
+                    continue
+                if any(_overlap(t, (x, y, w, h)) > 0.3 for t in todo):
+                    continue
+                done = [m for m in words if m.conf >= 60
+                        and _overlap((m.x, m.y, m.w, m.h), (x, y, w, h)) > 0.3]
+                if not done:
+                    todo.append((x, y, w, h))
+        if not todo or self._out_of_time():
+            return words
+        # An optional extra: never worth the whole OCR result. Skip it when the
+        # budget could not cover it, and stop quietly (no budget_exceeded flag).
+        now = time.monotonic()
+        if self.deadline is not None and self.deadline - now < 0.5 * (now - self._t0):
+            return words
+
+        def late() -> bool:
+            return self.deadline is not None and time.monotonic() > self.deadline
+
+        def read(box):
+            if late() or (self.cancelled is not None and self.cancelled()):
+                return None
+            x, y, w, h = box
+            crop = gray[max(y - 3, 0):y + h + 3, max(x - 6, 0):x + w + 6]
+            votes: dict[str, int] = {}
+            for sc, bl in _LINE_VARIANTS:
+                t = self.line_reader(_line_variant(crop, sc, bl), self.whitelist)
+                if t:
+                    votes[t] = votes.get(t, 0) + 1
+            return votes
+
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            results = list(pool.map(read, todo))
+        out = list(words)
+        for (x, y, w, h), votes in zip(todo, results):
+            if not votes:
+                continue
+            txt, cnt = max(votes.items(), key=lambda kv: kv[1])
+            share = cnt / sum(votes.values())
+            if cnt < _LINE_MIN_VOTES or share < _LINE_MIN_SHARE or len(txt) < 2:
+                continue
+            new = Word(txt, float(x), float(y), float(w), float(h), conf=share * 100, angle=0.0)
+            clash = [m for m in out if _overlap((m.x, m.y, m.w, m.h), (x, y, w, h)) > 0.3]
+            if clash and not _replaces(new, clash):
+                continue
+            out = [m for m in out if m not in clash] + [new]
+        return out
 
     def _pass(self, gray: np.ndarray) -> list[Word]:
         words: list[Word] = []

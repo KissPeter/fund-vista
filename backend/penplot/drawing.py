@@ -72,7 +72,7 @@ DRAWING_PRESET: dict = {
     "curve_smooth": 3,
     "circles": True,
     "strip_frame": True,
-    "ocr_text": {"enabled": True, "min_conf": 20.0, "min_chars": 3},
+    "ocr_text": {"enabled": True, "min_conf": 30.0, "min_chars": 3},
     "page": {"size": "A4", "orientation": "landscape", "margin_mm": 10.0,
              "padding_mm": 0.0, "frame": False},
 }

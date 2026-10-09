@@ -180,3 +180,16 @@ def test_strip_lines_exact_keeps_glyph_row_touching_the_line():
     assert (wide[39, 50:53] == 255).all()   # dilated removal ate the stem's last row
     assert (exact[39, 50:53] == 0).all()    # exact removal keeps it
     assert (exact[40, 20:40] == 255).all()  # the line itself is still gone
+
+
+def _w(text, conf):
+    return ocr_text.Word(text, 0.0, 0.0, 20.0, 8.0, conf=conf)
+
+
+def test_cut_off_reading_never_beats_the_longer_one():
+    """A clipped "197" must not replace "1975", whatever its confidence."""
+    assert not ocr_text._replaces(_w("197", 90), [_w("1975", 40)])
+    assert ocr_text._replaces(_w("1975", 30), [_w("197", 90)])
+    assert not ocr_text._replaces(_w("1975", 10), [_w("197", 90)])  # too unsure
+    assert ocr_text._replaces(_w("7170", 70), [_w("1170", 40)])      # plain confidence
+    assert not ocr_text._replaces(_w("7170", 40), [_w("1170", 70)])
