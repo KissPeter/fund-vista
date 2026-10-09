@@ -69,18 +69,20 @@ def test_repeat_vector_convert_is_cached_identical(http_client):
     assert second == first
 
 
-def test_vector_result_ignores_raster_only_param_churn(http_client):
+def test_vector_method_churn_changes_identity(http_client):
     image_id = _upload_svg(http_client)
     base = _convert(http_client, image_id, default_params("contour"))
-    # Threshold/method/contrast never reach vector geometry — the effective
-    # param hash must ignore them, so the result identity does not fragment.
+    # Methods, threshold and contrast reach vector geometry now (vectors
+    # rasterize first and run the same tone+method pipeline as rasters),
+    # so churn must fragment the result identity — the opposite of the
+    # retired ignore-behavior this test replaces.
     tweaked = default_params("contour")
     tweaked["threshold"] = 42
     tweaked["contrast"] = 2.5
     tweaked["method"] = "hatch"
     second = _convert(http_client, image_id, tweaked)
-    assert second["svg_url"] == base["svg_url"]
-    assert http_client.get(base["svg_url"]).text == http_client.get(second["svg_url"]).text
+    assert second["svg_url"] != base["svg_url"]
+    assert http_client.get(base["svg_url"]).text != http_client.get(second["svg_url"]).text
 
 
 def test_vector_fast_preview_ignores_linesort_flag(http_client):
