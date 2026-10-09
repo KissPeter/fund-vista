@@ -168,3 +168,15 @@ def test_cli_usage_errors_exit_2(tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         img2plot.main(["a.png", "--upscale", "9", "--out-dir", str(tmp_path)])  # bad value
     assert exc.value.code == 2  # clean usage error, not a traceback
+
+
+def test_strip_lines_exact_keeps_glyph_row_touching_the_line():
+    """A number sitting on its dimension line must not lose the row touching it."""
+    img = np.full((60, 120), 255, np.uint8)
+    img[40, 10:110] = 0            # dimension line, 1 px thick
+    img[33:40, 50:53] = 0          # a glyph stem ending right above the line
+    wide = ocr_text.strip_lines(img)
+    exact = ocr_text.strip_lines(img, grow=0)
+    assert (wide[39, 50:53] == 255).all()   # dilated removal ate the stem's last row
+    assert (exact[39, 50:53] == 0).all()    # exact removal keeps it
+    assert (exact[40, 20:40] == 255).all()  # the line itself is still gone

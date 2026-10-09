@@ -108,10 +108,10 @@ def tesseract_engine(psm: int = 11, lang: str = "eng") -> Engine:
 
 #: Ink cutoffs for blob detection, strict first: dark labels stay separate from
 #: neighbours at 140, pale italic ones ("7°") only hold together near 185.
-INK_THRESHOLDS = (140, 185)
+INK_THRESHOLDS = (140, 185, 215)
 
 
-def strip_lines(gray: np.ndarray, min_len: int = 25) -> np.ndarray:
+def strip_lines(gray: np.ndarray, min_len: int = 25, grow: int = 3) -> np.ndarray:
     """Paint long horizontal/vertical runs white so labels touching dimension
     or extension lines separate from them (a leading '3' fused to an arrow
     line otherwise forms one oversized blob and is dropped)."""
@@ -120,20 +120,26 @@ def strip_lines(gray: np.ndarray, min_len: int = 25) -> np.ndarray:
                           cv2.getStructuringElement(cv2.MORPH_RECT, (min_len, 1)))
     vl = cv2.morphologyEx(ink, cv2.MORPH_OPEN,
                           cv2.getStructuringElement(cv2.MORPH_RECT, (1, min_len)))
-    lines = cv2.dilate(hl | vl, np.ones((3, 3), np.uint8))
+    # ``grow`` widens the removed line to take its anti-aliased halo, but a
+    # number sitting right on its dimension line loses the glyph row touching
+    # it (7000, 1510, 21000 lost their bottoms); ``grow=0`` keeps those rows.
+    lines = hl | vl
+    if grow:
+        lines = cv2.dilate(lines, np.ones((grow, grow), np.uint8))
     out = gray.copy()
     out[lines > 0] = 255
     return out
 
 
-def _text_candidates(gray: np.ndarray, ink_threshold: int = 140) -> list[tuple[int, int, int, int, str]]:
+def _text_candidates(gray: np.ndarray, ink_threshold: int = 140, *,
+                     stripped: bool = False) -> list[tuple[int, int, int, int, str]]:
     """Glyph-sized ink blobs merged into word boxes: (x, y, w, h, "h"|"v").
 
     Whole-page OCR on a sparse technical drawing misses most dimension
     numerals; finding glyph-sized components first and OCRing each box alone
     is far more reliable. Size limits are tuned for ~7-15 px glyphs.
     """
-    ink = (strip_lines(gray) < ink_threshold).astype(np.uint8)
+    ink = ((gray if stripped else strip_lines(gray)) < ink_threshold).astype(np.uint8)
     n, lab, st, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
     big = np.zeros(n, bool)
     small = np.zeros(n, bool)
@@ -202,14 +208,16 @@ def find_repeats(gray: np.ndarray, words: list[Word], *, min_score: float = 0.8)
 #: Contact-sheet variants (scale, shear, binarisation). Round 1 runs on every
 #: candidate; round 2 only on cells whose round-1 reading was not decisive.
 _ROUNDS: tuple[tuple[tuple[int, float, str], ...], ...] = (
-    tuple((sc, sh, post) for post in ("gray", "blurotsu")
-          for sh in (0.0, 0.2) for sc in (4, 6)),
-    tuple((sc, sh, post) for sc in (3, 5, 8) for sh in (0.0, 0.1, 0.2)
+    # round 1: upright only - sheared variants of upright text are noise votes
+    tuple((sc, 0.0, post) for post in ("gray", "blurotsu") for sc in (3, 4, 5, 6)),
+    tuple((sc, sh, post) for sc in (4, 6, 8) for sh in (0.0, 0.1, 0.2)
           for post in ("gray", "blurotsu")),
 )
 #: A cell is settled once its leading reading has this many votes and share.
 _DECIDE_VOTES = 6
 _DECIDE_SHARE = 0.75
+#: Votes a reading needs before its share is measured among non-empty reads.
+_MIN_AGREE = 3
 #: Added to a degree label's vote share (digit + small ring).
 RING_BONUS = 0.3
 #: Readings below this vote share are reported but do not claim their box.
@@ -416,7 +424,30 @@ class SheetEngine:
         return votes, runs
 
     def __call__(self, gray: np.ndarray) -> list[Word]:
-        gray = strip_lines(gray)
+        # Two line-removal variants read independently, then merged: the wide
+        # one separates labels cleanly from dimension/arrow lines, the exact one
+        # keeps glyph rows that touch the line. The more confident reading of
+        # an overlapping pair wins.
+        wide = strip_lines(gray)
+        merged: list[Word] = []
+        t0 = time.monotonic()
+        for k, img in enumerate((wide, strip_lines(gray, grow=0))):
+            if self._out_of_time():
+                break
+            started = time.monotonic()
+            if k and self.deadline is not None and (
+                    self.deadline - started < 1.2 * (started - t0)):
+                break  # no room for a second pass: keep the first, stay in budget
+            for w in self._pass(img):
+                box = (w.x, w.y, w.w, w.h)
+                clash = [m for m in merged if _overlap((m.x, m.y, m.w, m.h), box) > 0.3]
+                if not clash:
+                    merged.append(w)
+                elif w.conf > max(m.conf for m in clash):
+                    merged = [m for m in merged if m not in clash] + [w]
+        return merged + find_repeats(wide, [w for w in merged if w.conf >= 20])
+
+    def _pass(self, gray: np.ndarray) -> list[Word]:
         words: list[Word] = []
         boxes: list[tuple[int, int, int, int]] = []
         # Ordered groups: strict pass (h then v), then tolerant pass (h then v).
@@ -424,7 +455,7 @@ class SheetEngine:
         # order; the reading itself is batched per group.
         groups = []
         for thr in INK_THRESHOLDS:
-            cands = _text_candidates(gray, thr)
+            cands = _text_candidates(gray, thr, stripped=True)
             groups += [[c for c in cands if c[4] == "h"],
                        [c for c in cands if c[4] == "v"]]
         for group in groups:
@@ -434,7 +465,7 @@ class SheetEngine:
                     if not any(_overlap(b, c[:4]) > 0.3 for b in boxes)]
             cells: list[tuple[int, float, np.ndarray]] = []
             for i, (x, y, w, h, orient) in enumerate(todo):
-                crop = gray[max(y - 2, 0):y + h + 2, max(x - 1, 0):x + w + 1]
+                crop = gray[max(y - 2, 0):y + h + 2, max(x - 3, 0):x + w + 3]
                 if orient == "h":
                     cells.append((i, 0.0, crop))
                 else:
@@ -455,7 +486,9 @@ class SheetEngine:
                         and crop.shape[1] <= 24 and _has_ring(crop)):
                     txt += "°"  # Tesseract rarely emits the degree sign itself
                     ringed.add(i)
-                share = cnt / n
+                # agreement among the readings Tesseract actually produced (empty
+                # reads are "no opinion"), but a lone or pair vote proves nothing
+                share = cnt / sum(v.values()) if cnt >= _MIN_AGREE else cnt / n
                 if i in ringed:
                     # A lone digit with a ring beside it is a degree label: the
                     # ring is evidence the vote share alone does not capture.
@@ -475,7 +508,9 @@ class SheetEngine:
                 cx, cy = x + w / 2, y + h / 2
                 words.append(Word(txt, cx - bw / 2, cy - bh / 2, bw, bh,
                                   conf=share * 100, angle=angle))
-        return words + find_repeats(gray, [w for w in words if w.conf >= 20])
+        return words
+
+
 
 
 def blob_engine(whitelist: str = "0123456789°", **kw) -> SheetEngine:

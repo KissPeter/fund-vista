@@ -182,7 +182,7 @@ def make_parser() -> argparse.ArgumentParser:
         ("prune-px", int, "centerline_prune_px"), ("simplify", float, "contour_simplify"),
         ("upscale", int, "trace_upscale 1-3"), ("curve-smooth", int, "Chaikin passes 0-3"),
         ("linemerge-mm", float, ""), ("linesimplify-mm", float, ""),
-        ("min-conf", float, "OCR reading agreement %, 5-100"),
+        ("min-conf", float, "OCR reading agreement in percent, 5-100"),
         ("min-chars", int, "shortest OCR reading accepted"),
         ("size", str, "A4/A3/A5/Letter"), ("orientation", str, "portrait|landscape"),
         ("margin-mm", float, ""), ("padding-mm", float, "inner padding inside the margin"),
