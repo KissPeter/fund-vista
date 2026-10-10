@@ -96,6 +96,9 @@ stay traced; `tessdata_best` was measured and is not better (3x slower, mixed).
 
 ## 6. Push
 
+- Companion skill in the shop repo (`pen-pixel-shop/.opencode/skills/prepare-plotter-svg/SKILL.md`):
+  catalogue wiring, the CI verification test `src/lib/trains.svg.test.ts` (files exist, stamped, no raster
+  leftovers, real drawings) and the PR flow there. Run its verification before opening the shop PR.
 - Gallery SVGs live in the shop repo (`public/artwork/trains/` for trains), OCR/pipeline code in
   fund-vista. Different repos, different branches: one feature per branch
   (`feat/<name>`), linear history, **never force-push or amend pushed commits** (Lovable syncs this repo).
