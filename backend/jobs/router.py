@@ -63,6 +63,10 @@ def _validate_job_request(job_type: JobType, payload: dict) -> str | None:
             from backend.penplot.schemas import ConvertRequest
 
             ConvertRequest(**payload)
+        elif job_type == "traffic_ingest":
+            from backend.traffic.schemas import TrafficIngestRequest
+
+            TrafficIngestRequest(**payload)
         else:
             return f"Unknown job type '{job_type}'."
         return None

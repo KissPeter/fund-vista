@@ -28,6 +28,7 @@ from backend.jobs._common import _JobError
 from backend.jobs._exec_airports import _exec_airport_import, _exec_airport_render
 from backend.jobs._exec_citymap import _exec_citymap_import, _exec_citymap_render
 from backend.jobs._exec_convert import _exec_convert
+from backend.jobs._exec_traffic import _exec_traffic_ingest
 from backend.jobs.schemas import MAX_RUNTIME_S
 from backend.penplot.errors import PenPlotError
 
@@ -128,6 +129,8 @@ async def _execute(
         return await _exec_airport_import(payload, job_id, stop, cancelled)
     if job_type == "convert":
         return await _exec_convert(payload, job_id, stop, cancelled)
+    if job_type == "traffic_ingest":
+        return await _exec_traffic_ingest(payload, job_id, stop, cancelled)
     raise ValueError(f"Unknown job type '{job_type}'.")
 
 

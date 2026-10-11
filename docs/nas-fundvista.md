@@ -94,6 +94,16 @@ ssh -l root 192.168.0.240 'docker start fundvista'
 - Never include secrets in docs or commit messages; `.env` + `Dockerfile.nas` are
   gitignored and `git pull`/`git status` must stay clean of them.
 
+## Airport traffic (NAS-only until R2)
+
+- `/v1/traffic/*` and `traffic_ingest` jobs run on the NAS only (the 3.5 GB
+  archive pass needs the NAS worker; the slices live on the NAS data volume
+  at `/data/traffic`). Nginx must NOT fall back these paths to FastAPI Cloud
+  on 502/504 — the cloud has no slices and no job state, so fallback would
+  surface a confusing `job_not_found`. The shop UI shows "traffic temporarily
+  unavailable" instead. This restriction goes away with Phase 7 (R2 bucket
+  behind the same `SliceStore` keys + `TRAFFIC_STORE=r2`).
+
 ---
 
 Mirrors the operator runbook in `.opencode/skills/deploy-nas/SKILL.md` — keep

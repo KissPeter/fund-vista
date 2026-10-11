@@ -25,6 +25,7 @@ JobType = Literal[
     "airport_render",
     "airport_import",
     "convert",
+    "traffic_ingest",
 ]
 
 JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
