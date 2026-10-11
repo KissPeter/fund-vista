@@ -25,6 +25,8 @@ from backend.wordmark.cache import configure_wordmark_redis
 from backend.wordmark.router import router as wordmark_router
 from backend.jobs.router import router as jobs_router
 from backend.jobs.store import configure_jobs_redis
+from backend.traffic.cache import configure_traffic_redis
+from backend.traffic.router import router as traffic_router
 from backend.penplot.errors import PenPlotError
 from backend.penplot.ratelimit import configure_redis
 from backend.penplot.router import (
@@ -141,6 +143,8 @@ app.include_router(airports_router)
 app.include_router(airports_ui_router)
 # Negative-space wordmarks: pure local CPU, same rule.
 app.include_router(wordmark_router)
+# Airport traffic (Phase 1: availability + ingest job; NAS-only until R2).
+app.include_router(traffic_router)
 app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
 
@@ -180,6 +184,7 @@ async def _startup() -> None:
         configure_airports_redis(redis_client)
         configure_wordmark_redis(redis_client)
         configure_jobs_redis(redis_client)
+        configure_traffic_redis(redis_client)
     except Exception as exc:
         redis_client = None
         configure_redis(None)
@@ -187,6 +192,7 @@ async def _startup() -> None:
         configure_airports_redis(None)
         configure_wordmark_redis(None)
         configure_jobs_redis(None)
+        configure_traffic_redis(None)
         print(f"Redis unavailable, continuing without cache: {exc}")
 
 
