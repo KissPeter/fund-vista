@@ -43,6 +43,8 @@ from backend.traffic import availability as _avail
 from backend.traffic import cache as _cache
 from backend.traffic import ingest as _ingest
 from backend.traffic import store as _slices
+from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
+from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
 from backend.traffic.classify import CLASSIFIER_VERSION, classify_day
 from backend.traffic.config import settings as _traffic_settings
 from backend.traffic.schemas import ATTRIBUTION, TrafficIngestRequest, movements_key
@@ -90,6 +92,8 @@ async def _exec_traffic_ingest(
     if not lo <= day <= hi:
         raise _JobError(422, "out_of_range", f"Date {body.date} outside {lo.isoformat()}..{hi.isoformat()}.")
     icao = body.icao.upper()
+    if not is_hungarian_icao(icao):
+        raise _JobError(422, "unsupported_airport", _HU_MESSAGE)
 
     store = _slices.default_store()
     key = _slices.day_key(day.isoformat(), icao)
@@ -118,6 +122,8 @@ async def _exec_traffic_ingest(
         raise _JobError(404, "airport_not_found", f"No airport found for ICAO '{icao}'.")
     except OurAirportsError as exc:
         raise _JobError(502, "ourairports_unavailable", f"Airport data fetch failed: {exc.detail}")
+    if not row_is_hungarian(airport):
+        raise _JobError(422, "unsupported_airport", _HU_MESSAGE)
     lat = _fnum(airport.get("latitude_deg"))
     lon = _fnum(airport.get("longitude_deg"))
     if lat is None or lon is None:

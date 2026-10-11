@@ -22,6 +22,7 @@ from backend.traffic import availability as _avail
 from backend.traffic import classify, ingest
 from backend.traffic.classify import CLASSIFIER_VERSION
 from backend.traffic.filters import Filters, pen
+from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
 from backend.traffic.schemas import TrafficIngestRequest, movements_key
 from backend.traffic.store import FileSliceStore, day_key, pass_key
 
@@ -208,6 +209,19 @@ def test_ingest_request_validation():
         TrafficIngestRequest(icao="", date="2026-10-10")
     with pytest.raises(ValidationError):
         TrafficIngestRequest(icao="LHBP", date="2026-10-10", extra_field="x")
+
+
+def test_hungarian_scope_prefix_and_row():
+    assert is_hungarian_icao("LHBP") and is_hungarian_icao(" lhdc ")
+    assert not is_hungarian_icao("EGLL") and not is_hungarian_icao("KJFK") and not is_hungarian_icao("")
+    assert row_is_hungarian({"iso_country": "HU"})
+    assert not row_is_hungarian({"iso_country": "DE"})
+    assert not row_is_hungarian({})
+
+
+def test_ingest_request_rejects_non_hungarian_icao():
+    with pytest.raises(ValidationError, match="Hungarian"):
+        TrafficIngestRequest(icao="EGLL", date="2026-10-10")
 
 
 def test_movements_key_carries_classifier_version():

@@ -12,6 +12,7 @@ import re
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from backend.traffic.classify import CLASSIFIER_VERSION
+from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
 
 ATTRIBUTION = (
     "Contains data from adsb.lol and OpenStreetMap contributors (ODbL); "
@@ -36,6 +37,8 @@ class TrafficIngestRequest(BaseModel):
         v = (v or "").strip().upper()
         if not v or len(v) > 8:
             raise ValueError("icao must be 1-8 characters")
+        if not v.startswith("LH"):
+            raise ValueError(_HU_MESSAGE)
         return v
 
     @field_validator("date")

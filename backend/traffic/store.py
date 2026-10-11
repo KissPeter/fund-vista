@@ -10,6 +10,14 @@ copy plus flipping ``TRAFFIC_STORE``.
 Writes are atomic (temp file + rename); the ingest job writes L1 only after
 the whole stream succeeded, so a cancelled/failed job never leaves a half
 dataset. Budget: ~2 MB per airport-day.
+
+Slice encoding: gzip JSON (stdlib only). Evaluated 2026-10-11 and rejected:
+MessagePack (~-20 % size for a new runtime dep — not worth it at ~2 MB
+per slice) and Parquet/pyarrow (heavy native dep; columnar layout buys
+nothing for small per-airport trace lists; slices stay human-debuggable
+as JSON). Revisit if slices grow an order of magnitude (multi-day v2).
+A representative slice shape lives in
+``backend/tests/fixtures/traffic_day_lhbp.json`` (synthetic, 4 flights).
 """
 
 from __future__ import annotations

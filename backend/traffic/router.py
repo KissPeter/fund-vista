@@ -24,6 +24,8 @@ from backend.http import error_response
 from backend.penplot.router import require_rate_limit
 from backend.traffic import availability as _avail
 from backend.traffic import store as _store
+from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
+from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
 
 router = APIRouter(prefix="/v1/traffic", tags=["traffic-v1"])
 
@@ -34,16 +36,20 @@ async def availability(icao: str = "", date: str = ""):
     want = (icao or "").strip().upper()
     if not want or len(want) > 8:
         return error_response(422, "invalid_params", "icao must be 1-8 characters.")
+    if not is_hungarian_icao(want):
+        return error_response(422, "unsupported_airport", _HU_MESSAGE)
     try:
         day = dt.date.fromisoformat(date)
     except ValueError:
         return error_response(422, "invalid_params", "date must be YYYY-MM-DD.")
     try:
-        await resolve_airport(want)
+        airport_row, _hit = await resolve_airport(want)
     except AirportNotFoundError:
         return error_response(404, "airport_not_found", f"No airport found for ICAO '{want}'.")
     except Exception as exc:  # OurAirports upstream down → 502 like the airports tab
         return error_response(502, "ourairports_unavailable", f"Airport lookup failed: {exc}")
+    if not row_is_hungarian(airport_row):
+        return error_response(422, "unsupported_airport", _HU_MESSAGE)
     key = _store.day_key(day.isoformat(), want)
     try:
         hit = _store.default_store().exists(key)
