@@ -174,9 +174,11 @@ migrate_data() {
   docker volume create "$DATA_VOL" >/dev/null
   img="$1"
   log "data: migrating live /data into volume $DATA_VOL"
+  # NOTE: stream mode 'r|' — the tar arrives on a non-seekable stdin
+  # pipe and plain tarfile.open() dies with "Illegal seek" (seen live).
   if docker cp "$CONTAINER:/data/." - 2>/dev/null \
     | docker run --rm -i -v "$DATA_VOL:/to" "$img" \
-      python -c "import sys,tarfile; tarfile.open(fileobj=sys.stdin.buffer).extractall('/to')" 2>/dev/null; then
+      python -c "import sys,tarfile; tarfile.open(fileobj=sys.stdin.buffer,mode='r|').extractall('/to')" 2>/dev/null; then
     log "data: migration done"
   else
     log "data: migration FAILED (non-fatal, continuing with empty volume)"
