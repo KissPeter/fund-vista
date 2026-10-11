@@ -30,7 +30,13 @@ log() { echo "$(date -u +%FT%TZ) $*"; }
 fail() { echo "DEPLOY FAILED: $1" >&2; exit 1; }
 
 diskcheck() {
-  FREE=$(df --output=avail -B1 / | tail -1 | tr -d ' ')
+  # POSIX df only: job scripts run under BusyBox ash in laminar-ci, where
+  # GNU `df --output` does not exist (fatal there, silent on Debian).
+  FREE_KB=$(df -P -k / | tail -1 | awk '{print $4}')
+  case "$FREE_KB" in
+    *[!0-9]* | "" ) fail "could not read disk space";;
+  esac
+  FREE=$((FREE_KB * 1024))
   log "disk free on /: ${FREE} bytes"
   case "$FREE" in
     *[!0-9]* | "" ) fail "could not read disk space";;
