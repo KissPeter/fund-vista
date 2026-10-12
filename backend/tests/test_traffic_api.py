@@ -352,3 +352,189 @@ def test_jobs_traffic_out_of_range_fails(live, monkeypatch):
     assert final["status"] == "failed", final
     assert final["error"]["code"] == "out_of_range"
     assert resolve_calls == []  # range check precedes lookup + download
+
+
+# -- render / import / results (Phase 2, TC-D45) ------------------------------
+
+def _seed_l1_shifted(tmp_key_dir, day_iso: str) -> dict:
+    """Seed L1 for ``day_iso`` with fixture flights shifted onto that day."""
+    import datetime as _dt
+
+    data = _fixture_day()
+    base = _dt.datetime(2026, 10, 10, tzinfo=_dt.timezone.utc).timestamp()
+    want = _dt.datetime.combine(_dt.date.fromisoformat(day_iso),
+                                _dt.time(0), tzinfo=_dt.timezone.utc).timestamp()
+    delta = want - base
+    for fl in data["flights"]:
+        fl["pts"] = [[p[0] + delta, p[1], p[2], p[3], p[4]] for p in fl["pts"]]
+        fl["calls"] = [[c[0] + delta, c[1]] for c in fl["calls"]]
+    data["date"] = day_iso
+    from backend.traffic.store import FileSliceStore, day_key
+
+    FileSliceStore(tmp_key_dir).put(
+        day_key(day_iso, "LHBP"),
+        gzip.compress(json.dumps(data, separators=(",", ":")).encode("utf-8")))
+    return data
+
+
+def _stub_basemap(monkeypatch, calls: list | None = None, failed: list | None = None):
+    async def _fake(view, lat, lon):
+        if calls is not None:
+            calls.append(tuple(view))
+        if failed:
+            return ({k: [] for k in ("motorways", "waterways", "water", "airfield")}, list(failed))
+        s, n, w, e = view
+        line = [[[w, (s + n) / 2], [e, (s + n) / 2]]]
+        return ({"motorways": line, "waterways": [], "water": [], "airfield": []}, [])
+
+    monkeypatch.setattr("backend.traffic.router.load_basemap", _fake)
+
+
+def _render_body(day: str, **kw) -> dict:
+    body = {"icao": "LHBP", "date": day}
+    body.update(kw)
+    return body
+
+
+def test_render_done_path(live, monkeypatch, tmp_path):
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    base_calls: list = []
+    _stub_basemap(monkeypatch, base_calls)
+    resp = live.post("/v1/traffic/render", json=_render_body(day))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["icao"] == "LHBP" and body["date"] == day
+    assert body["counts"] == {"arrivals": 1, "departures": 1, "holding": 1, "go_around": 0}
+    assert body["movements"] == 4 and body["cache_hit"] is False
+    assert "adsb.lol" in body["attribution"] and body["warnings"] == []
+    assert "/v1/traffic/results/" in body["svg_url"] and len(body["svg_url"].rsplit("/", 1)[-1]) == 40
+    assert base_calls != []
+    # second identical render → L4 hit, no new basemap work
+    resp2 = live.post("/v1/traffic/render", json=_render_body(day))
+    assert resp2.json()["cache_hit"] is True
+    assert resp2.json()["counts"] == body["counts"]
+    assert len(base_calls) == 1
+    # the svg_url serves chrome-free art
+    from urllib.parse import urlsplit
+
+    art = live.get(urlsplit(body["svg_url"]).path)
+    assert art.status_code == 200, art.text
+    assert art.headers["content-type"] == "image/svg+xml"
+    assert 'id="traffic-arrivals"' in art.text and "<text" not in art.text
+
+
+def test_render_filter_and_window_slicing(live, monkeypatch, tmp_path):
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    _stub_basemap(monkeypatch)
+    # only go-arounds on a day with none → empty but valid (TC-D42 backend half)
+    resp = live.post("/v1/traffic/render", json=_render_body(
+        day, arrivals=False, departures=False, holding=False, go_around=True))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["counts"] == {"arrivals": 0, "departures": 0, "holding": 0, "go_around": 0}
+    assert resp.json()["movements"] == 4
+    # window 06:00–07:00 keeps the 06:00 arrival; the 07:00 departure is out ([from, to))
+    resp = live.post("/v1/traffic/render", json=_render_body(day, t_from="06:00", t_to="07:00"))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["counts"]["arrivals"] == 1
+    assert resp.json()["counts"]["departures"] == 0
+    assert resp.json()["movements"] == 1
+
+
+def test_render_view_rules(live, monkeypatch, tmp_path):
+    day = _yesterday_iso()
+    data = _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    _stub_basemap(monkeypatch)
+    s, n, w, e = data["bbox"]
+    view = {"view_south": s, "view_north": n, "view_west": w, "view_east": e}
+    resp = live.post("/v1/traffic/render", json=_render_body(day, **view))
+    assert resp.status_code == 200, resp.text  # view == ingest bbox is allowed
+    resp = live.post("/v1/traffic/render", json=_render_body(
+        day, view_south=s - 0.5, view_north=n, view_west=w, view_east=e))
+    assert resp.status_code == 422, resp.text  # outside ingest bbox
+    assert resp.json()["error"]["code"] == "invalid_params"
+    resp = live.post("/v1/traffic/render", json=_render_body(day, view_south=s))
+    assert resp.status_code == 422, resp.text  # partial view
+    resp = live.post("/v1/traffic/render", json=_render_body(
+        day, view_south=n, view_north=s, view_west=w, view_east=e))
+    assert resp.status_code == 422, resp.text  # inverted view
+
+
+def test_render_validation_boundaries(live, monkeypatch):
+    day = _yesterday_iso()
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    bad = [
+        _render_body("10/10/2026"),  # malformed date
+        _render_body(day, t_from="06:00", t_to="06:00"),  # equal
+        _render_body(day, t_from="18:00", t_to="06:00"),  # reversed
+        _render_body(day, t_from="6:00"),  # malformed time
+        _render_body(day, t_to="24:01"),  # past end of day
+        _render_body(day, width=99),  # below min
+        _render_body(day, width=4001),  # above max
+        {"icao": "EGLL", "date": day},  # non-LH
+        dict(_render_body(day), bogus=1),  # extra=forbid
+    ]
+    for payload in bad:
+        resp = live.post("/v1/traffic/render", json=payload)
+        assert resp.status_code == 422, (payload, resp.text)
+        assert resp.json()["error"]["code"] in ("invalid_params", "unsupported_airport"), resp.json()
+    ok = live.post("/v1/traffic/render", json=_render_body(day, width=100))
+    assert ok.status_code in (200, 409), ok.text  # boundary accepted (409 = no L1 seeded)
+
+
+def test_render_not_ingested_and_guards(live, monkeypatch):
+    day = _yesterday_iso()
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    monkeypatch.setattr("backend.traffic.router.load_basemap",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("basemap called")))
+    resp = live.post("/v1/traffic/render", json=_render_body(day))
+    assert resp.status_code == 409, resp.text  # no L1 → no basemap work
+    assert resp.json()["error"]["code"] == "traffic_not_ingested"
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    resp = live.post("/v1/traffic/render", json=_render_body(today))
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "out_of_range"
+    resp = live.post("/v1/traffic/render", json={"icao": "EGLL", "date": day})
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "unsupported_airport"
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport",
+                  exc=AirportNotFoundError("No airport found for ICAO 'LHZZ'."))
+    resp = live.post("/v1/traffic/render", json={"icao": "LHZZ", "date": day})
+    assert resp.status_code == 404 and resp.json()["error"]["code"] == "airport_not_found"
+
+
+def test_render_basemap_outage_degrades(live, monkeypatch, tmp_path):
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    _stub_basemap(monkeypatch, failed=["motorways", "waterways", "water", "airfield"])
+    resp = live.post("/v1/traffic/render", json=_render_body(day))
+    assert resp.status_code == 200, resp.text  # never fails for a dead basemap
+    assert "basemap_unavailable" in resp.json()["warnings"]
+    assert resp.json()["counts"]["arrivals"] == 1  # tracks still draw
+
+
+def test_import_registers_image(live, monkeypatch, tmp_path):
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    _stub_basemap(monkeypatch)
+    resp = live.post("/v1/traffic/import", json=_render_body(day))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["image_id"] and body["icao"] == "LHBP" and body["date"] == day
+    assert body["counts"] == {"arrivals": 1, "departures": 1, "holding": 1, "go_around": 0}
+    assert body["movements"] == 4 and "adsb.lol" in body["attribution"]
+
+
+def test_results_tokens(live, monkeypatch, tmp_path):
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    _stub_basemap(monkeypatch)
+    token = live.post("/v1/traffic/render", json=_render_body(day)).json()["svg_url"].rsplit("/", 1)[-1]
+    assert live.get(f"/v1/traffic/results/{token}").status_code == 200
+    assert live.get("/v1/traffic/results/not-hex").status_code == 404
+    assert live.get("/v1/traffic/results/" + "0" * 40).status_code == 404
