@@ -33,6 +33,9 @@ class TrafficSettings(BaseSettings):
     # L2 movements (rebuildable from L1) and L3/L4 TTLs live in cache.py;
     # the hour counts below are the only knobs.
     movements_ttl_hours: int = 24 * 30
+    # L4 rendered SVGs live a week (plan §6.3); L3 basemap tiles share the
+    # 30-day movements window above (slow-changing OSM data).
+    svg_ttl_hours: int = 24 * 7
     # Rendered values must fit the 512 MB Redis string cap; checked against
     # the *stored* (deflated) size by cachelib.
     max_cached_bytes: int = 32 * 1024 * 1024

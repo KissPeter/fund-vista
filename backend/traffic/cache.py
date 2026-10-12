@@ -36,6 +36,16 @@ async def cache_get(key: str) -> str | None:
     return await _cache.get(key)
 
 
+async def cache_get_many(keys: list[str]) -> dict[str, str]:
+    """MGET ``keys`` in one round-trip; misses are absent from the result."""
+    return await _cache.get_many(keys)
+
+
 async def cache_set(key: str, value: str, ttl_s: int | None = None) -> bool:
     """Store ``value`` for ``ttl_s`` seconds (default: ``cache_ttl_hours``)."""
     return await _cache.set(key, value, ttl_s)
+
+
+async def cache_set_many(items: dict[str, str], ttl_s: int | None = None) -> int:
+    """Pipeline ``items`` in one round-trip. Returns the number stored."""
+    return await _cache.set_many(items, ttl_s)
