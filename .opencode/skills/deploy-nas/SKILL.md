@@ -70,9 +70,11 @@ curl -s http://127.0.0.1:8100/healthz | head -c 200
 
 - `/opt/fund-vista/.env` and `Dockerfile.nas` are NAS-local and untracked —
   never `git add` them; `git pull` won't touch them.
-- The app container has **no /data volume**: recreating it wipes stored
-  images/results (Redis cache survives). Acceptable for anonymous previews;
-  retained (purchased) designs re-upload via the shop bridge.
+- `/data` is the persistent `fundvista-data` volume (CD mounts it; traffic
+  slices + images/results survive recreates, Redis cache too).
+- Traffic day slices live in git (`backend/traffic/slices/`): NAS host cron
+  (`/etc/cron.d/traffic-ingest`) runs `ops/traffic-ingest-daily.sh`
+  (ingest yesterday → export from the volume → commit → push to main).
 - NAS LAN IP is DHCP (`192.168.0.240` last seen): if SSH fails, re-probe
   (`nc -z -G 2 <ip> 22`, ports 22/2222). The stale
   `81.183.232.91:34022` endpoint is dead — do not use it.
