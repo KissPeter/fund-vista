@@ -74,9 +74,12 @@ def live():
     from backend.main import app as full_app
 
     port = _free_port()
+    # Pinned uvicorn (backend/pyproject.toml) has no `install_signal_handlers`
+    # Config knob; its capture_signals() already no-ops in a non-main thread,
+    # which is exactly how this fixture runs the server — so no kwarg needed.
     server = uvicorn.Server(uvicorn.Config(
         full_app, host="127.0.0.1", port=port,
-        log_level="warning", install_signal_handlers=False,
+        log_level="warning",
     ))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -498,7 +501,10 @@ def test_render_not_ingested_and_guards(live, monkeypatch):
     resp = live.post("/v1/traffic/render", json=_render_body(today))
     assert resp.status_code == 422 and resp.json()["error"]["code"] == "out_of_range"
     resp = live.post("/v1/traffic/render", json={"icao": "EGLL", "date": day})
-    assert resp.status_code == 422 and resp.json()["error"]["code"] == "unsupported_airport"
+    # Non-LH ICAOs are rejected at schema validation (invalid_params), same as
+    # POST /v1/jobs traffic_ingest with EGLL (see test_jobs_traffic_enqueue_422
+    # and the tolerant twin assertion in test_render_validation_boundaries).
+    assert resp.status_code == 422 and resp.json()["error"]["code"] in ("invalid_params", "unsupported_airport")
     _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport",
                   exc=AirportNotFoundError("No airport found for ICAO 'LHZZ'."))
     resp = live.post("/v1/traffic/render", json={"icao": "LHZZ", "date": day})
