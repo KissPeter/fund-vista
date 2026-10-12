@@ -29,6 +29,9 @@ def _filter_fingerprint(body) -> str:
         "types=" + ",".join(sorted(body.types)),
         "airlines=" + ",".join(sorted(a.upper() for a in body.airlines)),
         "cs=" + body.callsign.upper(),
+        "cats=" + ",".join(sorted(body.type_categories)),
+        "flows=" + ",".join(sorted(body.flows)),
+        f"alt={body.alt_max_agl_ft}", f"penmode={body.pen_mode}",
         f"mil={int(body.exclude_military)}", f"priv={int(body.exclude_privacy)}",
     ])
 
@@ -62,15 +65,15 @@ def _svg_lookup_key(token: str) -> str:
 
 async def _load_cached_render(
     svg_key: str, meta_key: str, warnings: list[str],
-) -> tuple[str, dict[str, int], int] | None:
-    """Cached ``(svg_text, counts, movements)`` or None when either is missing."""
+) -> tuple[str, dict[str, int], int, dict] | None:
+    """Cached ``(svg_text, counts, movements, stats)`` or None when missing."""
     found = await _cache.cache_get_many([svg_key, meta_key])
     svg_text, meta_json = found.get(svg_key), found.get(meta_key)
     if svg_text is None or meta_json is None:
         return None
     try:
         meta = json.loads(meta_json)
-        result = (svg_text, meta["counts"], meta["movements"])
+        result = (svg_text, meta["counts"], meta["movements"], meta.get("stats", {}))
     except (ValueError, KeyError):
         return None
     warnings.append("svg_cache_hit")
@@ -79,7 +82,8 @@ async def _load_cached_render(
 
 async def _store_render(
     svg_key: str, meta_key: str, svg_text: str,
-    counts: dict[str, int], movements: int, ttl_s: int | None = None,
+    counts: dict[str, int], movements: int, stats: dict | None = None,
+    ttl_s: int | None = None,
 ) -> None:
     """Store the SVG and its metadata sidecar (L4 TTL, plan §6.3)."""
     if ttl_s is None:
@@ -88,7 +92,7 @@ async def _store_render(
         ttl_s = settings.svg_ttl_hours * 3600
     await _cache.cache_set_many({
         svg_key: svg_text,
-        meta_key: json.dumps({"counts": counts, "movements": movements}),
+        meta_key: json.dumps({"counts": counts, "movements": movements, "stats": stats or {}}),
     }, ttl_s=ttl_s)
 
 
