@@ -74,9 +74,10 @@ def live():
     from backend.main import app as full_app
 
     port = _free_port()
+    # uvicorn >= 0.30 no longer accepts install_signal_handlers; it already
+    # no-ops on signal install in a non-main thread, so just drop the kwarg.
     server = uvicorn.Server(uvicorn.Config(
-        full_app, host="127.0.0.1", port=port,
-        log_level="warning", install_signal_handlers=False,
+        full_app, host="127.0.0.1", port=port, log_level="warning",
     ))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()

@@ -212,7 +212,7 @@ async def set_error(job_id: str, code: str, message: str) -> None:
     if doc.get("status") in TERMINAL:
         return
     doc["status"] = "failed"
-    doc["error"] = {"error": {"code": code, "message": message}}
+    doc["error"] = {"code": code, "message": message}
     doc["result"] = None
     await _write_doc(job_id, doc, FAILURE_TTL_S)
     await _remove_from_ip_sets(job_id, doc)
