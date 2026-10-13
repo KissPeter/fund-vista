@@ -212,6 +212,9 @@ async def set_error(job_id: str, code: str, message: str) -> None:
     if doc.get("status") in TERMINAL:
         return
     doc["status"] = "failed"
+    # Single level: GET /v1/jobs/{id} returns doc["error"] verbatim as the
+    # response's `error` field, so pollers read body["error"]["code"] just
+    # like the sync {"error": {"code", "message"}} envelope.
     doc["error"] = {"code": code, "message": message}
     doc["result"] = None
     await _write_doc(job_id, doc, FAILURE_TTL_S)

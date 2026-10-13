@@ -75,9 +75,10 @@ ssh -l root 192.168.0.240 'docker start fundvista'
 
 ## Gotchas
 
-- **No `/data` volume on the app container**: recreating it wipes stored
-  images/results (Redis cache survives). Acceptable for anonymous previews;
-  retained (purchased) designs re-upload via the shop bridge.
+- **`/data` is the `fundvista-data` named volume** (CD mounts it on every
+  container, migrating the pre-CD files once): images/results AND traffic
+  slices survive recreates; Redis cache survives too. Retained (purchased)
+  designs still re-upload via the shop bridge.
 - Image bytes are local per backend (content-addressed sha256): a design uploaded to
   NAS converts only on NAS. Per-request fallback is safe — same bytes re-upload to the
   cloud reproduce the same `image_id`, and the upload page self-heals one silent
@@ -103,6 +104,15 @@ ssh -l root 192.168.0.240 'docker start fundvista'
   surface a confusing `job_not_found`. The shop UI shows "traffic temporarily
   unavailable" instead. This restriction goes away with Phase 7 (R2 bucket
   behind the same `SliceStore` keys + `TRAFFIC_STORE=r2`).
+- Day slices live in git (`backend/traffic/slices/`, ~2 MB per airport-day)
+  because the HU-only scope keeps them small. Daily ingest → push:
+  `ops/traffic-ingest-daily.sh` (NAS host cron `/etc/cron.d/traffic-ingest`,
+  04:17 UTC) POSTs `traffic_ingest` for yesterday (UTC) per `TRAFFIC_ICAOS`
+  (default `LHBP` — one ~3.5 GB archive pass per airport, so keep it short),
+  polls to terminal, exports new files from the `fundvista-data` volume into
+  the repo checkout and pushes to `origin/main`. Idempotent (cache_hit days
+  commit nothing); push failures retry on the next run. NAS git identity and
+  the SSH push key are configured (verified with a dry-run push).
 
 ---
 

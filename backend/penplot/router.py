@@ -127,14 +127,7 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
     except Exception:
         first = ""
     msg = f"Invalid parameters. {first}".strip()
-    code = ErrorCode.INVALID_PARAMS
-    # Scope rule (backend.traffic): foreign ICAOs are 422 unsupported_airport,
-    # not invalid_params — the same token is raised at the schema level for
-    # ingest/render bodies, so detect it here and keep the contract.
-    from backend.traffic.hungary import MESSAGE as _HU_SCOPE
-    if _HU_SCOPE in (first or ""):
-        return error_response(HTTP_422_UNPROCESSABLE_ENTITY, "unsupported_airport", _HU_SCOPE)
-    return error_response(HTTP_422_UNPROCESSABLE_ENTITY, code, msg)
+    return error_response(HTTP_422_UNPROCESSABLE_ENTITY, ErrorCode.INVALID_PARAMS, msg)
 
 
 def _image_meta(

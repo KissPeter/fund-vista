@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" viewBox="0 0 1000 780" width="300mm" height="234mm">
+<g id="traffic-motorways" inkscape:groupmode="layer" inkscape:label="Motorways" fill="none" stroke="#8a6d3b" stroke-width="0.90" stroke-linejoin="round" stroke-linecap="round">
+<path d="M0.0,390.1 L1000.0,390.1"/>
+</g>
+<g id="traffic-waterways" inkscape:groupmode="layer" inkscape:label="Waterways" fill="none" stroke="#5aa0c8" stroke-width="0.70" stroke-linejoin="round" stroke-linecap="round">
+</g>
+<g id="traffic-water" inkscape:groupmode="layer" inkscape:label="Lakes" fill="none" stroke="#5aa0c8" stroke-width="0.90" stroke-linejoin="round" stroke-linecap="round">
+</g>
+<g id="traffic-airfield" inkscape:groupmode="layer" inkscape:label="Airfield" fill="none" stroke="#000000" stroke-width="1.00" stroke-linejoin="round" stroke-linecap="round">
+<circle cx="500.0" cy="390.1" r="4"/>
+</g>
+<g id="traffic-departures" inkscape:groupmode="layer" inkscape:label="Departures" fill="none" stroke="#2c6fbb" stroke-width="0.70" stroke-linejoin="round" stroke-linecap="round">
+<path d="M500.0,390.1 L447.5,312.6"><title>RYR456 B738</title></path>
+</g>
+<g id="traffic-arrivals" inkscape:groupmode="layer" inkscape:label="Arrivals" fill="none" stroke="#222222" stroke-width="0.70" stroke-linejoin="round" stroke-linecap="round">
+<path d="M447.5,312.6 L500.0,390.1"><title>WZZ123 A321</title></path>
+</g>
+<g id="traffic-wide" inkscape:groupmode="layer" inkscape:label="Wide-body" fill="none" stroke="#6a3ec0" stroke-width="0.70" stroke-linejoin="round" stroke-linecap="round">
+</g>
+<g id="traffic-narrow" inkscape:groupmode="layer" inkscape:label="Narrow-body" fill="none" stroke="#2c6fbb" stroke-width="0.70" stroke-linejoin="round" stroke-linecap="round">
+</g>
+<g id="traffic-regional" inkscape:groupmode="layer" inkscape:label="Regional" fill="none" stroke="#1a936f" stroke-width="0.70" stroke-linejoin="round" stroke-linecap="round">
+</g>
+<g id="traffic-other" inkscape:groupmode="layer" inkscape:label="Other" fill="none" stroke="#8a8a8a" stroke-width="0.70" stroke-linejoin="round" stroke-linecap="round">
+</g>
+<g id="traffic-holding" inkscape:groupmode="layer" inkscape:label="Holding" fill="none" stroke="#e07a00" stroke-width="1.40" stroke-linejoin="round" stroke-linecap="round">
+<path d="M447.5,312.6 L473.3,350.7 L451.4,333.3 L453.3,333.6 L455.6,335.2 L456.6,336.9 L456.9,339.8 L455.6,342.4 L453.3,344.0 L450.4,344.3 L448.6,343.6 L446.6,341.6 L445.8,338.8 L446.6,336.0 L448.6,334.0 L451.4,333.3 L474.2,352.0 L500.0,390.1"><title>DLH789 A320</title></path>
+</g>
+<g id="traffic-go_around" inkscape:groupmode="layer" inkscape:label="Go-around" fill="none" stroke="#d6204a" stroke-width="1.40" stroke-linejoin="round" stroke-linecap="round">
+</g>
+</svg>

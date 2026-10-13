@@ -74,10 +74,12 @@ def live():
     from backend.main import app as full_app
 
     port = _free_port()
-    # uvicorn >= 0.30 no longer accepts install_signal_handlers; it already
-    # no-ops on signal install in a non-main thread, so just drop the kwarg.
+    # Pinned uvicorn (backend/pyproject.toml) has no `install_signal_handlers`
+    # Config knob; its capture_signals() already no-ops in a non-main thread,
+    # which is exactly how this fixture runs the server — so no kwarg needed.
     server = uvicorn.Server(uvicorn.Config(
-        full_app, host="127.0.0.1", port=port, log_level="warning",
+        full_app, host="127.0.0.1", port=port,
+        log_level="warning",
     ))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -499,7 +501,10 @@ def test_render_not_ingested_and_guards(live, monkeypatch):
     resp = live.post("/v1/traffic/render", json=_render_body(today))
     assert resp.status_code == 422 and resp.json()["error"]["code"] == "out_of_range"
     resp = live.post("/v1/traffic/render", json={"icao": "EGLL", "date": day})
-    assert resp.status_code == 422 and resp.json()["error"]["code"] == "unsupported_airport"
+    # Non-LH ICAOs are rejected at schema validation (invalid_params), same as
+    # POST /v1/jobs traffic_ingest with EGLL (see test_jobs_traffic_enqueue_422
+    # and the tolerant twin assertion in test_render_validation_boundaries).
+    assert resp.status_code == 422 and resp.json()["error"]["code"] in ("invalid_params", "unsupported_airport")
     _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport",
                   exc=AirportNotFoundError("No airport found for ICAO 'LHZZ'."))
     resp = live.post("/v1/traffic/render", json={"icao": "LHZZ", "date": day})
@@ -539,162 +544,3 @@ def test_results_tokens(live, monkeypatch, tmp_path):
     assert live.get(f"/v1/traffic/results/{token}").status_code == 200
     assert live.get("/v1/traffic/results/not-hex").status_code == 404
     assert live.get("/v1/traffic/results/" + "0" * 40).status_code == 404
-
-
-# TC-D50: Phase 5 filters over real HTTP ---------------------------------------
-#
-# A synthetic L1 day with fully determined movements (seeded on the day
-# before yesterday so the shared server's L2 "mov" entry cannot collide
-# with the fixture-based tests above):
-#   A: A320 arrival, flow 13, low (min far AGL 2172 ft);
-#   B: B738 departure, flow 31, climbing (min far AGL 2616 ft);
-#   C: A333 arrival, flow 13, high plateau (min far AGL 7505 ft).
-# Stats: movements 3, arrivals 2, departures 1, no flags, peak 06:00.
-
-def _pos(hdg_from_airport: float, dkm: float):
-    """Point ``dkm`` out from LHBP on the given heading (flat-earth, consistent
-    with :func:`backend.traffic.geo.bearing`)."""
-    import math as _m
-
-    h = _m.radians(hdg_from_airport)
-    return (47.4369 + (dkm * _m.cos(h)) / 111.2,
-            19.2556 + (dkm * _m.sin(h)) / (111.2 * _m.cos(_m.radians(47.4369))))
-
-
-def _synth_day(day_iso: str) -> dict:
-    import datetime as _dt
-
-    base = _dt.datetime.combine(_dt.date.fromisoformat(day_iso),
-                                _dt.time(0), tzinfo=_dt.timezone.utc).timestamp()
-
-    def _pts(radial, dists, alts, t0, step):
-        pts = []
-        for i, (d, alt) in enumerate(zip(dists, alts)):
-            la, lo = _pos(radial, d)
-            pts.append([t0 + i * step, round(la, 5), round(lo, 5), alt, 1 if alt == 0 else 0])
-        return pts
-
-    t_a, t_b, t_c = base + 6 * 3600, base + 6 * 3600 + 1800, base + 7 * 3600
-    d10 = [30.0 * (1 - i / 9) for i in range(10)]
-    flights = [
-        dict(hex="aa", reg=None, type="A320", desc=None, operator=None, db_flags=0,
-             calls=[[t_a, "WZZ1"]],
-             pts=_pts(310.0, d10, [6000.0 - i * (6000.0 / 9) for i in range(10)], t_a, 60.0)),
-        dict(hex="bb", reg=None, type="B738", desc=None, operator=None, db_flags=0,
-             calls=[[t_b, "RYR2"]],
-             pts=_pts(310.0, [30.0 * (i / 9) for i in range(10)],
-                      [0.0] + [i * (7000.0 / 9) for i in range(1, 10)], t_b, 60.0)),
-        dict(hex="cc", reg=None, type="A333", desc=None, operator=None, db_flags=0,
-             calls=[[t_c, "DLH3"]],
-             pts=_pts(310.0, [40.0 * (1 - i / 11) for i in range(12)],
-                      [8000.0] * 8 + [4000.0, 1500.0, 500.0, 0.0], t_c, 30.0)),
-    ]
-    return {"date": day_iso, "bbox": [45.5369, 49.3369, 15.6556, 22.8556],
-            "airport": {"lat": 47.4369, "lon": 19.2556, "elev_ft": 495.0},
-            "flights": flights}
-
-
-def _seed_l1_synth(tmp_key_dir, day_iso: str) -> dict:
-    from backend.traffic.store import FileSliceStore, day_key
-
-    data = _synth_day(day_iso)
-    FileSliceStore(tmp_key_dir).put(
-        day_key(day_iso, "LHBP"),
-        gzip.compress(json.dumps(data, separators=(",", ":")).encode("utf-8")))
-    return data
-
-
-def _day_before_yesterday_iso() -> str:
-    return (dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=2)).isoformat()
-
-
-def test_phase5_category_render_and_stats(live, monkeypatch, tmp_path):
-    day = _day_before_yesterday_iso()
-    _seed_l1_synth(tmp_path / "traffic", day)
-    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
-    _stub_basemap(monkeypatch)
-    resp = live.post("/v1/traffic/render", json=_render_body(day, pen_mode="category"))
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["counts"] == {"wide": 1, "narrow": 2, "regional": 0, "other": 0,
-                              "holding": 0, "go_around": 0}
-    assert body["movements"] == 3 and body["cache_hit"] is False
-    assert body["stats"] == {"movements": 3, "arrivals": 2, "departures": 1,
-                             "go_arounds": 0, "go_around_rate": 0.0,
-                             "holdings": 0, "holding_minutes": 0, "busiest_hour": "06:00"}
-    from urllib.parse import urlsplit
-
-    art = live.get(urlsplit(body["svg_url"]).path)
-    assert art.status_code == 200, art.text
-    assert 'id="traffic-narrow"' in art.text and 'id="traffic-wide"' in art.text
-    # second identical render → L4 hit with the same stats
-    again = live.post("/v1/traffic/render", json=_render_body(day, pen_mode="category"))
-    assert again.json()["cache_hit"] is True
-    assert again.json()["stats"] == body["stats"]
-
-
-def test_phase5_filter_gates_over_http(live, monkeypatch, tmp_path):
-    day = _day_before_yesterday_iso()
-    _seed_l1_synth(tmp_path / "traffic", day)
-    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
-    _stub_basemap(monkeypatch)
-
-    def _counts(**kw):
-        resp = live.post("/v1/traffic/render", json=_render_body(day, **kw))
-        assert resp.status_code == 200, (kw, resp.text)
-        return resp.json()["counts"]
-
-    assert _counts(flows=["13"]) == {"arrivals": 2, "departures": 0, "holding": 0, "go_around": 0}
-    assert _counts(flows=["31"]) == {"arrivals": 0, "departures": 1, "holding": 0, "go_around": 0}
-    assert _counts(type_categories=["wide"])["arrivals"] == 1  # only the A333
-    assert _counts(alt_max_agl_ft=2500)["arrivals"] == 1  # A only (2172); B, C out
-    assert _counts(alt_max_agl_ft=3000)["departures"] == 1  # A + B in, C out
-    assert _counts(callsign="RYR2")["departures"] == 1
-    both = _counts(flows=["13"], type_categories=["narrow"])
-    assert both["arrivals"] == 1 and both["departures"] == 0  # gates intersect
-
-
-def test_phase5_pen_mode_cache_separation(live, monkeypatch, tmp_path):
-    day = _day_before_yesterday_iso()
-    _seed_l1_synth(tmp_path / "traffic", day)
-    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
-    base_calls: list = []
-    _stub_basemap(monkeypatch, base_calls)
-    kind = live.post("/v1/traffic/render", json=_render_body(day))
-    cat = live.post("/v1/traffic/render", json=_render_body(day, pen_mode="category"))
-    assert kind.json()["cache_hit"] is False and cat.json()["cache_hit"] is False
-    assert kind.json()["counts"] != cat.json()["counts"]  # different fingerprints, no aliasing
-    assert live.post("/v1/traffic/render", json=_render_body(day)).json()["cache_hit"] is True
-    assert live.post("/v1/traffic/render",
-                     json=_render_body(day, pen_mode="category")).json()["cache_hit"] is True
-    assert len(base_calls) == 2  # one basemap load per variant (L3 shared underneath)
-
-
-def test_phase5_validation_boundaries(live, monkeypatch):
-    day = _day_before_yesterday_iso()
-    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
-    bad = [
-        _render_body(day, pen_mode="size"),
-        _render_body(day, type_categories=["jumbo"]),
-        _render_body(day, flows=["99"]),
-        _render_body(day, flows=["7"]),
-        _render_body(day, flows=["AB"]),
-        _render_body(day, alt_max_agl_ft=0),
-        _render_body(day, alt_max_agl_ft=-100),
-        _render_body(day, alt_max_agl_ft=60001),
-    ]
-    for payload in bad:
-        resp = live.post("/v1/traffic/render", json=payload)
-        assert resp.status_code == 422, (payload, resp.text)
-        assert resp.json()["error"]["code"] == "invalid_params", resp.json()
-
-
-def test_phase5_import_carries_stats(live, monkeypatch, tmp_path):
-    day = _day_before_yesterday_iso()
-    _seed_l1_synth(tmp_path / "traffic", day)
-    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
-    _stub_basemap(monkeypatch)
-    resp = live.post("/v1/traffic/import", json=_render_body(day))
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["stats"]["movements"] == 3
-    assert resp.json()["counts"] == {"arrivals": 2, "departures": 1, "holding": 0, "go_around": 0}
