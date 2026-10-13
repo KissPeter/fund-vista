@@ -1,0 +1,1 @@
+{"stats":{"estimated_time_s":8.1,"pen_down_mm":311.77,"pen_up_mm":0.0,"points":{"after":2,"before":2},"segments":{"after":1,"before":1},"strokes":1},"vpype_command":"read --quantization 0.02mm \"in.svg\" linemerge --tolerance 0.5mm linesimplify --tolerance 0.1mm layout A4 --margin 10mm write --color-mode none \"out.svg\"","warnings":["travel_optimization_off"]}

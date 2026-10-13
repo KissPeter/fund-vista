@@ -3,7 +3,9 @@
 Pure port of the ``tools/airport_traffic/render.py`` POC — geometry and
 layer logic unchanged (plan Phase 2). One Inkscape layer
 (``<g inkscape:groupmode="layer">``) per pen: motorways, waterways, water,
-airfield, departures, arrivals, holding, go-around. The view is a lat/lon
+airfield, departures, arrivals, holding, go-around — plus Phase 5
+wide/narrow/regional/other layers used instead of arrivals/departures when
+``pen_mode="category"``. The view is a lat/lon
 bbox ``(south, north, west, east)``, so the same function renders the whole
 country or a zoomed airport.
 """
@@ -18,7 +20,8 @@ from backend.traffic.geo import clip_polyline, rdp
 
 #: Bump when renderer semantics change — part of the L4 SVG cache key so a
 #: fix recomputes instead of serving stale art (plan §6.3).
-RENDER_VERSION = "r1"
+#: r2 (Phase 5): category pen mode (wide/narrow/regional/other layers).
+RENDER_VERSION = "r2"
 
 PENS = {  # layer id -> (label, stroke, width)   widths are in SVG user units of a 1000-wide canvas
     "motorways": ("Motorways", "#8a6d3b", 0.9),
@@ -27,10 +30,18 @@ PENS = {  # layer id -> (label, stroke, width)   widths are in SVG user units of
     "airfield": ("Airfield", "#000000", 1.0),
     "departures": ("Departures", "#2c6fbb", 0.7),
     "arrivals": ("Arrivals", "#222222", 0.7),
+    "wide": ("Wide-body", "#6a3ec0", 0.7),
+    "narrow": ("Narrow-body", "#2c6fbb", 0.7),
+    "regional": ("Regional", "#1a936f", 0.7),
+    "other": ("Other", "#8a8a8a", 0.7),
     "holding": ("Holding", "#e07a00", 1.4),
     "go_around": ("Go-around", "#d6204a", 1.4),
 }
-ORDER = ("motorways", "waterways", "water", "airfield", "departures", "arrivals", "holding", "go_around")
+BASEMAP_LAYERS = ("motorways", "waterways", "water", "airfield")
+KIND_LAYERS = ("departures", "arrivals")
+CATEGORY_LAYERS = ("wide", "narrow", "regional", "other")
+HIGHLIGHT_LAYERS = ("holding", "go_around")
+ORDER = BASEMAP_LAYERS + KIND_LAYERS + CATEGORY_LAYERS + HIGHLIGHT_LAYERS
 
 
 def view_bbox(lat: float, lon: float, radius_km: float) -> tuple[float, float, float, float]:
@@ -60,12 +71,15 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
     proj = Projection(bbox, width)
     eps_base, eps_trk = 0.3, 0.35
     layers: dict[str, list[str]] = {k: [] for k in ORDER}
-    for k in ("motorways", "waterways", "water", "airfield"):
+    for k in BASEMAP_LAYERS:
         for line in basemap.get(k, []):
             layers[k] += ['<path d="%s"/>' % d for d in proj.path(line, eps_base)]
-    counts = {k: 0 for k in ORDER[4:]}
+    move_layers = (CATEGORY_LAYERS if flt.pen_mode == "category" else KIND_LAYERS) + HIGHLIGHT_LAYERS
+    counts = {k: 0 for k in move_layers}
+    ap = airport or {}
+    ag = (float(ap.get("lat", 0.0)), float(ap.get("lon", 0.0)), float(ap.get("elev_ft", 0.0)))
     for f in movements:
-        layer = pen(f, flt)
+        layer = pen(f, flt, ag)
         if layer is None:
             continue
         counts[layer] += 1

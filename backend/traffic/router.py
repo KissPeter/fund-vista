@@ -1,4 +1,5 @@
-"""Traffic endpoints (Phase 1: availability; Phase 2: render + import).
+"""Traffic endpoints (Phase 1: availability; Phase 2: render + import;
+Phase 5: extra filters + category pens + window stats).
 
 Render never touches the archive: it needs the cached L1 day dataset and
 the L3 basemap. If L1 is missing it answers ``409 traffic_not_ingested``
@@ -49,6 +50,7 @@ from backend.traffic.schemas import (
     RenderResponse,
     movements_key,
 )
+from backend.traffic.stats import movement_stats
 
 log = logging.getLogger(__name__)
 
@@ -109,11 +111,11 @@ async def _render_document(
 ) -> dict | JSONResponse:
     """Shared validation → L1 → L2/L3 → render + L4 store for render/import.
 
-    Returns ``{"airport", "icao", "counts", "movements", "svg_text",
-    "warnings", "cache_hit", "svg_key"}`` or an error response. Never
-    touches the archive: a missing L1 answers ``409 traffic_not_ingested``.
-    A dead basemap degrades to empty layers + ``basemap_unavailable``
-    warning, never a failed render.
+    Returns ``{"airport", "icao", "counts", "movements", "stats",
+    "svg_text", "warnings", "cache_hit", "svg_key"}`` or an error response.
+    Never touches the archive: a missing L1 answers ``409
+    traffic_not_ingested``. A dead basemap degrades to empty layers +
+    ``basemap_unavailable`` warning, never a failed render.
     """
     day = dt.date.fromisoformat(body.date)
     lo, hi = _avail.selectable_range()
@@ -168,9 +170,9 @@ async def _render_document(
     svg_key, meta_key = _render_keys(icao, day.isoformat(), body.t_from, body.t_to, view, body)
     cached = await _load_cached_render(svg_key, meta_key, warnings := [])
     if cached is not None:
-        svg_text, counts, movements = cached
+        svg_text, counts, movements, stats = cached
         return {"airport": airport, "icao": icao, "counts": counts,
-                "movements": movements, "svg_text": svg_text,
+                "movements": movements, "stats": stats, "svg_text": svg_text,
                 "warnings": warnings, "cache_hit": True, "svg_key": svg_key}
 
     await check_cancelled(request, endpoint=endpoint, stage="overpass", started_mono=started_mono)
@@ -204,14 +206,20 @@ async def _render_document(
         base, failed = {k: [] for k in ("motorways", "waterways", "water", "airfield")}, ["all"]
     await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
     flt = body.filters(t_from_ts, t_to_ts)
+    try:
+        elev_ft = float(data["airport"].get("elev_ft", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        elev_ft = 0.0
     svg_text, counts = render_svg(window, base, view, flt,
-                                  {"lat": lat, "lon": lon}, width=float(body.width))
+                                  {"lat": lat, "lon": lon, "elev_ft": elev_ft},
+                                  width=float(body.width))
+    stats = movement_stats(window)
     if failed:
         warnings.append("basemap_unavailable")
-    await _store_render(svg_key, meta_key, svg_text, counts, len(window))
+    await _store_render(svg_key, meta_key, svg_text, counts, len(window), stats)
     log.info("traffic.render icao=%s day=%s moves=%d cache_hit=False", icao, body.date, len(window))
     return {"airport": airport, "icao": icao, "counts": counts,
-            "movements": len(window), "svg_text": svg_text,
+            "movements": len(window), "stats": stats, "svg_text": svg_text,
             "warnings": warnings, "cache_hit": False, "svg_key": svg_key}
 
 
@@ -233,6 +241,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     return RenderResponse(
         icao=info["icao"], date=body.date, t_from=body.t_from, t_to=body.t_to,
         counts=info["counts"], movements=info["movements"],
+        stats=info["stats"],
         svg_url=f"{base}/v1/traffic/results/{token}",
         attribution=ATTRIBUTION,
         warnings=info["warnings"], cache_hit=info["cache_hit"],
@@ -264,6 +273,7 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
         image_id=image_id,
         icao=info["icao"], date=body.date, t_from=body.t_from, t_to=body.t_to,
         counts=info["counts"], movements=info["movements"],
+        stats=info["stats"],
         attribution=ATTRIBUTION, warnings=info["warnings"],
     )
 

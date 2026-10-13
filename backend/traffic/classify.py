@@ -32,7 +32,8 @@ GA_WINDOW_S = 600
 
 #: Bump when heuristics change — part of the L2 movements cache key so a fix
 #: recomputes from L1 without a new 3.5 GB download (plan §6.3).
-CLASSIFIER_VERSION = "c1"
+#: c2 (Phase 5): movements gain ``flow`` (runway direction) + ``holding_s``.
+CLASSIFIER_VERSION = "c2"
 
 # point layout: [ts, lat, lon, alt_ft, ground]
 T, LAT, LON, ALT, GND = range(5)
@@ -53,21 +54,61 @@ def legs(pts: list[list]) -> Iterable[list[list]]:
         yield leg
 
 
-def max_turn_deg(leg: list[list], lat: float, lon: float) -> float:
+def _best_turn_window(leg: list[list], lat: float, lon: float) -> tuple[float, float]:
+    """``(max cumulative turn deg, span s of that window)`` outside the circuit.
+
+    Shared scan behind :func:`max_turn_deg` and :func:`holding_span_s` so
+    both agree on what counts as a hold (plan §4 item 5 needs the span).
+    """
     pts = [p for p in leg if km_between(p[LAT], p[LON], lat, lon) > HOLD_EXCLUDE_KM]
     if len(pts) < 10:
-        return 0.0
+        return 0.0, 0.0
     hs = [bearing((pts[i][LAT], pts[i][LON]), (pts[i + 1][LAT], pts[i + 1][LON])) for i in range(len(pts) - 1)]
     cum = [0.0]
     for i in range(1, len(hs)):
         cum.append(cum[-1] + (hs[i] - hs[i - 1] + 180) % 360 - 180)
-    best = 0.0
+    best, span = 0.0, 0.0
     for i in range(len(cum)):
         for j in range(i, len(cum)):
             if pts[j][T] - pts[i][T] > HOLD_WINDOW_S:
                 break
-            best = max(best, abs(cum[j] - cum[i]))
-    return best
+            turn = abs(cum[j] - cum[i])
+            if turn > best:
+                best, span = turn, pts[j][T] - pts[i][T]
+    return best, span
+
+
+def max_turn_deg(leg: list[list], lat: float, lon: float) -> float:
+    return _best_turn_window(leg, lat, lon)[0]
+
+
+def holding_span_s(leg: list[list], lat: float, lon: float) -> float:
+    """Seconds spent in the max-turn window, or 0 when it is not a hold."""
+    turn, span = _best_turn_window(leg, lat, lon)
+    return span if turn >= HOLD_TURN_DEG else 0.0
+
+
+def runway_flow(leg: list[list], kind: str) -> str:
+    """Runway direction in use as a ``"%02d"`` number (plan §4 item 3).
+
+    Arrival → true heading of the touchdown segment (last airborne point
+    to first ground point); departure → heading of the lift-off segment.
+    Rounded to the nearest 10° by runway-number convention
+    (``int((h + 5) // 10)``, 0 → 36), so LHBP 13/31 falls out naturally —
+    no per-airport runway table needed. Legs without a ground transition
+    (trace starts/stops just off the field) fall back to their end segment.
+    """
+    gnd = [i for i, p in enumerate(leg) if p[GND]]
+    if kind == "arr":
+        g = next(iter(gnd), None)
+        a, b = (leg[g - 1], leg[g]) if g is not None and g > 0 else (leg[-2], leg[-1])
+    else:
+        air = next((i for i, p in enumerate(leg) if not p[GND]), None)
+        a, b = (leg[air - 1], leg[air]) if air is not None and air > 0 else (leg[0], leg[1])
+    if a[LAT] == b[LAT] and a[LON] == b[LON]:
+        a, b = (leg[-2], leg[-1]) if kind == "arr" else (leg[0], leg[1])
+    heading = bearing((a[LAT], a[LON]), (b[LAT], b[LON]))
+    return "%02d" % (int((heading + 5) // 10) % 36 or 36)
 
 
 def has_go_around(leg: list[list], lat: float, lon: float, elev_ft: float) -> bool:
@@ -133,6 +174,8 @@ def classify_day(data: dict) -> list[dict]:
                 "operator": ac.get("operator"), "db_flags": ac.get("db_flags", 0), "flight": _callsign(ac.get("calls") or [], ev),
                 "kind": kind, "t": ev,
                 "holding": arr and max_turn_deg(leg, lat, lon) >= HOLD_TURN_DEG,
+                "holding_s": int(round(holding_span_s(leg, lat, lon))) if arr else 0,
+                "flow": runway_flow(leg, kind),
                 "go_around": arr and has_go_around(leg, lat, lon, elev),
                 "pts": leg,
             })

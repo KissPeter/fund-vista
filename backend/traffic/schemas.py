@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from backend.traffic.aircraft import CATEGORIES
 from backend.traffic.classify import CLASSIFIER_VERSION
 from backend.traffic.filters import Filters
 from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
@@ -24,6 +26,7 @@ ATTRIBUTION = (
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$|^24:00$")
+_FLOW_RE = re.compile(r"^(0[1-9]|[12]\d|3[0-6])$")  # runway numbers 01..36
 
 
 def _normalize_icao(v: str) -> str:
@@ -110,6 +113,10 @@ class RenderRequest(BaseModel):
     types: list[str] = Field(default_factory=list)
     airlines: list[str] = Field(default_factory=list)
     callsign: str = ""
+    type_categories: list[str] = Field(default_factory=list)  # Phase 5: wide/narrow/regional/other
+    flows: list[str] = Field(default_factory=list)            # Phase 5: runway numbers "13"
+    alt_max_agl_ft: float | None = Field(default=None, gt=0, le=60000)  # Phase 5: noise-map band
+    pen_mode: Literal["kind", "category"] = "kind"            # Phase 5: pen grouping
     exclude_military: bool = True
     exclude_privacy: bool = True
     view_south: float | None = None
@@ -127,6 +134,22 @@ class RenderRequest(BaseModel):
     @classmethod
     def _valid_date(cls, v: str) -> str:
         return _valid_day(v)
+
+    @field_validator("type_categories")
+    @classmethod
+    def _known_categories(cls, v: list[str]) -> list[str]:
+        bad = [c for c in v if c not in CATEGORIES]
+        if bad:
+            raise ValueError(f"unknown aircraft categories: {bad} (want {list(CATEGORIES)})")
+        return v
+
+    @field_validator("flows")
+    @classmethod
+    def _known_flows(cls, v: list[str]) -> list[str]:
+        bad = [f for f in v if not _FLOW_RE.match(f or "")]
+        if bad:
+            raise ValueError(f"flows must be runway numbers 01..36: {bad}")
+        return v
 
     @model_validator(mode="after")
     def _check_window_and_view(self) -> RenderRequest:
@@ -159,6 +182,8 @@ class RenderRequest(BaseModel):
             holding=self.holding, go_around=self.go_around,
             types=set(self.types), airlines=set(self.airlines),
             callsign=self.callsign,
+            type_categories=set(self.type_categories), flows=set(self.flows),
+            alt_max_agl_ft=self.alt_max_agl_ft, pen_mode=self.pen_mode,
             exclude_military=self.exclude_military,
             exclude_privacy=self.exclude_privacy,
         )
@@ -169,8 +194,11 @@ class RenderResponse(BaseModel):
     date: str
     t_from: str
     t_to: str
-    counts: dict[str, int]  # drawn per layer: arrivals/departures/holding/go_around
+    counts: dict[str, int]  # drawn per layer: kind mode arrivals/departures/…,
+    # category mode wide/narrow/regional/other/…, always + holding/go_around
     movements: int  # classified movements in the window (before pen filtering)
+    stats: dict = Field(default_factory=dict)  # movement_stats(window): movements,
+    # arrivals/departures, go_arounds + rate, holdings + minutes, busiest_hour
     svg_url: str
     attribution: str = ATTRIBUTION
     warnings: list[str] = Field(default_factory=list)
@@ -188,6 +216,7 @@ class ImportResponse(BaseModel):
     t_to: str
     counts: dict[str, int]
     movements: int
+    stats: dict = Field(default_factory=dict)  # same movement_stats(window) as render
     attribution: str = ATTRIBUTION
     warnings: list[str] = Field(default_factory=list)
 
