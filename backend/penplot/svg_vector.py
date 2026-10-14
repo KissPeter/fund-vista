@@ -235,6 +235,25 @@ def _local_tag(el: ET.Element) -> str:
     return el.tag.split("}")[-1].lower() if isinstance(el.tag, str) else ""
 
 
+def _is_credit(el: ET.Element) -> bool:
+    """True for the download-only visible credit subtree (never plottable).
+
+    Matches our own ``id="penplot-credit"`` / ``data-credit`` marker and, for
+    cross-backend idempotency, any ``id="...credit..."`` (covers the shop-side
+    guard's id). Skipped wholesale in :func:`_walk_children` and on ``<use>``
+    dereference, so a downloaded file re-converts to identical geometry.
+    """
+    try:
+        attrib = el.attrib or {}
+    except AttributeError:
+        return False
+    for key in attrib:
+        if isinstance(key, str) and key.lower() == "data-credit":
+            return True
+    eid = attrib.get("id", "")
+    return isinstance(eid, str) and "credit" in eid.lower()
+
+
 def _emit(
     out: list[list[tuple[float, float]]],
     ctm: Matrix,
@@ -343,6 +362,8 @@ def _walk_children(
     for el in parent:
         if not isinstance(el.tag, str):
             continue
+        if _is_credit(el):
+            continue
         t = _local_tag(el)
         if _element_hidden(el):
             continue
@@ -377,6 +398,8 @@ def _walk_children(
             sub = _mmul(local, (1, 0, 0, 1, ux, uy))
             if m and m.group(1) in id_map and m.group(1) not in use_stack:
                 target = id_map[m.group(1)]
+                if _is_credit(target):
+                    continue
                 tt = _local_tag(target)
                 if tt in ("g", "a", "switch", "symbol", "svg"):
                     _walk_children(

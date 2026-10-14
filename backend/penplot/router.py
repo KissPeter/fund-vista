@@ -346,7 +346,22 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
 
 
 @router.get("/results/{filename}", dependencies=[Depends(require_rate_limit)])
-async def get_result(filename: str) -> Response:
+async def get_result(
+    filename: str,
+    download: bool = False,
+    credit: bool = False,
+) -> Response:
+    """Serve a stored convert result; previews stay clean, downloads stamp.
+
+    Plain ``GET`` returns the cached bytes byte-identical (previews, shop
+    thumbnails). ``?download=1`` (or ``?credit=1``) applies
+    :func:`backend.penplot.svgmeta.stamp_download` at serve time — metadata
+    notice plus the centred domain line in the bottom margin — without ever
+    writing back to disk, so cached bytes stay deterministic. ``?download=1``
+    additionally answers ``Content-Disposition: attachment``; ``?credit=1``
+    keeps the inline disposition. Both are idempotent (already-stamped input
+    is a byte-identical no-op) and never touch plot geometry.
+    """
     # Filenames are server-generated ({sha}_{hash}_optimized.svg); anything
     # else is a 404, never a path traversal.
     if not filename.endswith("_optimized.svg") or "/" in filename or "\\" in filename:
@@ -361,7 +376,14 @@ async def get_result(filename: str) -> Response:
         return error_response(
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
         )
-    return Response(content=svg, media_type="image/svg+xml")
+    headers: dict[str, str] = {}
+    if download or credit:
+        from backend.penplot import svgmeta as _svgmeta
+
+        svg = _svgmeta.stamp_download(svg, _settings)
+        if download:
+            headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return Response(content=svg, media_type="image/svg+xml", headers=headers)
 
 
 @router.get("/results/{filename}/meta", response_model=ResultMetaResponse,

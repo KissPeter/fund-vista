@@ -54,6 +54,38 @@ CLI: `--creator`, `--rights`, `--license`, `--license-url`, `--attribution-url`
 (override the env for that run), `--title`, `--description`, `--no-title`; see
 `docs/img2plot-cli.md`.
 
+## Download-only visible credit (`GET /v1/results/{file}?download=1`)
+
+Previews stay clean: plain `GET /v1/results/{file}` serves the cached bytes
+byte-identical (no visible line, deterministic). The download variant applies
+`svgmeta.stamp_download` **at serve time, never stored**:
+
+- `?download=1` — metadata notice (when configured) + a centred domain line
+  (`<g id="penplot-credit">`) in the bottom out-of-border margin, placed
+  viewBox-aware; answers `Content-Disposition: attachment`.
+- `?credit=1` — same bytes, inline disposition (no attachment header).
+
+The visible text is the hostname of `PENPLOT_SVG_ATTRIBUTION_URL`
+(`https://penplot.linuxadm.hu/…` → `penplot.linuxadm.hu`), so no new setting
+is needed; with no attribution URL configured the download is byte-identical
+to the preview. Plot geometry (`<path>` data) is never modified, re-requests
+are byte-identical no-ops (including shop-stamped files — the shop guard
+passes them through unchanged), and the SVG parser skips the credit subtree
+on re-ingest, so a download converts back to identical geometry.
+
+## Production go-live
+
+```bash
+PENPLOT_SVG_CREATOR="Pen Pixel Shop"
+PENPLOT_SVG_RIGHTS="(c) 2026 Pen Pixel Shop. All rights reserved."
+PENPLOT_SVG_LICENSE=all-rights-reserved   # or a cc-* preset above
+PENPLOT_SVG_ATTRIBUTION_URL=https://penplot.linuxadm.hu
+```
+
+The ownership digest is part of result filenames, so enabling this never
+serves a stale file — new converts get new names, old cached files keep
+their stamp. Verify with `backend/tests/test_penplot_svg_download.py`.
+
 ## Check a file
 
 ```bash
