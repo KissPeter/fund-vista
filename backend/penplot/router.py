@@ -14,10 +14,12 @@ import shutil
 import tempfile
 import threading
 import time
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from redis.exceptions import RedisError
 from starlette.status import (
     HTTP_404_NOT_FOUND,
     HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -124,7 +126,7 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
         if errs:
             loc = ".".join(str(p) for p in errs[0].get("loc", ()))
             first = f"{loc}: {errs[0].get('msg', '')}".strip(": ")
-    except Exception:
+    except (AttributeError, TypeError, ValueError, KeyError):
         first = ""
     msg = f"Invalid parameters. {first}".strip()
     return error_response(HTTP_422_UNPROCESSABLE_ENTITY, ErrorCode.INVALID_PARAMS, msg)
@@ -154,9 +156,25 @@ def _warnings_for(width: int, height: int, is_vector: bool) -> list[str]:
     return []
 
 
+def _read_bytes(path: str) -> bytes:
+    """Blocking read for async handlers (offloaded via ``asyncio.to_thread``)."""
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _read_text(path: str) -> str:
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _write_fd(fd: int, data: bytes) -> None:
+    with open(fd, "wb") as fh:
+        fh.write(data)
+
+
 @router.post("/images", response_model=ImageMetaResponse,
              dependencies=[Depends(require_rate_limit)])
-async def upload_image(file: UploadFile = File(...)) -> ImageMetaResponse | JSONResponse:
+async def upload_image(file: Annotated[UploadFile, File(...)]) -> ImageMetaResponse | JSONResponse:
     data = await file.read()
     if len(data) > _settings.max_upload_bytes:
         return error_response(
@@ -178,7 +196,7 @@ async def upload_image(file: UploadFile = File(...)) -> ImageMetaResponse | JSON
     try:
         if ext == "svg":
             _, w, h, svg_warnings = imaging.parse_svg_vectors(data)
-            width, height = int(round(w)), int(round(h))
+            width, height = round(w), round(h)
             is_vector = True
         else:
             w, h, _fmt = imaging.probe_raster(data)
@@ -210,11 +228,10 @@ async def get_image(image_id: str) -> ImageMetaResponse | JSONResponse:
         return error_response(exc.status, exc.code, exc.message)
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else "png"
     try:
-        with open(path, "rb") as fh:
-            data = fh.read()
+        data = await asyncio.to_thread(_read_bytes, path)
         if ext == "svg":
             _, w, h, svg_warnings = imaging.parse_svg_vectors(data)
-            width, height = int(round(w)), int(round(h))
+            width, height = round(w), round(h)
             is_vector = True
         else:
             w, h, _fmt = imaging.probe_raster(data)
@@ -278,8 +295,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
             )
 
     await check_cancelled(request, endpoint=endpoint, stage="decode", started_mono=started)
-    with open(path, "rb") as fh:
-        data = fh.read()
+    data = await asyncio.to_thread(_read_bytes, path)
     # Authoritative dims (cheap re-probe; keeps stats honest even if the
     # cached file was replaced between upload and convert). Vector inputs
     # never need the low-res hint (it is raster-only), so we do not parse
@@ -322,9 +338,9 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
     # Warnings include the low-res hint so the stored response matches
     # what the very first call reported.
     warnings = list(result.warnings)
-    if not is_vector and "low_resolution_for_a4" in _warnings_for(int(src_w), int(src_h), False):
-        if "low_resolution_for_a4" not in warnings:
-            warnings.append("low_resolution_for_a4")
+    if (not is_vector and "low_resolution_for_a4" in _warnings_for(int(src_w), int(src_h), False)
+            and "low_resolution_for_a4" not in warnings):
+        warnings.append("low_resolution_for_a4")
     store.put_result_meta(filename, {
         "stats": result.stats.model_dump(mode="json"),
         "warnings": warnings,
@@ -346,7 +362,22 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
 
 
 @router.get("/results/{filename}", dependencies=[Depends(require_rate_limit)])
-async def get_result(filename: str) -> Response:
+async def get_result(
+    filename: str,
+    download: bool = False,
+    credit: bool = False,
+) -> Response:
+    """Serve a stored convert result; previews stay clean, downloads stamp.
+
+    Plain ``GET`` returns the cached bytes byte-identical (previews, shop
+    thumbnails). ``?download=1`` (or ``?credit=1``) applies
+    :func:`backend.penplot.svgmeta.stamp_download` at serve time — metadata
+    notice plus the centred domain line in the bottom margin — without ever
+    writing back to disk, so cached bytes stay deterministic. ``?download=1``
+    additionally answers ``Content-Disposition: attachment``; ``?credit=1``
+    keeps the inline disposition. Both are idempotent (already-stamped input
+    is a byte-identical no-op) and never touch plot geometry.
+    """
     # Filenames are server-generated ({sha}_{hash}_optimized.svg); anything
     # else is a 404, never a path traversal.
     if not filename.endswith("_optimized.svg") or "/" in filename or "\\" in filename:
@@ -355,13 +386,19 @@ async def get_result(filename: str) -> Response:
         )
     path = store.result_path(filename)
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            svg = fh.read()
+        svg = await asyncio.to_thread(_read_text, path)
     except OSError:
         return error_response(
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
         )
-    return Response(content=svg, media_type="image/svg+xml")
+    headers: dict[str, str] = {}
+    if download or credit:
+        from backend.penplot import svgmeta as _svgmeta
+
+        svg = _svgmeta.stamp_download(svg, _settings)
+        if download:
+            headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return Response(content=svg, media_type="image/svg+xml", headers=headers)
 
 
 @router.get("/results/{filename}/meta", response_model=ResultMetaResponse,
@@ -479,8 +516,7 @@ async def health() -> HealthResponse | JSONResponse:
     store_writable = True
     try:
         fd, tmp = tempfile.mkstemp(dir=store.images_dir, prefix=".health-")
-        with open(fd, "wb") as fh:
-            fh.write(b"ok")
+        await asyncio.to_thread(_write_fd, fd, b"ok")
         os.remove(tmp)
     except OSError:
         store_writable = False
@@ -495,7 +531,7 @@ async def health() -> HealthResponse | JSONResponse:
         try:
             await asyncio.wait_for(redis_client.ping(), timeout=2.0)
             redis_state = "reachable"
-        except Exception:
+        except (RedisError, OSError, asyncio.TimeoutError):
             redis_state = "unreachable"
     if not store_writable or disk_free_mb < 100.0:
         status = "down"
