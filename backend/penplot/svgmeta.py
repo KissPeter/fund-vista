@@ -71,12 +71,12 @@ LICENSES: dict[str, tuple[str, str | None, tuple, tuple, tuple]] = {
 }
 
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_ROOT = re.compile(r"<svg\b[^>]*?(?<!/)>", re.S)
-_VIEWBOX = re.compile(r"""viewBox\s*=\s*["']([^"']+)["']""", re.I)
-_WIDTH_ATTR = re.compile(r"""<svg\b[^>]*?\bwidth\s*=\s*["']([^"']+)["']""", re.I | re.S)
-_HEIGHT_ATTR = re.compile(r"""<svg\b[^>]*?\bheight\s*=\s*["']([^"']+)["']""", re.I | re.S)
-_CREDIT_ID = re.compile(r"""id\s*=\s*["'][^"']*credit[^"']*["']""", re.I)
-_CLOSE_SVG = re.compile(r"</svg\s*>", re.I)
+_ROOT = re.compile(r"<svg\b[^>]*?(?<!/)>", re.DOTALL)
+_VIEWBOX = re.compile(r"""viewBox\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_WIDTH_ATTR = re.compile(r"""<svg\b[^>]*?\bwidth\s*=\s*["']([^"']+)["']""", re.IGNORECASE | re.DOTALL)
+_HEIGHT_ATTR = re.compile(r"""<svg\b[^>]*?\bheight\s*=\s*["']([^"']+)["']""", re.IGNORECASE | re.DOTALL)
+_CREDIT_ID = re.compile(r"""id\s*=\s*["'][^"']*credit[^"']*["']""", re.IGNORECASE)
+_CLOSE_SVG = re.compile(r"</svg\s*>", re.IGNORECASE)
 _NUM = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
 
 
@@ -95,7 +95,7 @@ def validate_url(url: str) -> str:
 def validate_license(name: str) -> str:
     name = (name or "").strip().lower()
     if name and name not in LICENSES:
-        raise ValueError("unknown licence %r; one of %s" % (name, ", ".join(sorted(LICENSES))))
+        raise ValueError(f"unknown licence {name!r}; one of {', '.join(sorted(LICENSES))}")
     return name
 
 
@@ -246,7 +246,7 @@ def has_visible_credit(svg_text: str) -> bool:
     if _CREDIT_ID.search(svg_text):
         return True
     body = re.sub(r"<metadata\b.*?</metadata\s*>", "", svg_text,
-                  flags=re.S | re.I)
+                  flags=re.DOTALL | re.IGNORECASE)
     return CREDIT_KNOWN_HOST in body
 
 
@@ -300,7 +300,7 @@ def stamp_visible_credit(svg_text: str, settings: Settings | None = None) -> str
     # the text but not our marker): strip metadata first so the attribution
     # URL itself never counts.
     body = re.sub(r"<metadata\b.*?</metadata\s*>", "", svg_text,
-                  flags=re.S | re.I)
+                  flags=re.DOTALL | re.IGNORECASE)
     if domain in body:
         return svg_text
     page = _page_for_credit(svg_text)

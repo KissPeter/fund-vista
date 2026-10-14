@@ -180,9 +180,8 @@ def _parse_transform(value: str | None) -> Matrix:
         elif name == "skewY":
             if len(args) >= 1:
                 local = (1, math.tan(math.radians(args[0])), 0, 1, 0, 0)
-        elif name == "matrix":
-            if len(args) >= 6:
-                local = (args[0], args[1], args[2], args[3], args[4], args[5])
+        elif name == "matrix" and len(args) >= 6:
+            local = (args[0], args[1], args[2], args[3], args[4], args[5])
         if local is not None:
             result = _mmul(result, local)  # lists apply left-to-right
     return result
@@ -442,8 +441,7 @@ def parse_svg_vectors(data: bytes) -> tuple[list[list[tuple[float, float]]], flo
     while stack:
         el, depth = stack.pop()
         count += 1
-        if depth > max_depth:
-            max_depth = depth
+        max_depth = max(max_depth, depth)
         if count > _MAX_SVG_ELEMENTS or max_depth > _MAX_SVG_DEPTH:
             raise PenPlotError(
                 status=400, code=ErrorCode.BAD_IMAGE,
@@ -534,7 +532,7 @@ def _sample_arc(
     ) % 360.0
     if not sweep:
         dtheta -= 360.0
-    steps = max(2, int(math.ceil(abs(dtheta) / max_step_deg)) + 1)
+    steps = max(2, math.ceil(abs(dtheta) / max_step_deg) + 1)
     out = []
     for s in range(1, steps + 1):
         ang = math.radians(theta1 + dtheta * s / steps)
@@ -764,8 +762,7 @@ def _flatten_path_d(d: str, curve_steps: int = 12) -> list[list[tuple[float, flo
                     ex += cur[0]
                     ey += cur[1]
                 ensure_started()
-                for pt in _sample_arc((cur[0], cur[1]), (ex, ey), rx, ry, rot, large, sweep):
-                    cur_line.append(pt)
+                cur_line.extend(_sample_arc((cur[0], cur[1]), (ex, ey), rx, ry, rot, large, sweep))
                 cur = [ex, ey]
                 started = True
                 prev_cubic = prev_quad = None
@@ -845,10 +842,11 @@ def _text_to_polylines(el: ET.Element) -> list[list[tuple[float, float]]]:
     try:
         font = ImageFont.load_default(size=round(_TEXT_RENDER_EM_PX))
         em_px = _TEXT_RENDER_EM_PX
-    except Exception:  # pragma: no cover — ancient Pillow without sized default
+    except (OSError, ValueError):  # pragma: no cover — ancient Pillow without sized default
         # Deliberate fallback: any Pillow failure still yields text (bitmap
-        # face) instead of a 500. Commented, not narrowed — Pillow's
-        # exception types here vary by version (OSError/ValueError/...).
+        # face) instead of a 500. Pillow's exception types here vary by
+        # version (OSError/ValueError); anything else is a real bug and
+        # should surface.
         log.warning("text: sized default font unavailable, falling back to bitmap")
         font = ImageFont.load_default()
         ref = font.getbbox("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
@@ -856,7 +854,7 @@ def _text_to_polylines(el: ET.Element) -> list[list[tuple[float, float]]]:
     uppx = font_size / em_px  # user units per raster px
     try:
         ascent, descent = font.getmetrics()
-    except Exception:
+    except (OSError, ValueError):
         # Deliberate fallback: exotic bitmap faces without metrics still
         # render at an 80/20 split instead of 500ing. See above.
         ascent, descent = int(em_px * 0.8), int(em_px * 0.2)
