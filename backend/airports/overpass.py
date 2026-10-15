@@ -19,6 +19,28 @@ from backend.airports.config import settings
 
 log = logging.getLogger(__name__)
 
+# Overpass fair-use guard (same shape as citymap): at most
+# ``overpass_max_concurrent`` upstream POSTs per worker so concurrent
+# airport renders queue locally instead of hammering shared mirrors.
+_overpass_sem: asyncio.Semaphore | None = None
+_overpass_sem_capacity: int = 0
+
+
+def _overpass_semaphore() -> asyncio.Semaphore:
+    global _overpass_sem, _overpass_sem_capacity
+    want = max(1, int(settings.overpass_max_concurrent))
+    if _overpass_sem is None or _overpass_sem_capacity != want:
+        _overpass_sem = asyncio.Semaphore(want)
+        _overpass_sem_capacity = want
+    return _overpass_sem
+
+
+def _reset_overpass_semaphore() -> None:
+    """Drop the cached semaphore (tests only)."""
+    global _overpass_sem, _overpass_sem_capacity
+    _overpass_sem = None
+    _overpass_sem_capacity = 0
+
 _RETRYABLE_STATUS: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
 _BODY_SNIPPET_LEN = 200
 
@@ -249,7 +271,8 @@ async def fetch_airport_polygons(
     """POST the query to the first healthy Overpass mirror.
 
     Same failover shape as citymap (per-mirror retries on retryable
-    failures with exponential backoff, fail-fast on 400/403/404).
+    failures with exponential backoff, fail-fast on 400/403/404) plus the
+    same ``overpass_max_concurrent`` cap on parallel upstream POSTs.
     Raises :class:`AirportOverpassError` when every mirror fails.
     """
     own_client = client is None
@@ -260,11 +283,12 @@ async def fetch_airport_polygons(
         for url in settings.overpass_urls:
             for attempt in range(max_attempts):
                 try:
-                    resp = await client.post(
-                        url,
-                        data={"data": query},
-                        headers={"User-Agent": settings.user_agent},
-                    )
+                    async with _overpass_semaphore():
+                        resp = await client.post(
+                            url,
+                            data={"data": query},
+                            headers={"User-Agent": settings.user_agent},
+                        )
                     if resp.status_code != 200:
                         detail = f"{url} answered HTTP {resp.status_code}"
                         snippet = _body_snippet(resp)

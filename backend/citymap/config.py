@@ -57,6 +57,21 @@ class CitymapSettings(BaseSettings):
     osm_api_retry_backoff_s: float = 0.5
     nominatim_url: str = "https://nominatim.openstreetmap.org/search"
     nominatim_timeout_s: float = 15.0
+    # Nominatim usage policy (operations.osmfoundation.org/policies/nominatim):
+    # at most 1 request/s against the public instance, a real User-Agent
+    # identifying the app, and caching on our side. The throttle in
+    # geocode.py enforces this process-wide on cache misses; every hit
+    # avoids the upstream entirely.
+    nominatim_min_interval_s: float = 1.0
+    # Contact for heavy-use identification (Nominatim asks for a referer
+    # or contact URL alongside the User-Agent).
+    nominatim_referer: str = "https://github.com/KissPeter/fund-vista"
+    # Overpass fair use (wiki: Overpass API / public instances): keep
+    # queries small, cache aggressively, identify the app, and never
+    # hammer mirrors in parallel. The fetchers union one query per render,
+    # fall over mirrors sequentially, and cap concurrent upstream POSTs
+    # with this semaphore (shared public infra — 2 is the polite max).
+    overpass_max_concurrent: int = 2
     # Fixed-window cache TTL for geocode payloads, raw Overpass payloads and
     # rendered SVGs (hours). Results are deterministically regenerable.
     cache_ttl_hours: int = 24
@@ -66,8 +81,12 @@ class CitymapSettings(BaseSettings):
     # requested, before grid snapping nudges it outward.
     max_bbox_deg: float = 0.8
     # Nominatim usage policy requires a real User-Agent (and asks for a
-    # referer/contact on heavy use). Ours identifies the app.
-    user_agent: str = "fund-vista-citymap/1.0 (pen-plot city maps)"
+    # referer/contact on heavy use). Ours identifies the app + contact URL
+    # so operators can reach us; the Referer header carries the repo too.
+    user_agent: str = (
+        "fund-vista-citymap/1.0 "
+        "(https://github.com/KissPeter/fund-vista; pen-plot city maps)"
+    )
     # Rendered SVGs must be retrievable via GET /v1/citymap/results/{token}:
     # the render response carries only the URL, so an uncached SVG means a
     # broken preview (404). Dense metro renders reach ~10 MB, so the cap
