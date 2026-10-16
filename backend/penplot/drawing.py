@@ -326,9 +326,12 @@ def _erase_titles(tone: np.ndarray, img: np.ndarray, settings: Settings, small_o
     try:
         reader = OCR_BACKENDS[resolve_backend(settings)][1]()
         page = ocr_text._PAGE_FOR[reader]
-        words = page(small_of(tone))
-        boxes = ocr_text.erase_boxes(words, small_of(tone).shape[0])
-        end = ocr_text.header_end(small_of(tone), boxes)
+        small = small_of(tone)
+        # Only the top strip is read: artwork reaching up (wing tips) confuses a
+        # whole-page read, which then misses a perfectly legible title.
+        strip = small[:max(int(ocr_text.HEADER_SCAN_FRACTION * small.shape[0]), 1)]
+        boxes = ocr_text.erase_boxes(page(strip), small.shape[0])
+        end = ocr_text.header_end(small, boxes)
     except Exception:  # noqa: BLE001 - optional step, never fatal
         log.warning("erase_text: whole-page read failed", exc_info=True)
         return img
