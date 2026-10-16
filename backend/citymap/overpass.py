@@ -22,6 +22,31 @@ from backend.citymap.layers import selectors_for
 
 log = logging.getLogger(__name__)
 
+# Overpass fair-use guard: at most ``overpass_max_concurrent`` upstream
+# POSTs per worker. Public mirrors are shared infra — concurrent renders
+# must queue locally instead of fanning out N parallel POSTs per mirror.
+# The semaphore is created lazily (asyncio primitives must not be built at
+# import time) and rebuilt when the setting changes. Tests reset it via
+# _reset_overpass_semaphore() and drive concurrency with a fake client.
+_overpass_sem: asyncio.Semaphore | None = None
+_overpass_sem_capacity: int = 0
+
+
+def _overpass_semaphore() -> asyncio.Semaphore:
+    global _overpass_sem, _overpass_sem_capacity
+    want = max(1, int(settings.overpass_max_concurrent))
+    if _overpass_sem is None or _overpass_sem_capacity != want:
+        _overpass_sem = asyncio.Semaphore(want)
+        _overpass_sem_capacity = want
+    return _overpass_sem
+
+
+def _reset_overpass_semaphore() -> None:
+    """Drop the cached semaphore (tests only)."""
+    global _overpass_sem, _overpass_sem_capacity
+    _overpass_sem = None
+    _overpass_sem_capacity = 0
+
 # HTTP statuses worth retrying on the same mirror before failing over.
 # 400/403/404 fail fast (retrying won't help: rejected query / blocked).
 _RETRYABLE_STATUS: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
@@ -188,6 +213,8 @@ async def fetch_overpass(query: str, client: httpx.AsyncClient | None = None) ->
     Each mirror gets ``overpass_retries`` extra attempts on retryable
     failures (HTTP 408/429/5xx + network errors) with exponential backoff
     before failing over to the next mirror. 400/403/404 fail fast.
+    Concurrent upstream POSTs are capped by ``overpass_max_concurrent``
+    (fair use on shared public mirrors).
 
     Raises :class:`OverpassError` when every mirror fails or answers with
     non-JSON so the router can map it to a 502 envelope.
@@ -202,11 +229,14 @@ async def fetch_overpass(query: str, client: httpx.AsyncClient | None = None) ->
                 try:
                     # Overpass answers 406 to generic HTTP-client UAs
                     # (e.g. python-httpx/*) — identify the app on every POST.
-                    resp = await client.post(
-                        url,
-                        data={"data": query},
-                        headers={"User-Agent": settings.user_agent},
-                    )
+                    # The semaphore caps concurrent upstream POSTs per worker
+                    # (fair use: never hammer shared mirrors in parallel).
+                    async with _overpass_semaphore():
+                        resp = await client.post(
+                            url,
+                            data={"data": query},
+                            headers={"User-Agent": settings.user_agent},
+                        )
                     if resp.status_code != 200:
                         detail = f"{url} answered HTTP {resp.status_code}"
                         snippet = _body_snippet(resp)

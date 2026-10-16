@@ -41,6 +41,10 @@ class AirportsSettings(BaseSettings):
     overpass_timeout_s: float = 30.0
     overpass_retries: int = 1
     overpass_retry_backoff_s: float = 1.0
+    # Overpass fair use (same public infra as citymap): one unioned query
+    # per render, sequential mirror failover, tile/payload caching, and at
+    # most this many concurrent upstream POSTs per worker.
+    overpass_max_concurrent: int = 2
     # Fixed-window cache TTL for OurAirports CSVs, raw Overpass payloads and
     # rendered SVGs (hours). Results are deterministically regenerable.
     cache_ttl_hours: int = 24
@@ -61,8 +65,12 @@ class AirportsSettings(BaseSettings):
     # already over-fetches by a 1 km margin, so rounding up never drops
     # geometry — it only stops near-identical radii fragmenting the cache.
     radius_bucket_m: float = 500.0
-    # Nominatim-style identification for upstream POSTs.
-    user_agent: str = "fund-vista-airports/1.0 (pen-plot airport diagrams)"
+    # Nominatim-style identification for upstream POSTs (Overpass, GitHub
+    # raw): app name + contact URL so operators can reach us.
+    user_agent: str = (
+        "fund-vista-airports/1.0 "
+        "(https://github.com/KissPeter/fund-vista; pen-plot airport diagrams)"
+    )
 
 
 settings = AirportsSettings()

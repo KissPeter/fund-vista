@@ -2,14 +2,18 @@
 
 ``geocode_city`` mirrors what city-roads' ``findBoundaryByName`` does for
 the search box: ask Nominatim for the best match and take its bounding
-box. Results are cached in Redis for ``cache_ttl_hours`` — Nominatim
-policy allows at most 1 req/s, so every cache hit keeps us compliant.
+box. Results are cached in Redis for ``cache_ttl_hours`` — every cache
+hit avoids the upstream entirely. Cache misses are paced process-wide to
+the Nominatim usage policy (max 1 req/s, identifying User-Agent + Referer)
+via :func:`_throttle_nominatim` before any HTTP request.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 
 import httpx
 
@@ -18,6 +22,39 @@ from backend.citymap.config import settings
 from backend.citymap.overpass import BBox
 
 log = logging.getLogger(__name__)
+
+# Nominatim usage policy: at most 1 request/s against the public instance.
+# Process-wide throttle enforced on every cache miss (hits never reach the
+# upstream). State is module-level so concurrent geocode/search calls share
+# one clock; tests manipulate it via _reset_nominatim_throttle() instead of
+# sleeping (see test_data_provider_terms.py).
+_nominatim_lock = asyncio.Lock()
+_last_nominatim_mono: float = 0.0  # 0.0 = no request yet this process
+
+
+def _reset_nominatim_throttle() -> None:
+    """Forget the last upstream timestamp (tests only)."""
+    global _last_nominatim_mono
+    _last_nominatim_mono = 0.0
+
+
+async def _throttle_nominatim() -> float:
+    """Wait until ``nominatim_min_interval_s`` elapsed since the last call.
+
+    Returns the seconds waited (0.0 when no wait was needed) and stamps the
+    clock. The stamp is taken under the lock so two concurrent callers are
+    serialized into compliant 1-second spacing.
+    """
+    global _last_nominatim_mono
+    async with _nominatim_lock:
+        interval = max(0.0, float(settings.nominatim_min_interval_s))
+        now = time.monotonic()
+        wait = interval - (now - _last_nominatim_mono) if _last_nominatim_mono else 0.0
+        if wait > 0:
+            await asyncio.sleep(wait)
+            now = time.monotonic()
+        _last_nominatim_mono = now
+        return max(0.0, wait)
 
 
 class GeocodeError(Exception):
@@ -39,7 +76,7 @@ class CityNotFoundError(Exception):
 def _headers() -> dict[str, str]:
     return {
         "User-Agent": settings.user_agent,
-        "Referer": "https://github.com/anomalyco/opencode",
+        "Referer": settings.nominatim_referer,
         "Accept": "application/json",
     }
 
@@ -60,6 +97,8 @@ async def geocode_city(city: str) -> dict:
         payload["cache_hit"] = True
         return payload
 
+    # Cache miss → upstream: pace to the Nominatim 1 req/s policy first.
+    await _throttle_nominatim()
     params = {"format": "jsonv2", "q": city, "limit": 1, "addressdetails": 0}
     try:
         async with httpx.AsyncClient(
@@ -134,6 +173,8 @@ async def search_places(query: str, limit: int = 5) -> dict:
         payload["cache_hit"] = True
         return payload
 
+    # Cache miss → upstream: pace to the Nominatim 1 req/s policy first.
+    await _throttle_nominatim()
     params = {"format": "jsonv2", "q": query, "limit": limit, "addressdetails": 0}
     try:
         async with httpx.AsyncClient(
