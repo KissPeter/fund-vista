@@ -265,6 +265,27 @@ def _scaled(words: list[ocr_text.Word], k: float) -> list[ocr_text.Word]:
             for w in words]
 
 
+def _erase_titles(img: np.ndarray, settings: Settings, small_of, shrink: float) -> np.ndarray:
+    """Wipe confidently-read, title-sized words (letters allowed) from ``img``.
+
+    The label engine reads digits only, so a caption such as "Aero A.100" is
+    invisible to it; one whole-page read finds it. Best effort: any OCR
+    failure leaves the image untouched.
+    """
+    try:
+        reader = OCR_BACKENDS[resolve_backend(settings)][1]()
+        page = ocr_text._PAGE_FOR[reader]
+        boxes = ocr_text.erase_boxes(page(small_of(img)))
+    except Exception:  # noqa: BLE001 - optional step, never fatal
+        log.warning("erase_text: whole-page read failed", exc_info=True)
+        return img
+    if not boxes:
+        return img
+    k = 1.0 / shrink
+    return ocr_text.wipe(img, [(int(a * k), int(b * k), int(c * k) + 1, int(e * k) + 1)
+                               for a, b, c, e in boxes])
+
+
 def analyse(
     tone: np.ndarray, *, ocr: OcrTextParams, circles: bool, settings: Settings,
     image_id: str, tone_args: tuple, cancelled=None,
@@ -304,6 +325,7 @@ def analyse(
                     min_chars=ocr.min_chars)
                 if ocr.erase:  # recognised text is wiped, not re-drawn
                     text_px = []
+                    cleaned = _erase_titles(cleaned, settings, small_of, shrink)
                 warnings.extend(ocr_warnings)
 
     circle_px: list[Polyline] = []

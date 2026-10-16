@@ -193,3 +193,21 @@ def test_cut_off_reading_never_beats_the_longer_one():
     assert not ocr_text._replaces(_w("1975", 10), [_w("197", 90)])  # too unsure
     assert ocr_text._replaces(_w("7170", 70), [_w("1170", 40)])      # plain confidence
     assert not ocr_text._replaces(_w("7170", 40), [_w("1170", 70)])
+
+
+def test_erase_boxes_only_takes_sure_title_sized_words():
+    words = [
+        ("Aero", 93.0, 11, 18, 58, 20),    # title: sure, tall
+        ("A.100", 92.0, 78, 18, 73, 20),   # title
+        ("7000", 95.0, 300, 300, 30, 7),   # numeral: too small to be a title
+        ("Os?", 48.0, 286, 107, 45, 17),   # doubtful: could be linework
+        ("|", 95.0, 242, 679, 9, 35),      # one char: a line, not a word
+    ]
+    boxes = ocr_text.erase_boxes(words, pad_px=3)
+    assert boxes == [(8, 15, 72, 41), (75, 15, 154, 41)]
+
+
+def test_wipe_whitens_only_the_boxes():
+    img = np.zeros((50, 50), np.uint8)
+    out = ocr_text.wipe(img, [(5, 5, 15, 10)])
+    assert (out[5:10, 5:15] == 255).all() and out.sum() == 255 * 50 and (img == 0).all()

@@ -404,6 +404,7 @@ def tesserocr_line(img: np.ndarray, whitelist: str) -> str:
 
 
 _LINE_FOR: dict = {}  # sheet reader -> its line reader (filled below)
+_PAGE_FOR: dict = {}  # sheet reader -> its whole-page reader (filled below)
 
 #: Single-line re-read variants: (scale, blur sigma as a fraction of scale).
 _LINE_VARIANTS = tuple((sc, bl) for sc in (3, 4, 5, 6, 8) for bl in (0.3, 0.6))
@@ -417,7 +418,76 @@ def _line_variant(crop: np.ndarray, scale: int, blur: float) -> np.ndarray:
     return cv2.copyMakeBorder(r, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=255)
 
 
+
+
+#: Full-page readers (letters allowed): ``gray -> [(text, conf 0-100, x, y, w, h)]``.
+PageReader = Callable[[np.ndarray], "list[tuple[str, float, int, int, int, int]]"]
+
+
+def tesseract_page(gray: np.ndarray):
+    """Whole-page read through the ``tesseract`` binary (sparse text, psm 11)."""
+    import pytesseract  # noqa: PLC0415
+
+    d = pytesseract.image_to_data(gray, config="--psm 11", output_type=pytesseract.Output.DICT)
+    return [(t.strip(), float(c), int(x), int(y), int(w), int(h))
+            for t, c, x, y, w, h in zip(d["text"], d["conf"], d["left"], d["top"],
+                                        d["width"], d["height"]) if t.strip()]
+
+
+def tesserocr_page(gray: np.ndarray):
+    """Whole-page read through the in-process ``tesserocr`` wheel."""
+    tesserocr = _tesserocr
+    if tesserocr is None:
+        raise RuntimeError("tesserocr is not installed")
+    from PIL import Image  # noqa: PLC0415
+
+    out = []
+    with tesserocr.PyTessBaseAPI(path=TESSDATA_DIR, lang="eng", oem=tesserocr.OEM.LSTM_ONLY,
+                                 psm=tesserocr.PSM.SPARSE_TEXT) as api:
+        api.SetImage(Image.fromarray(gray))
+        api.Recognize()
+        it = api.GetIterator()
+        level = tesserocr.RIL.WORD
+        for word in (tesserocr.iterate_level(it, level) if it is not None else []):
+            try:
+                text = (word.GetUTF8Text(level) or "").strip()
+                box = word.BoundingBox(level)
+                conf = word.Confidence(level)
+            except RuntimeError:
+                continue
+            if text and box is not None:
+                out.append((text, float(conf), box[0], box[1], box[2] - box[0], box[3] - box[1]))
+    return out
+
+
+#: A word is only wiped by "erase text" when it is sure and title-sized: small
+#: or doubtful readings could be linework.
+ERASE_MIN_CONF = 80.0
+ERASE_MIN_HEIGHT_PX = 10
+ERASE_MIN_CHARS = 2
+
+
+def erase_boxes(words, *, pad_px: int = 3) -> list[tuple[int, int, int, int]]:
+    """Boxes ``(x0, y0, x1, y1)`` of the confidently-read, title-sized words."""
+    out = []
+    for text, conf, x, y, w, h in words:
+        if (conf >= ERASE_MIN_CONF and h >= ERASE_MIN_HEIGHT_PX
+                and sum(ch.isalnum() for ch in text) >= ERASE_MIN_CHARS):
+            out.append((max(x - pad_px, 0), max(y - pad_px, 0), x + w + pad_px, y + h + pad_px))
+    return out
+
+
+def wipe(gray: np.ndarray, boxes) -> np.ndarray:
+    out = gray.copy()
+    for x0, y0, x1, y1 in boxes:
+        out[y0:y1, x0:x1] = 255
+    return out
+
+
+
+
 _LINE_FOR.update({tesseract_reader: tesseract_line, tesserocr_reader: tesserocr_line})
+_PAGE_FOR.update({tesseract_reader: tesseract_page, tesserocr_reader: tesserocr_page})
 
 
 class SheetEngine:
