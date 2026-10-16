@@ -35,6 +35,7 @@ from backend.penplot.router import (
     validation_error_handler,
 )
 from backend.penplot.ui import ui_router as penplot_ui_router
+from backend.upstream_mock import install_if_enabled as _install_upstream_mock
 
 
 class Settings(BaseSettings):
@@ -147,6 +148,10 @@ app.include_router(wordmark_router)
 app.include_router(traffic_router)
 app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
+
+# FUNDVISTA_UPSTREAM_MODE=mock: serve every third-party call from fixtures
+# (no network). Must run before the first httpx client is built.
+_install_upstream_mock()
 
 http_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
 redis_client: Optional[Redis] = None
