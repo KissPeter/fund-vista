@@ -3,7 +3,7 @@
 Third-party components used by the fund-vista backend (issue #58, part 3/7).
 Generated images (SVG/plot) carry no footer/credit per decision D3;
 attribution lives here, in the ToS, the UI and API response metadata.
-Full provenance inventory: `docs/third-party-vendored.md`; font licence
+Full provenance inventory: `backend/THIRD_PARTY_VENDORED.md`; font licence
 texts: `backend/penplot/fonts/` and `backend/wordmark/fonts/`
 (`OFL-1.1.txt`, `MIT.txt`, per-directory `README.md`).
 
@@ -45,7 +45,7 @@ vpype-flow-imager — currently neither vendored nor installed).
   James T., MIT (https://github.com/techninja/hersheytextjs).
 - `backend/penplot/backgrounds/dark-texture.jpg` and
   `backend/penplot/backgrounds/light-texture.jpg` — provenance recorded in
-  `docs/third-party-vendored.md` §2; licence UNKNOWN (replacement is a
+  `backend/THIRD_PARTY_VENDORED.md` §2; licence UNKNOWN (replacement is a
   separate, not-yet-made decision).
 
 ## B. Python dependencies (`backend/pyproject.toml`)

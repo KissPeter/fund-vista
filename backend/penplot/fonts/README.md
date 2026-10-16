@@ -27,5 +27,5 @@ Notes:
   vendored TTF's own name table only stores the (c) notice, so the licence file
   next to it is what makes the vendoring compliant.
 - Full third-party inventory (backgrounds, Hershey tables, tessdata, Python
-  dependencies): `docs/third-party-vendored.md` and
+  dependencies): `backend/THIRD_PARTY_VENDORED.md` and
   `backend/THIRD_PARTY_NOTICES.md`.

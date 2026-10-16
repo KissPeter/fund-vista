@@ -87,7 +87,7 @@ def test_wordmark_fonts_readme_documents_poppins():
 # --- central inventory ---------------------------------------------------------
 
 def test_vendored_inventory_covers_fonts_backgrounds_hershey_tessdata():
-    text = _read("docs/third-party-vendored.md")
+    text = _read("backend/THIRD_PARTY_VENDORED.md")
     for name in (*PENPLOT_FONTS, *WORDMARK_FONTS):
         assert name in text, name
     # Textures: origin recorded, unknown licence flagged (replacement undecided).

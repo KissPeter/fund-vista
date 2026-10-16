@@ -13,5 +13,5 @@ License 1.1, verbatim from https://scripts.sil.org/OFL).
 | `Poppins-Bold.ttf` | `poppins-bold` | Copyright 2020 The Poppins Project Authors (https://github.com/itfoundry/Poppins); designer records: Indian Type Foundry; Ninad Kale (Devanagari), Jonny Pinhorn (Latin) | SIL OFL 1.1 (nameID 13 + `https://scripts.sil.org/OFL` in nameID 14) | https://github.com/itfoundry/Poppins |
 
 Full third-party inventory (backgrounds, Hershey tables, tessdata, Python
-dependencies): `docs/third-party-vendored.md` and
+dependencies): `backend/THIRD_PARTY_VENDORED.md` and
 `backend/THIRD_PARTY_NOTICES.md`.
