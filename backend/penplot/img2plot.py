@@ -97,10 +97,12 @@ def build_params(a: argparse.Namespace):
             data[key] = getattr(a, flag)
     ocr = data["ocr_text"]
     ocr["enabled"] = not a.no_ocr
+    ocr["erase"] = a.erase_text
     for flag in ("min_conf", "min_chars"):
         if getattr(a, flag) is not None:
             ocr[flag] = getattr(a, flag)
     data["circles"] = not a.no_circles
+    data["solids"] = a.solids
     data["strip_frame"] = not a.keep_frame
     for flag, key in (("size", "size"), ("orientation", "orientation"),
                       ("margin_mm", "margin_mm"), ("frame_radius_mm", "frame_radius_mm"),
@@ -205,6 +207,11 @@ def make_parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-title", action="store_true", help="do not set a <title> from the file name")
     ap.add_argument("--no-ocr", action="store_true", help="skip text recognition")
     ap.add_argument("--no-circles", action="store_true", help="skip circle detection")
+    ap.add_argument("--solids", action="store_true",
+                    help="outline solid-black areas (tyres, engines) instead of thinning them "
+                         "to one squiggle; off by default: it chunks dense grilles")
+    ap.add_argument("--erase-text", action="store_true",
+                    help="wipe recognised text (titles, labels) instead of re-drawing it")
     ap.add_argument("--frame", action="store_true",
                     help="draw the project's own page frame (see --frame-radius-mm)")
     ap.add_argument("--keep-frame", action="store_true",

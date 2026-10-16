@@ -146,6 +146,13 @@ class OcrTextParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    erase: bool = Field(
+        default=False,
+        description=(
+            "Wipe the recognised labels from the drawing and do not re-draw "
+            "them (e.g. a title or caption that should not be plotted)."
+        ),
+    )
     min_chars: int = Field(
         default=3, ge=1, le=8,
         description=(
@@ -280,6 +287,14 @@ class ConvertParams(BaseModel):
             "Detect wheels/hubs/round holes on the raster (Hough + ring "
             "support) and draw them as exact circles instead of a faceted "
             "trace. Raster inputs only."
+        ),
+    )
+    solids: bool = Field(
+        default=False,
+        description=(
+            "Trace the outline of solid-black areas (tyres, engine blocks, "
+            "flags) instead of thinning them into one squiggly centreline. "
+            "Raster inputs only."
         ),
     )
     ocr_text: OcrTextParams = Field(default_factory=OcrTextParams)

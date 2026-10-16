@@ -73,6 +73,7 @@ _VECTOR_IGNORED_PARAMS = frozenset({
     "thin_lines",
     "trace_upscale",
     "circles",
+    "solids",
     "ocr_text",
     "strip_frame",
 })
@@ -131,7 +132,7 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
         data.pop("ocr_text", None)
     if not any(data.get("svg_meta", {}).values()):
         data.pop("svg_meta", None)
-    for field, default in (("thin_lines", False), ("circles", False),
+    for field, default in (("thin_lines", False), ("circles", False), ("solids", False),
                            ("trace_upscale", 1), ("strip_frame", False)):
         if data.get(field) == default:
             data.pop(field, None)
@@ -400,6 +401,10 @@ def run_convert(
                     thin_lines=params.thin_lines, upscale=trace_upscale,
                     max_pixels=settings.trace_max_pixels)
                 warnings.extend(ink_warnings)
+                if params.solids:
+                    mask, solid_u = drawing.solid_outlines(mask, up)
+                    extra_px = extra_px + [[(x / up, y / up) for x, y in pl]
+                                           for pl in solid_u]
             else:
                 gray, mask = _tone_to_mask(gray, params)
             raw_px = _generate_from_mask(

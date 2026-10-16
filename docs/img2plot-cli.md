@@ -192,6 +192,8 @@ The same values can be set once through `PENPLOT_SVG_*` environment variables
 | `--min-conf N` | 20 | reading agreement (%) needed to replace a label (5–100) |
 | `--min-chars N` | 3 | shortest reading accepted (`7°` always passes) |
 | `--no-circles` | off | skip exact-circle detection |
+| `--solids` | off | trace the outline of solid-black areas (tyres, engine blocks, flags) instead of thinning them to one squiggly line. Use for aircraft/vehicle drawings with filled tyres; leave off for dense grilles/louvres (they turn chunky) |
+| `--erase-text` | off | wipe the recognised labels from the drawing and do not re-draw them |
 
 ---
 

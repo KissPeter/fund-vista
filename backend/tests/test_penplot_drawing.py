@@ -441,3 +441,31 @@ def test_tesserocr_reader_reads_rows_and_survives_empty_ones():
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(1) as pool:
         assert pool.submit(ocr_text.tesserocr_reader, sheet, bounds, "0123456789°").result()[0] == "2100"
+
+
+def test_solid_outlines_traces_a_tyre_and_keeps_thin_lines():
+    ink = np.zeros((120, 200), bool)
+    ink[40:90, 30:50] = True      # a solid tyre, 20 x 50 px
+    ink[20, 10:190] = True        # a 1 px wide line
+    cleaned, outlines = drawing.solid_outlines(ink, 1)
+    assert len(outlines) == 1
+    xs, ys = zip(*outlines[0])
+    assert 28 <= min(xs) and max(xs) <= 52 and 38 <= min(ys) and max(ys) <= 92
+    assert outlines[0][0] == outlines[0][-1]           # closed loop
+    assert not cleaned[45:85, 35:45].any()             # the solid is gone from the ink
+    assert cleaned[20, 10:190].all()                   # the thin line is untouched
+
+
+def test_solid_outlines_leaves_ordinary_strokes_alone():
+    ink = np.zeros((80, 200), bool)
+    ink[30:33, 10:190] = True     # 3 px stroke
+    cleaned, outlines = drawing.solid_outlines(ink, 1)
+    assert outlines == [] and (cleaned == ink).all()
+
+
+def test_solids_is_opt_in_and_not_part_of_the_default_hash():
+    assert "solids" not in drawing.DRAWING_PRESET  # would chunk dense grilles on trains
+    assert ConvertParams().solids is False
+    assert params_hash(ConvertParams(solids=False)) == params_hash(ConvertParams())
+    assert params_hash(ConvertParams(solids=True, circles=True)) != params_hash(
+        ConvertParams(circles=True))

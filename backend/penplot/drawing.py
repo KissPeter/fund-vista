@@ -6,6 +6,8 @@ byte-identical:
 
 * ``ocr_text``  - read printed labels and re-draw them in the ZnikoSL
   single-stroke face (``analyse``);
+* ``solids``    - trace the outline of solid-black areas (tyres, engines) instead of
+                  skeletonising them into a squiggle (``solid_outlines``);
 * ``circles``   - detect wheels/hubs/holes and draw exact circles (``analyse``);
 * ``thin_lines`` / ``trace_upscale`` - keep pale 1 px strokes and give thinned
   curves sub-pixel accuracy (``build_ink``).
@@ -93,8 +95,8 @@ class Analysis:
 
 def is_drawing_mode(params) -> bool:
     """Any drawing-stage option on (the pipeline then takes the tone-first path)."""
-    return bool(params.thin_lines or params.circles or params.ocr_text.enabled
-                or params.trace_upscale > 1)
+    return bool(params.thin_lines or params.circles or params.solids
+                or params.ocr_text.enabled or params.trace_upscale > 1)
 
 
 def _tesseract_available() -> bool:
@@ -300,6 +302,8 @@ def analyse(
                 cleaned, text_px, ocr_warnings = ocr_text.prepare(
                     tone, lambda _g, ws=words: ws, min_conf=ocr.min_conf,
                     min_chars=ocr.min_chars)
+                if ocr.erase:  # recognised text is wiped, not re-drawn
+                    text_px = []
                 warnings.extend(ocr_warnings)
 
     circle_px: list[Polyline] = []
@@ -394,6 +398,53 @@ def mask_level(blur: float) -> float:
     at any blur setting; at the preset's 0.7 it is exactly the cap.
     """
     return min(MASK_SMOOTH_LEVEL, 0.8 * 0.3989 / max(blur, 1e-6))
+
+
+#: A pixel belongs to a solid area when it is this far (1x px) from the nearest
+#: paper pixel: ordinary strokes are 1-3 px wide (half-width < 2), tyres and
+#: engine blocks are 6+ px across.
+SOLID_HALF_WIDTH_PX = 5.0
+#: Solid areas smaller than this (1x px^2) are specks, not parts.
+SOLID_MIN_AREA_PX = 120.0
+
+
+def solid_outlines(ink: np.ndarray, u: int) -> tuple[np.ndarray, list[Polyline]]:
+    """Split solid-black areas off the ink mask and return their outlines.
+
+    Centreline tracing turns a filled tyre into one squiggly stroke. Here
+    every area thicker than ``SOLID_HALF_WIDTH_PX`` (opened back to its true
+    extent) is removed from ``ink`` and its outer contour is returned instead,
+    as closed polylines in the mask's (``u``-scaled) pixels. Thin strokes
+    attached to a solid are left to the skeleton, which then ends at its rim.
+    """
+    ink_u8 = ink.astype(np.uint8)
+    dist = cv2.distanceTransform(ink_u8, cv2.DIST_L2, 3)
+    r = SOLID_HALF_WIDTH_PX * u
+    core = (dist >= r).astype(np.uint8)
+    if not core.any():
+        return ink, []
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * int(r) + 1, 2 * int(r) + 1))
+    solid = cv2.dilate(core, k) & ink_u8      # the cores grown back to their rim
+    n, lab, st, _ = cv2.connectedComponentsWithStats(solid, connectivity=8)
+    keep = np.zeros_like(solid)
+    outlines: list[Polyline] = []
+    for i in range(1, n):
+        if st[i][4] < SOLID_MIN_AREA_PX * u * u:
+            continue
+        comp = (lab == i).astype(np.uint8)
+        keep |= comp
+        cnts, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        for c in cnts:
+            c = cv2.approxPolyDP(c, 0.7 * u, True)
+            if len(c) >= 3:
+                pts = [(float(x), float(y)) for x, y in c[:, 0, :]]
+                outlines.append(pts + [pts[0]])
+    if not outlines:
+        return ink, []
+    # Remove the solids (plus a 1 px rim, so no sliver of them is skeletonised).
+    cleaned = ink_u8 & ~cv2.dilate(keep, np.ones((3, 3), np.uint8))
+    return cleaned.astype(bool), outlines
+
 
 
 def build_ink(

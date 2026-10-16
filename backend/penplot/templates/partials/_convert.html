@@ -17,10 +17,12 @@ function readParams() {
   const drawing = $("ocr_enabled") ? {
     thin_lines: $("thin_lines").checked,
     circles: $("circles").checked,
+    solids: $("solids").checked,
     strip_frame: $("strip_frame").checked,
     trace_upscale: parseInt($("trace_upscale").value, 10),
     ocr_text: {
       enabled: $("ocr_enabled").checked,
+      erase: $("ocr_erase").checked,
       min_conf: num("ocr_min_conf"),
       min_chars: parseInt($("ocr_min_chars").value, 10),
     },
@@ -202,9 +204,11 @@ if ($("presetDrawingBtn")) {
       .forEach((k) => setVal(k, p[k]));
     setChk("thin_lines", p.thin_lines);
     setChk("circles", p.circles);
+    setChk("solids", p.solids);
     setChk("strip_frame", p.strip_frame);
     const o = p.ocr_text || {};
     if (!$("ocr_enabled").disabled) setChk("ocr_enabled", o.enabled);
+    setChk("ocr_erase", o.erase);
     setVal("ocr_min_conf", o.min_conf);
     setVal("ocr_min_chars", o.min_chars);
     const pg = p.page || {};
