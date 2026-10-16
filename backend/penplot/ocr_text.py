@@ -460,21 +460,43 @@ def tesserocr_page(gray: np.ndarray):
     return out
 
 
-#: A word is only wiped by "erase text" when it is sure and title-sized: small
-#: or doubtful readings could be linework.
-ERASE_MIN_CONF = 80.0
-ERASE_MIN_HEIGHT_PX = 10
-ERASE_MIN_CHARS = 2
+#: "Erase text" wipes the page *header* (title, flag): drawings from one source
+#: share a template with the title in the top strip. Words are only trusted
+#: there, never mid-page where a misread word could be linework.
+HEADER_MAX_FRACTION = 0.10     # a header word must end within the top 10 %
+HEADER_MIN_CONF = 45.0
+HEADER_MIN_HEIGHT_PX = 12
+HEADER_GAP_PX = 6              # blank rows that close the header off from the drawing
+HEADER_SCAN_FRACTION = 0.14    # never wipe further down than this
 
 
-def erase_boxes(words, *, pad_px: int = 3) -> list[tuple[int, int, int, int]]:
-    """Boxes ``(x0, y0, x1, y1)`` of the confidently-read, title-sized words."""
+def erase_boxes(words, img_h: int, *, pad_px: int = 3) -> list[tuple[int, int, int, int]]:
+    """Boxes ``(x0, y0, x1, y1)`` of header-strip words (title letters/digits)."""
     out = []
     for text, conf, x, y, w, h in words:
-        if (conf >= ERASE_MIN_CONF and h >= ERASE_MIN_HEIGHT_PX
-                and sum(ch.isalnum() for ch in text) >= ERASE_MIN_CHARS):
+        if (conf >= HEADER_MIN_CONF and h >= HEADER_MIN_HEIGHT_PX
+                and y + h <= HEADER_MAX_FRACTION * img_h
+                and any(ch.isalnum() for ch in text)):
             out.append((max(x - pad_px, 0), max(y - pad_px, 0), x + w + pad_px, y + h + pad_px))
     return out
+
+
+def header_end(gray: np.ndarray, boxes) -> int:
+    """First row below the header that ``boxes`` sit in: the start of the first
+    ``HEADER_GAP_PX`` blank rows under them (capped), so a flag frame or a
+    second title line is wiped with the title but the drawing is not."""
+    if not boxes:
+        return 0
+    h = gray.shape[0]
+    y = max(b[3] for b in boxes)
+    limit = int(HEADER_SCAN_FRACTION * h)
+    has_ink = (gray < 200).any(axis=1)
+    run = 0
+    for r in range(y, min(limit, h)):
+        run = 0 if has_ink[r] else run + 1
+        if run >= HEADER_GAP_PX:
+            return r - run + 1
+    return y
 
 
 def wipe(gray: np.ndarray, boxes) -> np.ndarray:

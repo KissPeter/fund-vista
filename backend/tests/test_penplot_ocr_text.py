@@ -195,16 +195,26 @@ def test_cut_off_reading_never_beats_the_longer_one():
     assert not ocr_text._replaces(_w("7170", 40), [_w("1170", 70)])
 
 
-def test_erase_boxes_only_takes_sure_title_sized_words():
+def test_erase_boxes_takes_only_header_strip_words():
     words = [
-        ("Aero", 93.0, 11, 18, 58, 20),    # title: sure, tall
-        ("A.100", 92.0, 78, 18, 73, 20),   # title
-        ("7000", 95.0, 300, 300, 30, 7),   # numeral: too small to be a title
-        ("Os?", 48.0, 286, 107, 45, 17),   # doubtful: could be linework
-        ("|", 95.0, 242, 679, 9, 35),      # one char: a line, not a word
+        ("Aero", 93.0, 11, 18, 58, 20),    # title in the header strip
+        ("F.13", 78.0, 97, 13, 55, 21),    # less sure, still a header word
+        ("Il-62", 61.0, 102, 13, 59, 22),
+        ("7000", 95.0, 300, 300, 30, 20),  # mid-page: could be linework, never erased
+        ("Ee", 0.0, 96, 15, 68, 22),       # noise
+        ("x", 90.0, 5, 15, 8, 8),          # too small
     ]
-    boxes = ocr_text.erase_boxes(words, pad_px=3)
-    assert boxes == [(8, 15, 72, 41), (75, 15, 154, 41)]
+    boxes = ocr_text.erase_boxes(words, 800, pad_px=3)
+    assert [b[0] for b in boxes] == [8, 94, 99]
+
+
+def test_header_end_stops_at_the_first_blank_gap_below_the_header():
+    img = np.full((800, 100), 255, np.uint8)
+    img[10:25, 5:60] = 0       # title
+    img[28:34, 70:90] = 0      # flag frame, no gap above it
+    img[60:90, 10:90] = 0      # the drawing, after a 25 px blank gap
+    assert ocr_text.header_end(img, [(5, 10, 60, 25)]) == 34
+    assert ocr_text.header_end(img, []) == 0
 
 
 def test_wipe_whitens_only_the_boxes():

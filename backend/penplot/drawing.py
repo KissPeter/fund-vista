@@ -315,8 +315,9 @@ def _erase_titles(tone: np.ndarray, img: np.ndarray, settings: Settings, small_o
                   shrink: float) -> np.ndarray:
     """Wipe confidently-read, title-sized words (letters allowed) from ``img``.
 
-    The words are found on ``tone`` (the untouched page): ``img`` has already
-    lost its digit labels, which would leave a half-read title behind.
+    Only the page header is touched: words found in the top strip of ``tone``
+    (the untouched page; ``img`` has already lost its digit labels) mark a
+    header, and every row down to the first blank gap below it is wiped.
 
     The label engine reads digits only, so a caption such as "Aero A.100" is
     invisible to it; one whole-page read finds it. Best effort: any OCR
@@ -325,15 +326,17 @@ def _erase_titles(tone: np.ndarray, img: np.ndarray, settings: Settings, small_o
     try:
         reader = OCR_BACKENDS[resolve_backend(settings)][1]()
         page = ocr_text._PAGE_FOR[reader]
-        boxes = ocr_text.erase_boxes(page(small_of(tone)))
+        words = page(small_of(tone))
+        boxes = ocr_text.erase_boxes(words, small_of(tone).shape[0])
+        end = ocr_text.header_end(small_of(tone), boxes)
     except Exception:  # noqa: BLE001 - optional step, never fatal
         log.warning("erase_text: whole-page read failed", exc_info=True)
         return img
     if not boxes:
         return img
-    k = 1.0 / shrink
-    return ocr_text.wipe(img, [(int(a * k), int(b * k), int(c * k) + 1, int(e * k) + 1)
-                               for a, b, c, e in boxes])
+    out = img.copy()
+    out[:int(end / shrink) + 1, :] = 255
+    return out
 
 
 def analyse(
