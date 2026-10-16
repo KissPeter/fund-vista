@@ -196,6 +196,23 @@ The same values can be set once through `PENPLOT_SVG_*` environment variables
 | `--erase-text` | off | wipe recognised labels and confidently-read title words (letters too, ≥10 px tall) instead of re-drawing them |
 | `--erase-color` | off | wipe solid saturated-colour emblems (a national flag, a coloured logo) from a mostly grey drawing; skipped when the picture is mostly colour |
 
+
+### Cleaning a mixed source (title, flag, tyres)
+
+Used for the 351 elfnet drawings (see the shop repo's `docs/elfnet-military-regeneration.md`):
+
+```bash
+img2plot src/ --out-dir out/ --solids --erase-text --erase-color --min-conf 50
+```
+
+- `--solids` outlines areas thicker than ~10 px; opt-in because dense grilles/louvres turn chunky.
+- `--erase-text` only acts on the page **header**: words read in the top 14% strip
+  (conf >= 45, height >= 12 px) mark a header, and everything down to the first 6-row
+  blank gap is wiped. Mid-page words are never erased (a misread could be linework).
+- `--erase-color` re-decodes the source bytes (greyscale loading drops colour) and whitens
+  compact, solid (fill >= 0.25), saturated blobs; sparse JPEG fringes and mostly-coloured
+  pictures are left alone.
+
 ---
 
 ## 5. Recipes
