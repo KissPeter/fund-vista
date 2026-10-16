@@ -153,6 +153,14 @@ class OcrTextParams(BaseModel):
             "them (e.g. a title or caption that should not be plotted)."
         ),
     )
+    erase_color: bool = Field(
+        default=False,
+        description=(
+            "Also wipe saturated-colour emblems (a national flag, a coloured "
+            "logo) before tracing: compact, strongly coloured blobs in an "
+            "otherwise grey drawing. Skipped when the picture is mostly colour."
+        ),
+    )
     min_chars: int = Field(
         default=3, ge=1, le=8,
         description=(

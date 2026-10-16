@@ -98,6 +98,7 @@ def build_params(a: argparse.Namespace):
     ocr = data["ocr_text"]
     ocr["enabled"] = not a.no_ocr
     ocr["erase"] = a.erase_text
+    ocr["erase_color"] = a.erase_color
     for flag in ("min_conf", "min_chars"):
         if getattr(a, flag) is not None:
             ocr[flag] = getattr(a, flag)
@@ -210,6 +211,8 @@ def make_parser() -> argparse.ArgumentParser:
     ap.add_argument("--solids", action="store_true",
                     help="outline solid-black areas (tyres, engines) instead of thinning them "
                          "to one squiggle; off by default: it chunks dense grilles")
+    ap.add_argument("--erase-color", action="store_true",
+                    help="wipe saturated-colour emblems (a flag, a coloured logo) from a mostly grey drawing")
     ap.add_argument("--erase-text", action="store_true",
                     help="wipe recognised text (titles, labels) instead of re-drawing it")
     ap.add_argument("--frame", action="store_true",

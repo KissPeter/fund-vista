@@ -356,6 +356,10 @@ def run_convert(
             _timed("load", image_id, method_label, t0)
             t0 = time.perf_counter()
             gray, scaled = imaging.maybe_downscale(gray, settings.max_image_dim_px)
+            if params.ocr_text.erase_color:
+                gray, n_color = drawing.erase_color_blobs(gray, image_bytes)
+                if n_color:
+                    warnings.append(drawing.WARNING_COLOR_ERASED)
             if scaled:
                 warnings.append("image_downscaled_for_performance")
                 src_w, src_h = float(gray.shape[1]), float(gray.shape[0])

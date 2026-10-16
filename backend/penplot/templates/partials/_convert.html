@@ -23,6 +23,7 @@ function readParams() {
     ocr_text: {
       enabled: $("ocr_enabled").checked,
       erase: $("ocr_erase").checked,
+      erase_color: $("ocr_erase_color").checked,
       min_conf: num("ocr_min_conf"),
       min_chars: parseInt($("ocr_min_chars").value, 10),
     },
@@ -209,6 +210,7 @@ if ($("presetDrawingBtn")) {
     const o = p.ocr_text || {};
     if (!$("ocr_enabled").disabled) setChk("ocr_enabled", o.enabled);
     setChk("ocr_erase", o.erase);
+    setChk("ocr_erase_color", o.erase_color);
     setVal("ocr_min_conf", o.min_conf);
     setVal("ocr_min_chars", o.min_chars);
     const pg = p.page || {};

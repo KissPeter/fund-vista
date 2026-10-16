@@ -469,3 +469,29 @@ def test_solids_is_opt_in_and_not_part_of_the_default_hash():
     assert params_hash(ConvertParams(solids=False)) == params_hash(ConvertParams())
     assert params_hash(ConvertParams(solids=True, circles=True)) != params_hash(
         ConvertParams(circles=True))
+
+
+def _png(img) -> bytes:
+    ok, buf = cv2.imencode(".png", img)
+    assert ok
+    return buf.tobytes()
+
+
+def test_erase_color_blobs_wipes_a_flag_but_not_black_line_art():
+    bgr = np.full((200, 300, 3), 255, np.uint8)
+    cv2.rectangle(bgr, (20, 20), (120, 160), (0, 0, 0), 2)        # black line art
+    cv2.rectangle(bgr, (230, 15), (280, 45), (0, 0, 200), -1)     # red flag
+    cv2.rectangle(bgr, (230, 30), (280, 45), (200, 0, 0), -1)     # blue stripe
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    out, n = drawing.erase_color_blobs(gray, _png(bgr))
+    assert n == 1
+    assert (out[15:45, 230:280] == 255).all()
+    assert (out[20, 20:120] == gray[20, 20:120]).all()            # line art untouched
+
+
+def test_erase_color_blobs_leaves_coloured_artwork_alone():
+    bgr = np.zeros((100, 100, 3), np.uint8)
+    bgr[:] = (0, 0, 200)                                            # mostly red picture
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    out, n = drawing.erase_color_blobs(gray, _png(bgr))
+    assert n == 0 and (out == gray).all()

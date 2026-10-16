@@ -193,7 +193,8 @@ The same values can be set once through `PENPLOT_SVG_*` environment variables
 | `--min-chars N` | 3 | shortest reading accepted (`7°` always passes) |
 | `--no-circles` | off | skip exact-circle detection |
 | `--solids` | off | trace the outline of solid-black areas (tyres, engine blocks, flags) instead of thinning them to one squiggly line. Use for aircraft/vehicle drawings with filled tyres; leave off for dense grilles/louvres (they turn chunky) |
-| `--erase-text` | off | wipe the recognised labels from the drawing and do not re-draw them |
+| `--erase-text` | off | wipe recognised labels and confidently-read title words (letters too, ≥10 px tall) instead of re-drawing them |
+| `--erase-color` | off | wipe solid saturated-colour emblems (a national flag, a coloured logo) from a mostly grey drawing; skipped when the picture is mostly colour |
 
 ---
 

@@ -265,8 +265,58 @@ def _scaled(words: list[ocr_text.Word], k: float) -> list[ocr_text.Word]:
             for w in words]
 
 
-def _erase_titles(img: np.ndarray, settings: Settings, small_of, shrink: float) -> np.ndarray:
+#: Colour emblems (flags, logos): saturated, bright, compact. A picture that is
+#: more than COLOR_MAX_FRACTION saturated is coloured artwork: leave it alone.
+COLOR_MIN_SATURATION = 90
+COLOR_MIN_VALUE = 60
+COLOR_MAX_FRACTION = 0.08
+COLOR_MIN_AREA_FRACTION = 0.0003
+COLOR_MAX_AREA_FRACTION = 0.05
+#: Share of a blob's bounding box that is genuinely saturated. A flag is a solid
+#: patch (~0.5); JPEG colour fringes around black glyphs are sparse (< 0.1).
+COLOR_MIN_FILL = 0.25
+
+
+def erase_color_blobs(gray: np.ndarray, image_bytes: bytes) -> tuple[np.ndarray, int]:
+    """Whiten saturated-colour blobs (flag, logo) of the source in ``gray``.
+
+    Grayscale loading discards colour, which is what tells a flag from line
+    art, so the original bytes are decoded again here. Returns ``(gray, n)``
+    with ``n`` blobs wiped; best effort (undecodable input: unchanged).
+    """
+    bgr = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if bgr is None:
+        return gray, 0
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    raw = ((hsv[..., 1] >= COLOR_MIN_SATURATION)
+           & (hsv[..., 2] >= COLOR_MIN_VALUE)).astype(np.uint8)
+    if not raw.any() or raw.mean() > COLOR_MAX_FRACTION:
+        return gray, 0
+    sat = cv2.dilate(raw, np.ones((7, 7), np.uint8))   # fuse a flag's stripes
+    H, W = sat.shape
+    n, lab, st, _ = cv2.connectedComponentsWithStats(sat, connectivity=8)
+    out, wiped = gray.copy(), 0
+    gh, gw = gray.shape[:2]
+    for i in range(1, n):
+        x, y, w, h, area = (int(v) for v in st[i])
+        if not (COLOR_MIN_AREA_FRACTION * H * W <= area <= COLOR_MAX_AREA_FRACTION * H * W):
+            continue
+        patch = lab[y:y + h, x:x + w] == i
+        if raw[y:y + h, x:x + w][patch].sum() < COLOR_MIN_FILL * w * h:
+            continue  # sparse colour noise around glyphs, not a solid emblem
+        x0, x1 = int(x * gw / W) - 3, int((x + w) * gw / W) + 4
+        y0, y1 = int(y * gh / H) - 3, int((y + h) * gh / H) + 4
+        out[max(y0, 0):y1, max(x0, 0):x1] = 255
+        wiped += 1
+    return out, wiped
+
+
+def _erase_titles(tone: np.ndarray, img: np.ndarray, settings: Settings, small_of,
+                  shrink: float) -> np.ndarray:
     """Wipe confidently-read, title-sized words (letters allowed) from ``img``.
+
+    The words are found on ``tone`` (the untouched page): ``img`` has already
+    lost its digit labels, which would leave a half-read title behind.
 
     The label engine reads digits only, so a caption such as "Aero A.100" is
     invisible to it; one whole-page read finds it. Best effort: any OCR
@@ -275,7 +325,7 @@ def _erase_titles(img: np.ndarray, settings: Settings, small_of, shrink: float) 
     try:
         reader = OCR_BACKENDS[resolve_backend(settings)][1]()
         page = ocr_text._PAGE_FOR[reader]
-        boxes = ocr_text.erase_boxes(page(small_of(img)))
+        boxes = ocr_text.erase_boxes(page(small_of(tone)))
     except Exception:  # noqa: BLE001 - optional step, never fatal
         log.warning("erase_text: whole-page read failed", exc_info=True)
         return img
@@ -325,7 +375,7 @@ def analyse(
                     min_chars=ocr.min_chars)
                 if ocr.erase:  # recognised text is wiped, not re-drawn
                     text_px = []
-                    cleaned = _erase_titles(cleaned, settings, small_of, shrink)
+                    cleaned = _erase_titles(tone, cleaned, settings, small_of, shrink)
                 warnings.extend(ocr_warnings)
 
     circle_px: list[Polyline] = []
@@ -341,6 +391,7 @@ def analyse(
 
 # ---------------------------------------------------------------- page frame
 
+WARNING_COLOR_ERASED = "color_emblem_erased"
 WARNING_FRAME_REMOVED = "page_frame_removed"
 WARNING_FRAME_NOT_FOUND = "page_frame_not_found"
 
