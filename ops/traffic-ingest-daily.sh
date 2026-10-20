@@ -30,10 +30,27 @@ fi
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 
-post_job() { # icao date -> prints job_id
+post_job() { # date -> prints job_id (one archive pass for every ICAO)
+  icaos_json=$(printf '"%s",' $ICAOS | sed 's/,$//')
+  curl -s -m 30 -X POST "$API/v1/jobs" -H 'content-type: application/json' \
+    -d "{\"type\":\"traffic_ingest\",\"request\":{\"icaos\":[$icaos_json],\"date\":\"$1\"},\"cancel_previous\":false}" |
+    python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+print(d.get("job_id", ""))'
+}
+
+post_job_one() { # icao date -> prints job_id (legacy single-airport shape)
   curl -s -m 30 -X POST "$API/v1/jobs" -H 'content-type: application/json' \
     -d "{\"type\":\"traffic_ingest\",\"request\":{\"icao\":\"$1\",\"date\":\"$2\"},\"cancel_previous\":false}" |
-    python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])'
+    python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+print(d.get("job_id", ""))'
 }
 
 wait_job() { # job_id -> 0 done, 1 failed/cancelled, 2 timeout (6 h)
@@ -53,16 +70,24 @@ wait_job() { # job_id -> 0 done, 1 failed/cancelled, 2 timeout (6 h)
 }
 
 FAILED=0
-# shellcheck disable=SC2086
-for ICAO in $ICAOS; do
-  log "ingest $ICAO $YESTERDAY"
-  JOB="$(post_job "$ICAO" "$YESTERDAY")"
-  case "$JOB" in
-    [0-9a-f][0-9a-f]* | [0-9A-F][0-9A-F]*) log "job $JOB for $ICAO" ;;
-    *) log "POST failed for $ICAO (no job_id)"; FAILED=1; continue ;;
-  esac
+JOB="$(post_job "$YESTERDAY" || true)"
+if [ -n "$JOB" ]; then
+  # One archive pass serves the whole list (the API accepts icaos).
+  log "ingest [$ICAOS] $YESTERDAY as job $JOB"
   wait_job "$JOB" || FAILED=1
-done
+else
+  # Older app without the icaos shape: one job per airport (one pass each).
+  log "multi-airport enqueue unavailable — per-airport fallback"
+  for ICAO in $ICAOS; do
+    log "ingest $ICAO $YESTERDAY"
+    JOB="$(post_job_one "$ICAO" "$YESTERDAY")"
+    case "$JOB" in
+      [0-9a-f][0-9a-f]* | [0-9A-F][0-9A-F]*) log "job $JOB for $ICAO" ;;
+      *) log "POST failed for $ICAO (no job_id)"; FAILED=1; continue ;;
+    esac
+    wait_job "$JOB" || FAILED=1
+  done
+fi
 [ "$FAILED" -eq 0 ] || { log "ingest failures — slices not pushed"; exit 1; }
 
 # Export the store out of the container into the repo checkout.

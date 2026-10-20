@@ -57,22 +57,44 @@ def _hhmm_to_min(v: str) -> int:
 
 
 class TrafficIngestRequest(BaseModel):
-    """Enqueue a day-load: ``POST /v1/jobs {type:"traffic_ingest", request}``."""
+    """Enqueue a day-load: ``POST /v1/jobs {type:"traffic_ingest", request}``.
+
+    Either ``icao`` (legacy single-airport shape, unchanged response) or
+    ``icaos`` (one archive pass for the whole list; response carries a
+    per-airport ``airports`` list). Both set, both empty, or an empty
+    ``icaos`` entry is a 422.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    icao: str
+    icao: str = ""
+    icaos: list[str] = Field(default_factory=list)
     date: str  # YYYY-MM-DD (UTC day in the adsb.lol archive)
 
-    @field_validator("icao")
+    @field_validator("icao", "icaos")
     @classmethod
-    def _upper_icao(cls, v: str) -> str:
-        return _normalize_icao(v)
+    def _upper_icao(cls, v):
+        if isinstance(v, str):
+            return _normalize_icao(v)
+        return [_normalize_icao(x) for x in v]
+
+    @field_validator("icaos")
+    @classmethod
+    def _icaos_cap(cls, v: list[str]) -> list[str]:
+        if len(v) > 100:
+            raise ValueError("icaos supports at most 100 airports per job")
+        return v
 
     @field_validator("date")
     @classmethod
     def _valid_date(cls, v: str) -> str:
         return _valid_day(v)
+
+    @model_validator(mode="after")
+    def _exactly_one_shape(self) -> "TrafficIngestRequest":
+        if bool(self.icao) == bool(self.icaos):
+            raise ValueError("use exactly one of 'icao' or 'icaos'")
+        return self
 
 
 def movements_key(icao: str, day_iso: str) -> str:

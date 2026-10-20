@@ -30,6 +30,14 @@ class TrafficSettings(BaseSettings):
     # Archive streaming: per-part read timeout + HTTP chunk size.
     ingest_timeout_s: float = 60.0
     ingest_read_timeout_s: float = 300.0
+    # Worker processes for the archive parse. 0/1 = serial (default: the
+    # NAS keeps the old single-threaded pass). >1 = the tar members are
+    # parsed in a process pool — the parse is the pass bottleneck
+    # (gzip+json+point scans, GIL-bound in-process), the download is not.
+    ingest_workers: int = 0
+    # Members per pool task. Bigger batches amortise the IPC of shipping
+    # member bytes to the workers; smaller ones keep the pipeline flowing.
+    ingest_batch_members: int = 200
     # L2 movements (rebuildable from L1) and L3/L4 TTLs live in cache.py;
     # the hour counts below are the only knobs.
     movements_ttl_hours: int = 24 * 30

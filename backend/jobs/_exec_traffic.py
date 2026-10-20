@@ -45,7 +45,7 @@ from backend.traffic import cache as _cache
 from backend.traffic import ingest as _ingest
 from backend.traffic import store as _slices
 from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
-from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
+from backend.traffic.hungary import row_is_hungarian
 from backend.traffic.classify import CLASSIFIER_VERSION, classify_day
 from backend.traffic.config import settings as _traffic_settings
 from backend.traffic.schemas import ATTRIBUTION, TrafficIngestRequest, movements_key
@@ -78,7 +78,11 @@ def _download_and_extract(
         stream = io.BufferedReader(
             _ingest.ChunkReader(_ingest._chunks(urls, client)), 1 << 20
         )
-        return _ingest.extract_multi(stream, specs, cancelled=cancelled)
+        return _ingest.extract_multi(
+            stream, specs, cancelled=cancelled,
+            workers=_traffic_settings.ingest_workers,
+            batch_members=_traffic_settings.ingest_batch_members,
+        )
 
 
 async def _exec_traffic_ingest(
@@ -92,22 +96,33 @@ async def _exec_traffic_ingest(
     lo, hi = _avail.selectable_range()
     if not lo <= day <= hi:
         raise _JobError(422, "out_of_range", f"Date {body.date} outside {lo.isoformat()}..{hi.isoformat()}.")
-    icao = body.icao.upper()
-    if not is_hungarian_icao(icao):
-        raise _JobError(422, "unsupported_airport", _HU_MESSAGE)
+    # Schema guarantees exactly one of the two shapes is set.
+    multi = bool(body.icaos)
+    icaos = list(body.icaos) if multi else [body.icao.upper()]
+    single_icao = icaos[0]
 
     store = _slices.default_store()
-    key = _slices.day_key(day.isoformat(), icao)
-    if store.exists(key):
-        raw = store.get(key)
+    keys = {i: _slices.day_key(day.isoformat(), i) for i in icaos}
+
+    # L1 recheck per airport — precedes lookup + download (contract), so
+    # already-harvested airports cost nothing and are excluded from the
+    # shared archive pass.
+    cached: dict[str, dict] = {}
+    for i in icaos:
+        raw = store.get(keys[i]) if store.exists(keys[i]) else None
         if raw is not None:
-            data = json.loads(gzip.decompress(raw).decode("utf-8"))
+            cached[i] = json.loads(gzip.decompress(raw).decode("utf-8"))
+
+    if not multi:
+        data = cached.get(single_icao)
+        if data is not None:
             moves = classify_day(data)
             await _store.set_progress(job_id, "cached", len(moves), len(moves))
             return {
-                "icao": icao, "date": day.isoformat(),
+                "icao": single_icao, "date": day.isoformat(),
                 "movements": len(moves), "flights": len(data.get("flights", [])),
-                "bytes": len(raw), "cache_hit": True, "attribution": ATTRIBUTION,
+                "bytes": len(gzip.compress(json.dumps(data, separators=(",", ":")).encode("utf-8"))),
+                "cache_hit": True, "attribution": ATTRIBUTION,
             }
 
     try:
@@ -117,74 +132,127 @@ async def _exec_traffic_ingest(
 
     _raise_if_cancelled(stop, ENDPOINT, "lookup")
     await _store.set_progress(job_id, "lookup")
-    try:
-        airport, _hit = await resolve_airport(icao)
-    except AirportNotFoundError:
-        raise _JobError(404, "airport_not_found", f"No airport found for ICAO '{icao}'.")
-    except OurAirportsError as exc:
-        raise _JobError(502, "ourairports_unavailable", f"Airport data fetch failed: {exc.detail}")
-    if not row_is_hungarian(airport):
-        raise _JobError(422, "unsupported_airport", _HU_MESSAGE)
-    lat = _fnum(airport.get("latitude_deg"))
-    lon = _fnum(airport.get("longitude_deg"))
-    if lat is None or lon is None:
-        raise _JobError(502, "ourairports_unavailable", f"Airport '{icao}' has no coordinates.")
-    elev_ft = _fnum(airport.get("elevation_ft")) or 0.0
-    bbox = _ingest.default_bbox(lat, lon)
-    specs = [{"icao": icao, "lat": lat, "lon": lon, "elev_ft": elev_ft, "bbox": bbox}]
+    specs: list[dict] = []
+    errors: list[dict] = []
+    for i in (i for i in icaos if i not in cached):
+        try:
+            airport, _hit = await resolve_airport(i)
+        except AirportNotFoundError:
+            if not multi:
+                raise _JobError(404, "airport_not_found", f"No airport found for ICAO '{i}'.")
+            errors.append({"icao": i, "code": "airport_not_found",
+                           "detail": f"No airport found for ICAO '{i}'."})
+            continue
+        except OurAirportsError as exc:
+            if not multi:
+                raise _JobError(502, "ourairports_unavailable", f"Airport data fetch failed: {exc.detail}")
+            errors.append({"icao": i, "code": "ourairports_unavailable",
+                           "detail": f"Airport data fetch failed: {exc.detail}"})
+            continue
+        if not row_is_hungarian(airport):
+            if not multi:
+                raise _JobError(422, "unsupported_airport", _HU_MESSAGE)
+            errors.append({"icao": i, "code": "unsupported_airport", "detail": _HU_MESSAGE})
+            continue
+        lat = _fnum(airport.get("latitude_deg"))
+        lon = _fnum(airport.get("longitude_deg"))
+        if lat is None or lon is None:
+            if not multi:
+                raise _JobError(502, "ourairports_unavailable", f"Airport '{i}' has no coordinates.")
+            errors.append({"icao": i, "code": "ourairports_unavailable",
+                           "detail": f"Airport '{i}' has no coordinates."})
+            continue
+        elev_ft = _fnum(airport.get("elevation_ft")) or 0.0
+        specs.append({"icao": i, "lat": lat, "lon": lon, "elev_ft": elev_ft,
+                      "bbox": _ingest.default_bbox(lat, lon)})
 
-    _raise_if_cancelled(stop, ENDPOINT, "download")
-    await _store.set_progress(job_id, "download")
-    try:
-        per_airport = await asyncio.to_thread(
-            _download_and_extract, day, specs, stop.is_set
-        )
-    except RuntimeError as exc:
-        if str(exc) == "cancelled" or stop.is_set():
-            raise ClientCancelled(ENDPOINT, "download")
-        raise
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            raise _JobError(502, "traffic_not_available", f"No archive release for {day.isoformat()}.")
-        raise _JobError(502, "traffic_source_unavailable", f"Archive download failed: {exc}")
-    except httpx.HTTPError as exc:
-        raise _JobError(502, "traffic_source_unavailable", f"Archive download failed: {exc}")
-    _raise_if_cancelled(stop, ENDPOINT, "classify")
+    if specs:
+        _raise_if_cancelled(stop, ENDPOINT, "download")
+        await _store.set_progress(job_id, "download")
+        try:
+            per_airport = await asyncio.to_thread(
+                _download_and_extract, day, specs, stop.is_set
+            )
+        except RuntimeError as exc:
+            if str(exc) == "cancelled" or stop.is_set():
+                raise ClientCancelled(ENDPOINT, "download")
+            raise
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise _JobError(502, "traffic_not_available", f"No archive release for {day.isoformat()}.")
+            raise _JobError(502, "traffic_source_unavailable", f"Archive download failed: {exc}")
+        except httpx.HTTPError as exc:
+            raise _JobError(502, "traffic_source_unavailable", f"Archive download failed: {exc}")
+        _raise_if_cancelled(stop, ENDPOINT, "classify")
+    else:
+        per_airport = {}
+    _raise_if_cancelled(stop, ENDPOINT, "store")
 
-    flights = per_airport.get(icao, [])
-    data = {
-        "icao": icao, "date": day.isoformat(),
-        "airport": {"lat": lat, "lon": lon, "elev_ft": elev_ft},
-        "bbox": list(bbox), "classifier": CLASSIFIER_VERSION,
-        "source": "adsb.lol globe_history (ODbL)", "flights": flights,
-    }
-    await _store.set_progress(job_id, "store", len(flights), len(flights))
-    raw = gzip.compress(json.dumps(data, separators=(",", ":")).encode("utf-8"))
-    await asyncio.to_thread(store.put, key, raw)
+    marker_key = _slices.pass_key(day.isoformat())
+    marker_raw = store.get(marker_key)
+    marker = json.loads(marker_raw.decode("utf-8")) if marker_raw else {"date": day.isoformat(), "airports": []}
 
+    async def _store_slice(i: str, flights: list[dict]) -> tuple[int, int]:
+        s = next(s for s in specs if s["icao"] == i)
+        data = {
+            "icao": i, "date": day.isoformat(),
+            "airport": {"lat": s["lat"], "lon": s["lon"], "elev_ft": s["elev_ft"]},
+            "bbox": list(s["bbox"]),
+            "classifier": CLASSIFIER_VERSION,
+            "source": "adsb.lol globe_history (ODbL)", "flights": flights,
+        }
+        raw = gzip.compress(json.dumps(data, separators=(",", ":")).encode("utf-8"))
+        await asyncio.to_thread(store.put, keys[i], raw)
+        if i not in marker["airports"]:
+            marker["airports"].append(i)
+        moves = classify_day(data)
+        l2_key = _cache.traffic_cache_key("mov", movements_key(i, day.isoformat()))
+        try:
+            await _cache.cache_set(l2_key, json.dumps(moves, separators=(",", ":")))
+        except Exception as exc:  # L2 is a cache — never fail the job for it
+            log.warning("traffic L2 write failed %s: %r", l2_key, exc)
+        return len(raw), len(moves)
+
+    entries: list[dict] = []
+    spec_icaos = {s["icao"] for s in specs}
+    for i in icaos:
+        if i in cached:
+            data = cached[i]
+            flights = data.get("flights", [])
+            moves = classify_day(data)
+            if not multi:
+                await _store.set_progress(job_id, "cached", len(moves), len(moves))
+            entries.append({"icao": i, "movements": len(moves), "flights": len(flights),
+                            "bytes": len(gzip.compress(json.dumps(data, separators=(",", ":")).encode("utf-8"))),
+                            "cache_hit": True})
+            continue
+        if i not in spec_icaos:
+            continue  # resolution error — already in errors
+        flights = per_airport.get(i, [])
+        if not multi:
+            await _store.set_progress(job_id, "store", len(flights), len(flights))
+        raw_len, n_moves = await _store_slice(i, flights)
+        entries.append({"icao": i, "movements": n_moves, "flights": len(flights),
+                        "bytes": raw_len, "cache_hit": False})
+        log.info("traffic.ingest done icao=%s day=%s flights=%d moves=%d bytes=%d",
+                 i, day.isoformat(), len(flights), n_moves, raw_len)
+
+    # pass marker is bookkeeping — never fail the job for it
     try:
-        marker_key = _slices.pass_key(day.isoformat())
-        marker_raw = store.get(marker_key)
-        marker = json.loads(marker_raw.decode("utf-8")) if marker_raw else {"date": day.isoformat(), "airports": []}
-        if icao not in marker["airports"]:
-            marker["airports"].append(icao)
         await asyncio.to_thread(store.put, marker_key, json.dumps(marker).encode("utf-8"))
-    except Exception as exc:  # marker is bookkeeping — never fail the job for it
+    except Exception as exc:
         log.warning("traffic pass-marker write failed day=%s: %r", day.isoformat(), exc)
 
-    moves = classify_day(data)
-    l2_key = _cache.traffic_cache_key("mov", movements_key(icao, day.isoformat()))
-    try:
-        await _cache.cache_set(l2_key, json.dumps(moves, separators=(",", ":")))
-    except Exception as exc:
-        log.warning("traffic L2 write failed %s: %r", l2_key, exc)
+    if multi:
+        return {"date": day.isoformat(), "airports": entries, "errors": errors,
+                "attribution": ATTRIBUTION}
 
-    log.info("traffic.ingest done icao=%s day=%s flights=%d moves=%d bytes=%d",
-             icao, day.isoformat(), len(flights), len(moves), len(raw))
+    entry = entries[0]
     return {
-        "icao": icao, "date": day.isoformat(),
-        "movements": len(moves), "flights": len(flights),
-        "bytes": len(raw), "cache_hit": False, "attribution": ATTRIBUTION,
+        "icao": single_icao, "date": day.isoformat(),
+        "movements": entry["movements"], "flights": entry["flights"],
+        "bytes": entry["bytes"], "cache_hit": entry["cache_hit"],
+        "attribution": ATTRIBUTION,
     }
 
 

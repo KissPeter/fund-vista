@@ -357,6 +357,127 @@ def test_jobs_traffic_out_of_range_fails(live, monkeypatch):
     assert resolve_calls == []  # range check precedes lookup + download
 
 
+# -- multi-airport pass (one archive pass, many airports) --------------------
+
+HU_ROW_DC = {
+    "ident": "LHDC", "iso_country": "HU", "name": "Debrecen International",
+    "latitude_deg": "47.4843", "longitude_deg": "21.6171", "elevation_ft": "354",
+}
+
+
+def _stub_resolve_multi(monkeypatch, rows: dict, calls: list | None = None):
+    async def _fake(icao: str):
+        if calls is not None:
+            calls.append(icao)
+        row = rows.get(icao)
+        if row is None:
+            raise AirportNotFoundError(icao)
+        return (dict(row), False)
+
+    monkeypatch.setattr("backend.jobs._exec_traffic.resolve_airport", _fake)
+
+
+def test_jobs_traffic_multi_airport_done_path(live, monkeypatch, tmp_path):
+    """One archive pass serves every airport of the list."""
+    _stub_resolve_multi(monkeypatch, {"LHBP": HU_ROW, "LHDC": HU_ROW_DC})
+    flights = _fixture_day()["flights"]
+    dl_specs: list = []
+
+    def _fake_download(day, specs, cancelled, on_progress=None):
+        dl_specs.append([s["icao"] for s in specs])
+        return {s["icao"]: flights for s in specs}
+
+    monkeypatch.setattr("backend.jobs._exec_traffic._download_and_extract", _fake_download)
+    day = _yesterday_iso()
+    resp = live.post("/v1/jobs", json={"type": "traffic_ingest",
+                                       "request": {"icaos": ["LHBP", "LHDC"], "date": day},
+                                       "cancel_previous": False})
+    assert resp.status_code == 202, resp.text
+    final = _wait_done(live, resp.json()["job_id"])
+    assert final["status"] == "done", final
+    result = final["result"]
+    assert dl_specs == [["LHBP", "LHDC"]]  # one pass for both airports
+    assert result["date"] == day and result["errors"] == []
+    by_icao = {e["icao"]: e for e in result["airports"]}
+    assert set(by_icao) == {"LHBP", "LHDC"}
+    for icao in ("LHBP", "LHDC"):
+        assert by_icao[icao]["cache_hit"] is False
+        assert by_icao[icao]["flights"] == len(flights)
+        assert by_icao[icao]["bytes"] > 0
+    from backend.traffic.store import day_key
+
+    for icao in ("LHBP", "LHDC"):
+        assert (tmp_path / "traffic" / day_key(day, icao)).is_file()
+
+
+def test_jobs_traffic_multi_mixed_cache_hit(live, monkeypatch, tmp_path):
+    """A cached airport is skipped; the pass covers only the rest."""
+    _seed_l1(tmp_path / "traffic", _yesterday_iso(), "LHBP")
+    _stub_resolve_multi(monkeypatch, {"LHBP": HU_ROW, "LHDC": HU_ROW_DC})
+    dl_specs: list = []
+
+    def _fake_download(day, specs, cancelled, on_progress=None):
+        dl_specs.append([s["icao"] for s in specs])
+        return {s["icao"]: [] for s in specs}
+
+    monkeypatch.setattr("backend.jobs._exec_traffic._download_and_extract", _fake_download)
+    day = _yesterday_iso()
+    resp = live.post("/v1/jobs", json={"type": "traffic_ingest",
+                                       "request": {"icaos": ["LHBP", "LHDC"], "date": day},
+                                       "cancel_previous": False})
+    assert resp.status_code == 202, resp.text
+    final = _wait_done(live, resp.json()["job_id"])
+    assert final["status"] == "done", final
+    result = final["result"]
+    assert dl_specs == [["LHDC"]]  # the cached airport costs no pass
+    by_icao = {e["icao"]: e for e in result["airports"]}
+    assert by_icao["LHBP"]["cache_hit"] is True
+    assert by_icao["LHDC"]["cache_hit"] is False
+
+
+def test_jobs_traffic_multi_partial_error(live, monkeypatch, tmp_path):
+    """One bad airport is an error entry; the good one still lands."""
+    _stub_resolve_multi(monkeypatch, {"LHBP": HU_ROW, "LHXX": {"ident": "LHXX",
+                                                               "iso_country": "DE",
+                                                               "name": "Elsewhere",
+                                                               "latitude_deg": "50.0",
+                                                               "longitude_deg": "8.0",
+                                                               "elevation_ft": "300"}})
+    flights = _fixture_day()["flights"]
+    monkeypatch.setattr("backend.jobs._exec_traffic._download_and_extract",
+                        lambda day, specs, cancelled, on_progress=None: {s["icao"]: flights for s in specs})
+    day = _yesterday_iso()
+    resp = live.post("/v1/jobs", json={"type": "traffic_ingest",
+                                       "request": {"icaos": ["LHBP", "LHXX"], "date": day},
+                                       "cancel_previous": False})
+    assert resp.status_code == 202, resp.text
+    final = _wait_done(live, resp.json()["job_id"])
+    assert final["status"] == "done", final
+    result = final["result"]
+    assert [e["icao"] for e in result["airports"]] == ["LHBP"]
+    assert [e["icao"] for e in result["errors"]] == ["LHXX"]
+    assert result["errors"][0]["code"] == "unsupported_airport"
+    assert result["errors"][0]["detail"]
+
+
+def test_jobs_traffic_multi_shape_validation(live, monkeypatch):
+    """Exactly one of icao / icaos; the list is capped."""
+    monkeypatch.setattr("backend.jobs._exec_traffic._download_and_extract",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("download called")))
+    day = _yesterday_iso()
+    for request in ({"icao": "LHBP", "icaos": ["LHDC"], "date": day},
+                    {"date": day},
+                    {"icao": "", "date": day},
+                    {"icaos": [], "date": day},
+                    {"icaos": ["LHBP"] * 101, "date": day},
+                    {"icaos": ["EGLL"], "date": day}):
+        resp = live.post("/v1/jobs", json={"type": "traffic_ingest",
+                                           "request": request, "cancel_previous": False})
+        assert resp.status_code == 422, (request, resp.text)
+        assert resp.json()["error"]["code"] == "invalid_params"
+        assert "job_id" not in resp.json()
+
+
 # -- render / import / results (Phase 2, TC-D45) ------------------------------
 
 def _seed_l1_shifted(tmp_key_dir, day_iso: str) -> dict:
