@@ -47,8 +47,16 @@ ATTRIBUTION = (
 )
 
 
-def normalize_icao(value: str) -> str:
-    """Upper/strip an ICAO code, raising ValueError when malformed."""
+def normalize_icao(value: object) -> str:
+    """Upper/strip an ICAO code, raising ValueError when malformed.
+
+    This doubles as a ``mode="before"`` model validator, so arbitrary JSON
+    values (dict/list/number) can reach it: a non-string must fail as a
+    pydantic ``ValueError`` (→ 422 envelope), never as an ``AttributeError``
+    (→ raw 500). Found by the Schemathesis smoke (ST101, 2026-10-20).
+    """
+    if not isinstance(value, str):
+        raise ValueError("ICAO code must be 3–4 alphanumeric characters (e.g. LHBP).")
     code = value.strip().upper()
     if not _ICAO_RE.match(code):
         raise ValueError("ICAO code must be 3–4 alphanumeric characters (e.g. LHBP).")

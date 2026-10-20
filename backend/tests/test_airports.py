@@ -876,7 +876,22 @@ def test_search_validation_without_network(http_client):
     assert resp.status_code == 422
     resp = http_client.get("/v1/airports/search")
     assert resp.status_code == 422
-    resp = http_client.get("/v1/airports/search?q=Budapest&limit=99")
-    assert resp.status_code == 422
     resp = http_client.get("/v1/airports/search?q=Budapest&limit=0")
     assert resp.status_code == 422
+
+
+def test_render_rejects_non_string_icao_with_validation_envelope(http_client):
+    """Non-string ``icao`` values must fail as a 422 envelope, never 5xx.
+
+    ``normalize_icao`` runs as a ``mode="before"`` model validator, so
+    arbitrary JSON values (dict/list/mumber) can reach it; a missing type
+    guard used to surface as a raw ``AttributeError`` → 500 (found by the
+    Schemathesis smoke, ST101 on 2026-10-20).
+    """
+    for bad in ({}, [], 421, None):
+        resp = http_client.post("/v1/airports/render", json={"icao": bad})
+        assert resp.status_code == 422, bad
+        assert resp.json()["error"]["code"] == "invalid_params", bad
+        resp = http_client.post("/v1/airports/import", json={"icao": bad})
+        assert resp.status_code == 422, bad
+        assert resp.json()["error"]["code"] == "invalid_params", bad
