@@ -22,6 +22,21 @@
 # Logs to stdout (the scheduler redirects to a log file).
 set -u
 
+# A deploy replaces this file in place (the CD checkout is updated by the
+# deploy) and a shell reads its script incrementally — a script replaced
+# mid-run can abort it with a syntax/unbound-variable error. Work from a
+# snapshot copy so the run is immune to that.
+if [ -z "${TRAFFIC_INGEST_SNAPSHOT:-}" ]; then
+  SNAP="$(mktemp "${TMPDIR:-/tmp}/traffic-ingest.XXXXXX")" || exit 1
+  cp "$0" "$SNAP" && chmod +x "$SNAP" || { rm -f "$SNAP"; exit 1; }
+  TRAFFIC_INGEST_SNAPSHOT=1
+  export TRAFFIC_INGEST_SNAPSHOT
+  /bin/sh "$SNAP" "$@"
+  rc=$?
+  rm -f "$SNAP"
+  exit $rc
+fi
+
 REPO="${REPO:-/opt/fund-vista}"
 API="${API:-http://127.0.0.1:8100}"
 ICAOS="${TRAFFIC_ICAOS:-LHBP}"
@@ -151,6 +166,15 @@ if docker exec "$CONTAINER" test -d /data/traffic/pass; then
 fi
 
 cd "$REPO" || exit 1
+# An earlier run may have died mid-way and left slices staged. Commit them
+# (same content the export below would produce) so the tree is clean for
+# the pull — the CD deploy refuses dirty trees, so only this script can
+# dirty the checkout.
+if [ -n "$(git status --porcelain)" ]; then
+  log "leftover changes from an earlier run — committing them"
+  git add -A backend/traffic/slices || exit 1
+  git commit -m "data(traffic): slices from an earlier run" || true
+fi
 # CD deploys leave the prod checkout detached at the deployed sha; the git
 # export needs a branch. The tree is clean here (deploy-nas.sh refuses dirty
 # trees), so checking main out is safe.
@@ -159,12 +183,16 @@ if [ -z "$(git symbolic-ref -q HEAD)" ]; then
 fi
 git pull --rebase origin main || { log "git pull failed"; exit 1; }
 git add backend/traffic/slices || exit 1
-if git diff --cached --quiet; then
-  log "no new slices for $YESTERDAY"
-  exit 0
+if ! git diff --cached --quiet; then
+  git commit -m "data(traffic): daily slices ($ICAOS)" || exit 1
 fi
-git commit -m "data(traffic): daily slices $YESTERDAY ($ICAOS)" || exit 1
-if ! git push origin main; then
-  git pull --rebase origin main && git push origin main || { log "git push failed"; exit 1; }
+# Push whatever is not on origin yet — the new slice commit, a leftover
+# commit made above, or both.
+if [ -n "$(git log --oneline origin/main..HEAD 2>/dev/null)" ]; then
+  if ! git push origin main; then
+    git pull --rebase origin main && git push origin main || { log "git push failed"; exit 1; }
+  fi
+  log "pushed traffic slices to origin/main"
+else
+  log "no new slices for the window"
 fi
-log "pushed slices for $YESTERDAY"
