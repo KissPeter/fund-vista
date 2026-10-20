@@ -23,6 +23,7 @@ import httpx
 
 from backend.airports import cache as cache_mod
 from backend.airports.config import settings
+from backend.http import tls
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +82,16 @@ async def _fetch_csv(
         return cached, True
     url = f"{settings.ourairports_base_url}/{name}.csv"
     own_client = client is None
-    client = client or httpx.AsyncClient(timeout=settings.ourairports_timeout_s)
+    # Guarded client: an unreadable certifi bundle raises OSError in the
+    # constructor before any network I/O — wrap it into the 502 envelope
+    # with the remediation hint instead of the raw ``Errno 5`` text.
+    try:
+        client = client or tls.async_client(timeout=settings.ourairports_timeout_s)
+    except OSError as exc:
+        raise OurAirportsError(
+            f"TLS CA bundle unreadable ({exc}) — container image needs a "
+            "rebuild (corrupted certifi), see backend/http/tls.py."
+        ) from exc
     try:
         resp = await client.get(
             url, headers={"User-Agent": settings.user_agent}

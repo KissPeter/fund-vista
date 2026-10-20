@@ -29,6 +29,7 @@ from backend.traffic.cache import configure_traffic_redis
 from backend.traffic.router import router as traffic_router
 from backend.penplot.errors import PenPlotError
 from backend.penplot.ratelimit import configure_redis
+from backend.http import tls
 from backend.penplot.router import (
     penplot_error_handler,
     router as penplot_router,
@@ -153,7 +154,9 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)  # t
 # (no network). Must run before the first httpx client is built.
 _install_upstream_mock()
 
-http_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+# Guarded client: a corrupted certifi CA bundle would otherwise make the
+# constructor raise OSError on every /{prefix}/{path} proxy request.
+http_client = tls.async_client(timeout=httpx.Timeout(30.0))
 redis_client: Optional[Redis] = None
 
 
@@ -210,7 +213,17 @@ async def _shutdown() -> None:
 
 @app.get("/healthz")
 async def health() -> Dict[str, str]:
-    return {"status": "ok"}
+    tls_status = tls.ca_status()
+    if tls_status["certifi_readable"] == "yes":
+        return {"status": "ok", "outbound_tls": "certifi"}
+    fallback = tls_status.get("fallback_bundle")
+    if fallback:
+        # Fallback keeps outbound HTTPS working; surface it so the image
+        # gets rebuilt instead of silently running degraded.
+        return {"status": "ok",
+                "outbound_tls": f"fallback:{fallback} (certifi unreadable)"}
+    return {"status": "degraded",
+            "outbound_tls": f"unreadable:{tls_status['certifi_path']}"}
 
 
 @app.api_route("/{prefix}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

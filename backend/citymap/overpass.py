@@ -19,6 +19,7 @@ import httpx
 
 from backend.citymap.config import settings
 from backend.citymap.layers import selectors_for
+from backend.http import tls
 
 log = logging.getLogger(__name__)
 
@@ -220,7 +221,7 @@ async def fetch_overpass(query: str, client: httpx.AsyncClient | None = None) ->
     non-JSON so the router can map it to a 502 envelope.
     """
     own_client = client is None
-    client = client or httpx.AsyncClient(timeout=settings.overpass_timeout_s)
+    client = client or tls.async_client(timeout=settings.overpass_timeout_s)
     try:
         failures: list[str] = []
         max_attempts = max(1, settings.overpass_retries + 1)

@@ -39,10 +39,11 @@ def is_url(src: str) -> bool:
 
 def load_bytes(src: str) -> bytes:
     if is_url(src):
-        import httpx  # noqa: PLC0415
+        from backend.http import tls  # noqa: PLC0415
 
-        r = httpx.get(src, follow_redirects=True, timeout=30,
-                      headers={"User-Agent": "pen-pixel-shop-img2plot/0.3"})
+        with tls.client(timeout=30) as hc:
+            r = hc.get(src, follow_redirects=True,
+                       headers={"User-Agent": "pen-pixel-shop-img2plot/0.3"})
         r.raise_for_status()
         return r.content
     with open(src, "rb") as fh:

@@ -23,7 +23,8 @@ from fastapi.responses import JSONResponse
 
 from backend.airports.ourairports import AirportNotFoundError, resolve_airport
 from backend.cancel import check_cancelled, race_cancel
-from backend.http import error_response
+from backend.http import tls
+from backend.http.errors import error_response
 from backend.penplot import imaging
 from backend.penplot.errors import PenPlotError
 from backend.penplot.router import require_rate_limit, resolve_public_base
@@ -93,7 +94,7 @@ async def availability(icao: str = "", date: str = ""):
         return body
     timeout = float(os.environ.get("TRAFFIC_GITHUB_TIMEOUT_S", "20"))
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+        async with tls.async_client(timeout=httpx.Timeout(timeout)) as client:
             return await _avail.asource_status(day, client)
     except httpx.HTTPError as exc:
         return error_response(502, "traffic_source_unavailable", f"Archive index lookup failed: {exc}")

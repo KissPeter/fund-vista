@@ -26,6 +26,7 @@ from defusedxml import ElementTree as DET
 
 from backend.citymap.config import settings
 from backend.citymap.overpass import BBox
+from backend.http import tls
 
 log = logging.getLogger(__name__)
 
@@ -147,7 +148,7 @@ async def fetch_osm_api(
     XML so the router can map it to a 502 envelope.
     """
     own_client = client is None
-    client = client or httpx.AsyncClient(timeout=settings.osm_api_timeout_s)
+    client = client or tls.async_client(timeout=settings.osm_api_timeout_s)
     try:
         south, west, north, east = bbox
         if max(north - south, east - west) > settings.max_bbox_deg:

@@ -16,6 +16,7 @@ import re
 import httpx
 
 from backend.airports.config import settings
+from backend.http import tls
 
 log = logging.getLogger(__name__)
 
@@ -276,7 +277,7 @@ async def fetch_airport_polygons(
     Raises :class:`AirportOverpassError` when every mirror fails.
     """
     own_client = client is None
-    client = client or httpx.AsyncClient(timeout=settings.overpass_timeout_s)
+    client = client or tls.async_client(timeout=settings.overpass_timeout_s)
     try:
         failures: list[str] = []
         max_attempts = max(1, settings.overpass_retries + 1)

@@ -37,6 +37,7 @@ from backend.airports.ourairports import (
     resolve_airport,
 )
 from backend.cancel import ClientCancelled
+from backend.http import tls
 from backend.jobs import store as _store
 from backend.jobs._common import _JobError, _raise_if_cancelled
 from backend.traffic import availability as _avail
@@ -72,7 +73,7 @@ def _download_and_extract(
         _traffic_settings.ingest_timeout_s,
         read=_traffic_settings.ingest_read_timeout_s,
     )
-    with httpx.Client(timeout=timeout) as client:
+    with tls.client(timeout=timeout) as client:
         urls = _ingest.asset_urls(day, client)
         stream = io.BufferedReader(
             _ingest.ChunkReader(_ingest._chunks(urls, client)), 1 << 20
