@@ -2,35 +2,49 @@
 # Daily traffic ingest → git push (cron/launchd; NAS: /etc/cron.d/traffic-ingest,
 # Mac: ~/Library/LaunchAgents/hu.linuxadm.traffic-ingest.plist).
 #
-# Flow: for each ICAO, POST a traffic_ingest job for yesterday (UTC) to the
-# local backend, poll it to terminal state, then export the new slice files
-# from the app container into this repo and push them to origin/main — so the
-# slices live in git (HU-only scope: ~2 MB per airport-day) and every deploy
-# carries them. Idempotent: already-ingested days return cache_hit instantly
-# and produce no commit; a failed push is retried by the next daily run.
+# Flow: POST a traffic_ingest job for each recent day (UTC) to the local
+# backend — one job covers every ICAO, so one archive pass serves the whole
+# list — poll it to terminal state, then export the new slice files from the
+# app container into this repo and push them to origin/main — so the slices
+# live in git (HU-only scope: ~2 MB per airport-day) and every deploy carries
+# them. Idempotent: already-ingested days return cache_hit instantly and
+# produce no commit; a failed push is retried by the next daily run.
+#
+# The window is TRAFFIC_DAYS (default 3) days wide, so a day whose adsb.lol
+# archive publishes late is picked up by a later run instead of being lost.
+# A day whose archive is not published yet (traffic_not_available) is skipped,
+# not treated as a failure — it will be retried while it is still in the
+# window.
 #
 # Env overrides: REPO (default /opt/fund-vista), API (default
-# http://127.0.0.1:8100), TRAFFIC_ICAOS (space-separated, default "LHBP" —
-# one archive pass per airport, each ~3.5 GB download, so keep this short).
+# http://127.0.0.1:8100), TRAFFIC_ICAOS (space-separated, default "LHBP"),
+# TRAFFIC_DAYS (default 3), CONTAINER (default fundvista).
 # Logs to stdout (the scheduler redirects to a log file).
 set -u
 
 REPO="${REPO:-/opt/fund-vista}"
 API="${API:-http://127.0.0.1:8100}"
 ICAOS="${TRAFFIC_ICAOS:-LHBP}"
+DAYS="${TRAFFIC_DAYS:-3}"
 CONTAINER="${CONTAINER:-fundvista}"
 SLICES="$REPO/backend/traffic/slices"
 
-# Yesterday (UTC) in GNU and BSD/macOS date flavors.
-if date -u -d yesterday +%F >/dev/null 2>&1; then
-  YESTERDAY="$(date -u -d yesterday +%F)"
-else
-  YESTERDAY="$(date -u -v-1d +%F)"
-fi
+# Recent UTC days (oldest first) in GNU and BSD/macOS date flavors.
+days() {
+  i="$DAYS"
+  while [ "$i" -ge 1 ]; do
+    if date -u -d "$i day ago" +%F >/dev/null 2>&1; then
+      date -u -d "$i day ago" +%F
+    else
+      date -u -v-"${i}"d +%F
+    fi
+    i=$((i - 1))
+  done
+}
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 
-post_job() { # date -> prints job_id (one archive pass for every ICAO)
+post_job() { # date -> prints job_id, or ERR:<code> when the app refused it
   icaos_json=$(printf '"%s",' $ICAOS | sed 's/,$//')
   curl -s -m 30 -X POST "$API/v1/jobs" -H 'content-type: application/json' \
     -d "{\"type\":\"traffic_ingest\",\"request\":{\"icaos\":[$icaos_json],\"date\":\"$1\"},\"cancel_previous\":false}" |
@@ -38,8 +52,12 @@ post_job() { # date -> prints job_id (one archive pass for every ICAO)
 try:
     d = json.load(sys.stdin)
 except ValueError:
+    print("ERR:no_response")
     sys.exit(0)
-print(d.get("job_id", ""))'
+if d.get("job_id"):
+    print(d["job_id"])
+else:
+    print("ERR:" + ((d.get("error") or {}).get("code", "unknown")))'
 }
 
 post_job_one() { # icao date -> prints job_id (legacy single-airport shape)
@@ -53,14 +71,20 @@ except ValueError:
 print(d.get("job_id", ""))'
 }
 
-wait_job() { # job_id -> 0 done, 1 failed/cancelled, 2 timeout (6 h)
+wait_job() { # job_id -> 0 done, 1 failed/cancelled (code in $JOB_ERROR), 2 timeout (6 h)
+  JOB_ERROR=""
   i=0
   while [ "$i" -lt 360 ]; do
     st="$(curl -s -m 30 "$API/v1/jobs/$1" |
       python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
     case "$st" in
       done) log "job $1 done"; return 0 ;;
-      failed | cancelled) log "job $1 $st"; return 1 ;;
+      failed | cancelled)
+        log "job $1 $st"
+        JOB_ERROR="$(curl -s -m 30 "$API/v1/jobs/$1" |
+          python3 -c 'import json,sys; print((json.load(sys.stdin).get("error") or {}).get("code",""))')"
+        return 1
+        ;;
     esac
     sleep 60
     i=$((i + 1))
@@ -70,24 +94,49 @@ wait_job() { # job_id -> 0 done, 1 failed/cancelled, 2 timeout (6 h)
 }
 
 FAILED=0
-JOB="$(post_job "$YESTERDAY" || true)"
-if [ -n "$JOB" ]; then
+HARVESTED=0
+for DAY in $(days); do   # oldest day first
+  JOB="$(post_job "$DAY" || true)"
+  case "$JOB" in
+    ERR:invalid_params)
+      # Older app without the icaos shape: one job per airport (one pass each).
+      log "multi-airport enqueue unavailable — per-airport fallback for $DAY"
+      for ICAO in $ICAOS; do
+        log "ingest $ICAO $DAY"
+        JOB="$(post_job_one "$ICAO" "$DAY")"
+        case "$JOB" in
+          [0-9a-f][0-9a-f]* | [0-9A-F][0-9A-F]*) log "job $JOB for $ICAO" ;;
+          *) log "POST failed for $ICAO (no job_id)"; FAILED=1; continue ;;
+        esac
+        if wait_job "$JOB"; then
+          HARVESTED=1
+        elif [ "$JOB_ERROR" = "traffic_not_available" ]; then
+          log "day $DAY: archive not published yet — skipped"
+        else
+          FAILED=1
+        fi
+      done
+      continue
+      ;;
+    ERR:*)
+      log "day $DAY: enqueue refused (${JOB#ERR:})"
+      FAILED=1
+      continue
+      ;;
+  esac
+  [ -n "$JOB" ] || { log "POST failed for $DAY (no job_id)"; FAILED=1; continue; }
   # One archive pass serves the whole list (the API accepts icaos).
-  log "ingest [$ICAOS] $YESTERDAY as job $JOB"
-  wait_job "$JOB" || FAILED=1
-else
-  # Older app without the icaos shape: one job per airport (one pass each).
-  log "multi-airport enqueue unavailable — per-airport fallback"
-  for ICAO in $ICAOS; do
-    log "ingest $ICAO $YESTERDAY"
-    JOB="$(post_job_one "$ICAO" "$YESTERDAY")"
-    case "$JOB" in
-      [0-9a-f][0-9a-f]* | [0-9A-F][0-9A-F]*) log "job $JOB for $ICAO" ;;
-      *) log "POST failed for $ICAO (no job_id)"; FAILED=1; continue ;;
-    esac
-    wait_job "$JOB" || FAILED=1
-  done
-fi
+  log "ingest [$ICAOS] $DAY as job $JOB"
+  if wait_job "$JOB"; then
+    HARVESTED=1
+  elif [ "$JOB_ERROR" = "traffic_not_available" ]; then
+    log "day $DAY: archive not published yet — skipped (retried while in the window)"
+  else
+    log "day $DAY: job failed ($JOB_ERROR)"
+    FAILED=1
+  fi
+done
+[ "$HARVESTED" -eq 1 ] || { log "no day harvested — nothing to export"; exit 1; }
 [ "$FAILED" -eq 0 ] || { log "ingest failures — slices not pushed"; exit 1; }
 
 # Export the store out of the container into the repo checkout.
