@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import time
 
 import numpy as np
@@ -555,13 +556,22 @@ def run_convert(
             + pen_up / params.pen.travel_speed_mm_s
             + strokes * params.pen.pen_lift_s
         )
+        if math.isfinite(est):
+            estimated = round(est, 1)
+        else:
+            # A degenerate (subnormal-but-gt=0) speed inflates a term to inf;
+            # report without the estimate instead of failing the response
+            # JSON serialization with a bare 500 (Schemathesis ST101,
+            # 2026-10-20).
+            estimated = 0.0
+            warnings.append("estimated_time_unavailable")
         stats = ConvertStats(
             points=PointsStats(before=points_before, after=count_points(final)),
             segments=SegmentsStats(before=segments_before, after=len(final)),
             strokes=strokes,
             pen_down_mm=round(pen_down, 2),
             pen_up_mm=round(pen_up, 2),
-            estimated_time_s=round(est, 1),
+            estimated_time_s=estimated,
         )
         svg_text = to_svg(
             final, page_w, page_h,

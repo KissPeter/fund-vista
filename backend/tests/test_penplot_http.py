@@ -211,6 +211,26 @@ def test_result_unknown_file_404(http_client):
     assert resp.status_code == 404
 
 
+def test_convert_degenerate_travel_speed_never_5xx(http_client):
+    """Subnormal (or otherwise validated-but-degenerate) pen speeds must not
+    produce a bare 500: ``pen_up / 5e-324`` is inf, and FastAPI then fails
+    the response RENDER with ``json: Out of range float values are not JSON
+    compliant`` (found by the Schemathesis smoke, ST101, 2026-10-20).
+
+    Expected behavior: the estimate is dropped (0) with an explicit warning,
+    status stays 200. Everything else must still be a 4xx envelope, never 5xx.
+    """
+    params = default_params("hatch")
+    params["pen"]["travel_speed_mm_s"] = 5e-324  # subnormal: passes gt=0 / le=1000
+    image_id = upload(http_client, png_bytes(), "speed.png").json()["image_id"]
+    resp = _convert(http_client, image_id, params)
+    assert resp.status_code < 500, resp.text
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["stats"]["estimated_time_s"] == 0.0
+    assert "estimated_time_unavailable" in body["warnings"]
+
+
 def test_result_path_traversal_blocked(http_client):
     resp = http_client.get("/v1/results/..%2Fmain.py")
     assert resp.status_code in (404, 422)
