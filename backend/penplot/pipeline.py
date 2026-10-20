@@ -133,6 +133,9 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
         data.pop("ocr_text", None)
     if not any(data.get("svg_meta", {}).values()):
         data.pop("svg_meta", None)
+    # Gallery context table (issue #1058) is off by default: keep its key out.
+    if not data.get("context_table", {}).get("enabled"):
+        data.pop("context_table", None)
     for field, default in (("thin_lines", False), ("circles", False), ("solids", False),
                            ("trace_upscale", 1), ("strip_frame", False)):
         if data.get(field) == default:
@@ -496,6 +499,26 @@ def run_convert(
                 # The table is a cartouche: the map must not show through
                 # its text, borders or the inset strip around it.
                 laid = knock_out(laid, table_keepout)
+        # Gallery context table (spec rows, string cells, verbatim keys).
+        # Same cartouche rules as the stats table; drawn after it so both
+        # can coexist in different corners.
+        if params.context_table.enabled and params.context_table.rows:
+            ctx_lines, ctx_warnings, ctx_keepout = stats_table.layout_stats_table(
+                [(r.label, r.value) for r in params.context_table.rows],
+                position=params.context_table.position,
+                page_w=page_w, page_h=page_h,
+                margin_mm=params.page.margin_mm,
+                reserve_bottom_mm=reserve_bottom_mm,
+                pad_left_mm=params.context_table.pad_left_mm,
+                pad_right_mm=params.context_table.pad_right_mm,
+                pad_top_mm=params.context_table.pad_top_mm,
+                pad_bottom_mm=params.context_table.pad_bottom_mm,
+                display_keys=False,
+            )
+            table_lines = table_lines + ctx_lines
+            warnings.extend(ctx_warnings)
+            if ctx_keepout is not None:
+                laid = knock_out(laid, ctx_keepout)
         t0 = time.perf_counter()
         # Merge domains separately: a joint linemerge would fuse image strokes
         # into divider/frame across the strip gap at high tolerances, dragging
