@@ -77,7 +77,7 @@ def _text_lines(text: str, height_mm: float) -> tuple[list[Polyline], float, lis
 
 
 def render_stats_table(
-    rows: list[tuple[str, int]],
+    rows: list[tuple[str, int | str]],
     **kwargs: float | str,
 ) -> tuple[list[Polyline], list[str]]:
     """Lay out the stats table; see :func:`layout_stats_table` (drops the keep-out)."""
@@ -86,7 +86,7 @@ def render_stats_table(
 
 
 def layout_stats_table(
-    rows: list[tuple[str, int]],
+    rows: list[tuple[str, int | str]],
     *,
     position: str,
     page_w: float,
@@ -97,6 +97,7 @@ def layout_stats_table(
     pad_right_mm: float = 0.0,
     pad_top_mm: float = 0.0,
     pad_bottom_mm: float = 0.0,
+    display_keys: bool = True,
 ) -> tuple[list[Polyline], list[str], Rect | None]:
     """Lay out the stats table in mm space. See module docstring.
 
@@ -107,12 +108,17 @@ def layout_stats_table(
     nothing was drawn.
 
     ``rows`` are (raw layer key, path count) pairs — already filtered to
-    non-zero layers by the caller. ``position`` is one of ``top-left``,
+    non-zero layers by the caller. ``display_keys=False`` draws the key text
+    verbatim (gallery context rows: spec labels keep their own casing); values
+    may then be strings. ``position`` is one of ``top-left``,
     ``top-right``, ``bottom-left``, ``bottom-right`` (anything else falls
     back to ``top-right``).
     """
     warnings: list[str] = []
-    cells = [( _display_key(key), str(value)) for key, value in rows[:MAX_ROWS]]
+    cells = [
+        (_display_key(key) if display_keys else key, str(value))
+        for key, value in rows[:MAX_ROWS]
+    ]
     if not cells:
         return [], warnings, None
 

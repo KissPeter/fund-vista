@@ -114,6 +114,39 @@ class StatsTableRow(BaseModel):
     value: int = Field(ge=0, le=999999)
 
 
+class ContextTableRow(BaseModel):
+    """One gallery context row: a catalogue spec label + its string value.
+
+    Unlike :class:`StatsTableRow` the cells are free text (``Hajtás`` |
+    ``Hidraulikus``), drawn verbatim. Lengths mirror the frontend contract
+    (``MAX_CONTEXT_CELL`` = 64 chars).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(min_length=1, max_length=64)
+    value: str = Field(max_length=64)
+
+
+class ContextTableParams(BaseModel):
+    """Gallery "add context to drawing" table, drawn in a page corner.
+
+    Same geometry, insets and keep-out as :class:`StatsTableParams`; the
+    row cap is the A4 legibility limit (12 rows). Off by default; empty rows
+    are a silent no-op.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    position: StatsTablePosition = "top-right"
+    rows: list[ContextTableRow] = Field(default_factory=list, max_length=12)
+    pad_left_mm: float = Field(default=10.0, ge=0.0, le=20.0)
+    pad_right_mm: float = Field(default=10.0, ge=0.0, le=20.0)
+    pad_top_mm: float = Field(default=10.0, ge=0.0, le=20.0)
+    pad_bottom_mm: float = Field(default=10.0, ge=0.0, le=20.0)
+
+
 class StatsTableParams(BaseModel):
     """Layer-stats overlay table, drawn in a page corner (plotter strokes).
 
@@ -325,6 +358,7 @@ class ConvertParams(BaseModel):
     pen: PenParams = Field(default_factory=PenParams)
     label: LabelParams = Field(default_factory=LabelParams)
     stats_table: StatsTableParams = Field(default_factory=StatsTableParams)
+    context_table: ContextTableParams = Field(default_factory=ContextTableParams)
     line_color: LineColorName = Field(
         default="black",
         description=(
