@@ -84,6 +84,40 @@ def test_normal_arrival_is_not_flagged():
     assert not m["go_around"] and not m["holding"]
 
 
+# -- traces with null altitudes (real adsb.lol data) ------------------------
+
+def _leg_null_alt(points, t0=1_000_000.0, step=10.0):
+    """Leg whose cruise points carry a ``null`` altitude (unknown height)."""
+    return [[t0 + i * step, la, lo, alt, 1 if alt == 0 else 0] for i, (la, lo, alt) in enumerate(points)]
+
+
+def test_null_altitude_cruise_still_classifies_the_ground_contact():
+    # Unknown altitudes must not crash and must not hide a real arrival:
+    # the ground contact (alt 0) still proves the movement.
+    base = _approach()
+    pts = [(la, lo, None if i % 2 else alt) for i, (la, lo, alt) in enumerate(base)]
+    moves = classify.classify_day(_day(("NUL1", "A321", _leg_null_alt(pts))))
+    assert [m["kind"] for m in moves] == ["arr"]
+
+
+def test_null_altitude_only_trace_yields_no_movement():
+    # Every point's altitude is unknown: nothing proves "low", so no
+    # movement is invented (and no crash).
+    pts = [(la, lo, None) for la, lo, _alt in _approach()]
+    moves = classify.classify_day(_day(("NUL2", "A321", _leg_null_alt(pts))))
+    assert moves == []
+
+
+def test_null_altitude_go_around_scan_does_not_crash():
+    base = _approach(n=60)
+    low = base[:55]
+    climb = [(LAT - 0.02 * i / 5, LON + 0.02 * i / 5, ELEV + 800 + 400 * i) for i in range(10)]
+    back = _approach(n=40, start_km=30)[:-1] + [(LAT, LON, 0)]
+    pts = [(la, lo, None if i % 3 else alt) for i, (la, lo, alt) in enumerate(low + climb + back)]
+    moves = classify.classify_day(_day(("NUL3", "E190", _leg_null_alt(pts))))
+    assert isinstance(moves, list)
+
+
 def _movs():
     base = {"hex": "x", "type": "A320", "t": 5.0, "pts": [[0, LAT, LON, 0, 1]], "db_flags": 0}
     return [dict(base, flight="WZZ1", kind="arr", holding=False, go_around=False),

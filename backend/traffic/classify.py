@@ -33,14 +33,27 @@ GA_WINDOW_S = 600
 #: Bump when heuristics change — part of the L2 movements cache key so a fix
 #: recomputes from L1 without a new 3.5 GB download (plan §6.3).
 #: c2 (Phase 5): movements gain ``flow`` (runway direction) + ``holding_s``.
-CLASSIFIER_VERSION = "c2"
+#: c3: traces with ``null`` altitudes no longer crash the classifier (the
+#:     altitude is unknown, so it proves neither "low" nor "high").
+CLASSIFIER_VERSION = "c3"
 
 # point layout: [ts, lat, lon, alt_ft, ground]
 T, LAT, LON, ALT, GND = range(5)
 
 
-def _agl(p: list, elev_ft: float) -> float:
-    return 0.0 if p[GND] else p[ALT] - elev_ft
+def _agl(p: list, elev_ft: float) -> float | None:
+    """Height above the field in feet, or ``None`` when the altitude is unknown.
+
+    Real adsb.lol traces carry ``null`` altitudes for some cruise points.
+    An unknown altitude must not be read as "low" (that would invent
+    movements) and must not crash the classifier.
+    """
+    if p[GND]:
+        return 0.0
+    alt = p[ALT]
+    if alt is None:
+        return None
+    return alt - elev_ft
 
 
 def legs(pts: list[list]) -> Iterable[list[list]]:
@@ -116,19 +129,30 @@ def has_go_around(leg: list[list], lat: float, lon: float, elev_ft: float) -> bo
     for i in range(touch):
         p = leg[i]
         agl = _agl(p, elev_ft)
+        if agl is None:
+            continue  # unknown altitude — no evidence either way
         if 0 < agl < GA_MAX_AGL_FT and km_between(p[LAT], p[LON], lat, lon) < GA_KM:
             for j in range(i + 1, touch):
                 q = leg[j]
                 if q[T] - p[T] > GA_WINDOW_S:
                     break
-                if _agl(q, elev_ft) > agl + GA_CLIMB_FT:
+                q_agl = _agl(q, elev_ft)
+                if q_agl is not None and q_agl > agl + GA_CLIMB_FT:
                     return True
     return False
 
 
+def _is_low(p: list, elev_ft: float) -> bool:
+    """True when the point is on the ground or provably low above the field."""
+    if p[GND]:
+        return True
+    agl = _agl(p, elev_ft)
+    return agl is not None and agl < LOW_AGL_FT
+
+
 def _kind(leg: list[list], lat: float, lon: float, elev_ft: float) -> str | None:
     def low_near(p: list) -> bool:
-        return km_between(p[LAT], p[LON], lat, lon) < NEAR_KM and (p[GND] or _agl(p, elev_ft) < LOW_AGL_FT)
+        return km_between(p[LAT], p[LON], lat, lon) < NEAR_KM and _is_low(p, elev_ft)
 
     arr, dep = low_near(leg[-1]), low_near(leg[0])
     if arr and dep:
@@ -139,7 +163,7 @@ def _kind(leg: list[list], lat: float, lon: float, elev_ft: float) -> str | None
         return "dep"
     # trace may stop/start a little off the airport: use the closest low point
     best = min(range(len(leg)), key=lambda k: km_between(leg[k][LAT], leg[k][LON], lat, lon)
-               + (0 if leg[k][GND] or _agl(leg[k], elev_ft) < LOW_AGL_FT else 999))
+               + (0 if _is_low(leg[k], elev_ft) else 999))
     if not low_near(leg[best]) or km_between(leg[best][LAT], leg[best][LON], lat, lon) > 8:
         return None
     return "arr" if best > len(leg) / 2 else "dep"
