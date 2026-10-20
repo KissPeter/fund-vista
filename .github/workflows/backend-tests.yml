@@ -35,10 +35,16 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install project + test deps
+      - name: Install deps (uv reads backend/pyproject.toml + test group)
+        working-directory: backend
         run: |
-          python -m pip install --upgrade pip
-          pip install ./backend pytest httpx
+          python -m pip install --upgrade pip uv
+          # `pip install ./backend` cannot work here: the repo root is the
+          # import namespace (backend/ is one big package, not a wheel),
+          # and setuptools flat-layout discovery fails on it. uv reads the
+          # PEP 621 dependencies + the [dependency-groups] test group
+          # (pytest, httpx, schemathesis) straight from backend/pyproject.toml.
+          uv pip install --system -r pyproject.toml --group test
 
       - name: OCR system dep (pytesseract fallback path)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr
@@ -52,6 +58,7 @@ jobs:
           REDIS_CLOUD_URL: redis://127.0.0.1:1/0
           PENPLOT_RATE_LIMIT: "100000"
           PENPIXEL_HMAC_SECRET: test-secret-ci
+          PYTHONPATH: .
         run: python -m pytest backend/tests/ -q
 
   schemathesis:
@@ -64,10 +71,11 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install project + schemathesis
+      - name: Install deps (same as integration)
+        working-directory: backend
         run: |
-          python -m pip install --upgrade pip
-          pip install ./backend schemathesis
+          python -m pip install --upgrade pip uv
+          uv pip install --system -r pyproject.toml --group test
 
       - name: Schemathesis smoke (mock-mode server)
         run: ./ops/schemathesis-smoke.sh .
