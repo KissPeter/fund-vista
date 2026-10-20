@@ -1,5 +1,6 @@
 #!/bin/sh
-# Daily traffic ingest → git push (NAS host cron, see /etc/cron.d/traffic-ingest).
+# Daily traffic ingest → git push (cron/launchd; NAS: /etc/cron.d/traffic-ingest,
+# Mac: ~/Library/LaunchAgents/hu.linuxadm.traffic-ingest.plist).
 #
 # Flow: for each ICAO, POST a traffic_ingest job for yesterday (UTC) to the
 # local backend, poll it to terminal state, then export the new slice files
@@ -11,7 +12,7 @@
 # Env overrides: REPO (default /opt/fund-vista), API (default
 # http://127.0.0.1:8100), TRAFFIC_ICAOS (space-separated, default "LHBP" —
 # one archive pass per airport, each ~3.5 GB download, so keep this short).
-# Logs to stdout (cron redirects to /var/log/traffic-ingest.log).
+# Logs to stdout (the scheduler redirects to a log file).
 set -u
 
 REPO="${REPO:-/opt/fund-vista}"
@@ -20,7 +21,12 @@ ICAOS="${TRAFFIC_ICAOS:-LHBP}"
 CONTAINER="${CONTAINER:-fundvista}"
 SLICES="$REPO/backend/traffic/slices"
 
-YESTERDAY="$(date -u -d 'yesterday' +%F)"
+# Yesterday (UTC) in GNU and BSD/macOS date flavors.
+if date -u -d yesterday +%F >/dev/null 2>&1; then
+  YESTERDAY="$(date -u -d yesterday +%F)"
+else
+  YESTERDAY="$(date -u -v-1d +%F)"
+fi
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 
@@ -71,6 +77,12 @@ if docker exec "$CONTAINER" test -d /data/traffic/pass; then
 fi
 
 cd "$REPO" || exit 1
+# CD deploys leave the prod checkout detached at the deployed sha; the git
+# export needs a branch. The tree is clean here (deploy-nas.sh refuses dirty
+# trees), so checking main out is safe.
+if [ -z "$(git symbolic-ref -q HEAD)" ]; then
+  git checkout -q main || { log "cannot check out main (detached HEAD)"; exit 1; }
+fi
 git pull --rebase origin main || { log "git pull failed"; exit 1; }
 git add backend/traffic/slices || exit 1
 if git diff --cached --quiet; then
