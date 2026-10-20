@@ -10,7 +10,10 @@
 #   ops/deploy-nas.sh --verify     # read-only: smoke-test the live container
 #   ops/deploy-nas.sh --prune      # image GC only (never touches the live container)
 #
-# Env overrides: FV_REPO (default /opt/fund-vista), SMOKE_TIMEOUT (default 150s).
+# Env overrides: FV_REPO (default /opt/fund-vista), SMOKE_TIMEOUT (default 150s),
+# FV_CPUS/FV_MEMGB (prod container quota, defaults 3.0/4 as on the NAS; the
+# Mac CD sets FV_CPUS=5.0 — the VM there has 6 CPUs and the airport traffic
+# ingest saturates the old 3-CPU quota).
 # Requires: live env from $FV_REPO/.env (never in git); falls back to the
 # live container's inspected env when the file is unreadable (laminar path
 # uses the same /opt mount, so this is only a safety net).
@@ -25,6 +28,8 @@ DATA_VOL="fundvista-data"
 ENV_FILE="$REPO/.env"
 PORT="8100"
 SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-150}"
+FV_CPUS="${FV_CPUS:-3.0}"
+FV_MEMGB="${FV_MEMGB:-4}"
 
 log() { echo "$(date -u +%FT%TZ) $*"; }
 fail() { echo "DEPLOY FAILED: $1" >&2; exit 1; }
@@ -189,7 +194,7 @@ prod_run() {
   # $1 = name, $2 = image, $3 = env-args string, $4 = commit sha, $5 = extra flags
   # shellcheck disable=SC2086
   docker run -d --name "$1" --network "$NET" --restart unless-stopped \
-    -p 127.0.0.1:${PORT}:${PORT} --cpus=3.0 --memory=4g \
+    -p 127.0.0.1:${PORT}:${PORT} --cpus="$FV_CPUS" --memory="${FV_MEMGB}g" \
     -v "$DATA_VOL:/data" $3 --label "fundvista.commit=$4" $5 "$2" >/dev/null
 }
 
