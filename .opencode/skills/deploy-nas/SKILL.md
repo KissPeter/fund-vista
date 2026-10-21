@@ -71,7 +71,10 @@ curl -s http://127.0.0.1:8100/healthz | head -c 200
 - `/opt/fund-vista/.env` and `Dockerfile.nas` are NAS-local and untracked —
   never `git add` them; `git pull` won't touch them.
 - `/data` is the persistent `fundvista-data` volume (CD mounts it; traffic
-  slices + images/results survive recreates, Redis cache too).
+  slices + images/results survive recreates, Redis cache too). On the Mac
+  the same script runs with `FV_DATA_DIR` set — a host directory bind
+  mount instead of the volume — plus `FV_CPUS`/`FV_MEMGB` for the
+  quota; unset means the NAS defaults (volume, 3.0/4).
 - Traffic day slices live in git (`backend/traffic/slices/`): NAS host cron
   (`/etc/cron.d/traffic-ingest`) runs `ops/traffic-ingest-daily.sh`
   (ingest yesterday → export from the volume → commit → push to main).

@@ -18,6 +18,12 @@
 #     --restart unless-stopped -p 127.0.0.1:8100:8100 \
 #     --cpus=3.0 --memory=4g --env-file /opt/fund-vista/.env fundvista:nas
 #
+# The quota and the /data source are parameters of ops/deploy-nas.sh, not
+# of the image: FV_CPUS / FV_MEMGB (default 3.0 / 4, as above) and
+# FV_DATA_DIR (unset = the fundvista-data volume; set = a host directory
+# bind mount — the Mac CD sets /Users/kissp/srv/fund-vista-data so the
+# store survives a container-engine/VM rebuild).
+#
 # Required env (see backend/.env.example): REDIS_CLOUD_URL,
 # PENPLOT_PUBLIC_BASE_URL, PENPIXEL_HMAC_SECRET, PENPLOT_DATA_DIR=/data.
 # Optional: PORT (default 8000), WORKERS (default 4).

@@ -40,6 +40,13 @@ commit that passed the laminar `fund-vista` job is ever deployed.
    flags (`--network fundvista-net --restart unless-stopped
    -p 127.0.0.1:8100:8100 --cpus=3.0 --memory=4g -v fundvista-data:/data
    --env-file /opt/fund-vista/.env`), then smoke the live container.
+   The quota and the `/data` source are env overrides, so the same script
+   serves both hosts: `FV_CPUS` / `FV_MEMGB` (defaults 3.0 / 4) and
+   `FV_DATA_DIR` (unset → the `fundvista-data` volume; set → a host
+   directory bind mount). The Mac CD sets `FV_CPUS=5.0`,
+   `FV_MEMGB=4` and `FV_DATA_DIR=/Users/kissp/srv/fund-vista-data`
+   (permanent storage on the host disk — see
+   `docs/CR-004-permanent-data-storage.md`).
 7. Rollback: if the live smoke fails, the previous image is started
    again with the same flags and smoked (90 s). Public traffic falls
    back to FastAPI Cloud via the VPS nginx while this happens
