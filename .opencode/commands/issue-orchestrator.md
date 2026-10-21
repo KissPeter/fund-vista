@@ -16,11 +16,25 @@ pen-pixel-shop issues are out of scope here).
 | `agent:failed` | retry budget spent, no automatic pickup |
 | `agent:supervised` | needs a human (split/decision), the orchestrator will not touch it |
 
+Priority labels (same set as the shop repo `KissPeter/pen-pixel-shop`):
+
+| Label | Colour | Meaning |
+|---|---|---|
+| `priority:p0` | `#b60205` | highest priority |
+| `priority:p1` | `#d93f0b` | high priority |
+| `priority:p2` | `#fbca04` | normal priority |
+
+All three exist in this repo. A `gh issue create --label "priority:pN"` call
+aborts the whole create when the label is missing, so never write a priority
+label that is not in the list above.
+
 ## Workflow
 
 1. **Pick.** List open issues with label `agent-ready`. Exclude any issue that
    also carries `agent:failed` or `agent:supervised` (human triage), or that
-   already has an open PR. Take the lowest issue number.
+   already has an open PR. Order the rest by priority (`priority:p0` >
+   `priority:p1` > `priority:p2` > unlabeled) and, within the same priority,
+   take the lowest issue number.
 2. **Prepare.** `git fetch origin --prune`; branch `agent/issue-<N>` from
    `origin/main`; worktree under `~/PycharmProjects/fund-vista.worktrees/<n>`
    (next free integer, per the track-work skill).
