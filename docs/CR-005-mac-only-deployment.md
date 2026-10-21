@@ -59,6 +59,22 @@ fallback.
   `ops/deploy-mac.sh` and falls back to the old name for one deploy, so
   the rename can never break a running CD.
 
+## Transition note (why the first deploy after a rename still uses the old name)
+
+The CD runner copies the deploy script out of the checkout **before** the
+deploy syncs that checkout to the pushed sha — deliberately, so a deploy
+cannot rewrite the script it is running. The consequence: the first deploy
+after a rename runs the *pre-rename* script (the copy is taken from the
+checkout of the previous sha), and only the following deploy picks up the
+new name. The rename therefore lands over two deploys:
+
+1. push the rename → the deploy runs the old script (old image tag, old
+   data layout — both still correct for that moment);
+2. the checkout now holds the new script → the next deploy uses it.
+
+The runner prefers the new file name and falls back to the old one, so
+neither step can fail on a missing script.
+
 ## Explicitly unchanged
 
 - The deploy algorithm (sync → build → candidate smoke → swap → live
@@ -83,10 +99,11 @@ fallback.
 - [x] Backend code comments and the Dockerfile example name the Mac.
 - [x] The CD receiver follows the rename without a gap (old name
       fallback) and a real deploy lands on the new script.
-- [x] The live container runs the new image tag, keeps the host-directory
+- [ ] The live container runs the new image tag, keeps the host-directory
       `/data`, and passes both smokes.
-- [x] Old `fundvista:nas*` images pruned; the obsolete laminar-ui
-      reverse tunnel removed.
+- [x] The obsolete laminar-ui reverse tunnel (Mac side) removed; the VPS
+      still has its `location /` → `:8091` for the retired UI, which needs
+      root on the VPS to drop.
 - [x] Backend suite green (677 passed, 1 skipped; the known pre-existing
       `test_penplot_drawing` failure).
 - [x] Docs: this file, `docs/index.md`.
