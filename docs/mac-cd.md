@@ -11,7 +11,8 @@ backend; the VPS nginx keeps a FastAPI Cloud fallback for 502/504.
 2. The VPS nginx forwards it to `127.0.0.1:8290`, which the Mac's reverse
    tunnel (`~/Library/LaunchAgents/hu.linuxadm.tunnel-ci-webhook.plist` —
    autossh `-R 127.0.0.1:8290:127.0.0.1:8290 oc-tunnel@linuxadm.hu`) maps
-   back to the Mac.
+   back to the Mac. The vhost's other paths answer 404 — the CI UI is
+   retired with the laminar stack.
 3. The `ci-webhook` container (`~/srv/ci/compose.yml`) verifies the
    `X-Hub-Signature-256` HMAC and runs `~/srv/ci/hooks/hook-github.sh`.
 4. The hook queues the sha in `~/srv/ci/cd/lock/want`; a long-lived runner

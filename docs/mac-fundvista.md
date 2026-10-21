@@ -129,12 +129,13 @@ docker start fundvista
 
 - `/v1/traffic/*` and `traffic_ingest` jobs run on the Mac only (the ~4 GB
   archive pass needs the worker; the slices live in the store at
-  `/data/traffic`). Nginx must NOT fall these paths back to FastAPI Cloud
+  `/data/traffic`). Nginx does NOT fall these paths back to FastAPI Cloud
   on 502/504 — the cloud has no slices and no job state, so the fallback
-  would surface a confusing `job_not_found`. The shop UI shows "traffic
-  temporarily unavailable" instead. This restriction goes away with
-  Phase 7 (R2 bucket behind the same `SliceStore` keys +
-  `TRAFFIC_STORE=r2`).
+  would surface a confusing `job_not_found`. The vhost enforces it with
+  `location ~ ^/v1/(traffic|jobs)(/|$)`, which keeps the upstream error
+  visible; the shop UI shows "traffic temporarily unavailable" instead.
+  This restriction goes away with Phase 7 (R2 bucket behind the same
+  `SliceStore` keys + `TRAFFIC_STORE=r2`).
 - Day slices live in git (`backend/traffic/slices/`, ~2 MB per airport-day)
   because the HU-only scope keeps them small. Daily ingest → push:
   `ops/traffic-ingest-daily.sh` (launchd agent

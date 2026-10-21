@@ -110,22 +110,21 @@ live container stays untouched (the deploy fails before it touches it).
 - [x] The live container runs the new image tag (`fundvista:mac-<sha>`),
       keeps the host-directory `/data`, and passes both smokes; the old
       `fundvista:nas*` images are pruned.
-- [x] The obsolete laminar-ui reverse tunnel (Mac side) removed; the VPS
-      still has its `location /` → `:8091` for the retired UI, which needs
-      root on the VPS to drop.
+- [x] The obsolete laminar-ui reverse tunnel (Mac side) removed, and the
+      VPS side dropped with it: `ci.linuxadm.hu` keeps only the webhook
+      intake (`/` answers 404 with a pointer to `/hooks/github-ci`).
+- [x] The VPS vhosts no longer name the NAS (`pen-pixel.hu`,
+      `ci.linuxadm.hu`, `openchamber.linuxadm.hu`), and the documented
+      fallback exclusion is implemented: `location ~ ^/v1/(traffic|jobs)(/|$)`
+      keeps the upstream error visible instead of falling back to the cloud
+      (which has no slices and no job state).
 - [x] Backend suite green (677 passed, 1 skipped; the known pre-existing
       `test_penplot_drawing` failure).
 - [x] Docs: this file, `docs/index.md`.
 
 ## Follow-ups
 
-- The VPS nginx vhost (`ci.linuxadm.hu`) still has the Laminar UI
-  location (`location /` → `:8091`) and two comments that name the
-  NAS; the Mac-side tunnel for it is gone, so the UI path 502s. Dropping
-  it needs root on the VPS — the tunnel user has no sudo.
-- The `pen-pixel.hu` vhost still has two "NAS" comments and its
-  `@fundvista_cloud` fallback would answer `/v1/traffic/*` with a
-  `job_not_found` if the Mac ever answers 502/504 on that path — the
-  documented exclusion is not implemented in the vhost.
 - The FastAPI Cloud fallback still runs the old code; it is a fallback,
   not a peer.
+- The vhost backups from this change are on the VPS:
+  `/root/{ci.linuxadm.hu,pen-pixel.hu,openchamber.linuxadm.hu}.bak-20261021`.
