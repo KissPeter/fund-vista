@@ -34,6 +34,12 @@ pen-pixel-shop issues are out of scope here).
    link the issue to its session (`session.link`), comment the PR URL on the
    issue, and set the labels to `agent:in-progress` (done) or
    `agent:failed` + `agent:supervised` (needs a human).
+
+   **Fallback:** a dispatched worker that stays idle without a single
+   assistant message (~2 min) never started — do not wait for it. The
+   orchestrator does the work itself in the same worktree, then follows
+   step 5 for its own PR.
+
 5. **Verify.** The PR exists, points at `agent/issue-<N>`, its base is `main`,
    and the tests ran. If the run failed or timed out: `agent:in-progress` →
    `agent:retry-N` (N = 1..3) and re-add `agent-ready`; after the third
