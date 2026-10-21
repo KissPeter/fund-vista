@@ -120,6 +120,10 @@ class RenderRequest(BaseModel):
     ``view_*`` is all-or-none (omit = whole ingest bbox); the view must lie
     inside the ingest bbox (plan §6.4: max view = ingest bbox). ``t_to``
     accepts ``24:00`` for end of day; the window is ``[t_from, t_to)``.
+
+    ``map`` / ``airport`` are the two extra layer switches (issue #1080):
+    the basemap groups (motorways / waterways / water) and the airfield
+    group + the airport marker circle. Both default to on.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -132,6 +136,8 @@ class RenderRequest(BaseModel):
     departures: bool = True
     holding: bool = True
     go_around: bool = True
+    map: bool = True  # issue #1080: the basemap groups (motorways/waterways/water)
+    airport: bool = True  # issue #1080: the airfield group + the airport marker circle
     types: list[str] = Field(default_factory=list)
     airlines: list[str] = Field(default_factory=list)
     callsign: str = ""
@@ -216,7 +222,8 @@ class RenderResponse(BaseModel):
     date: str
     t_from: str
     t_to: str
-    counts: dict[str, int]  # drawn per layer: kind mode arrivals/departures/…,
+    counts: dict[str, int]  # potential per layer (counted before the layer
+    # toggles): kind mode arrivals/departures/…,
     # category mode wide/narrow/regional/other/…, always + holding/go_around
     movements: int  # classified movements in the window (before pen filtering)
     stats: dict = Field(default_factory=dict)  # movement_stats(window): movements,
