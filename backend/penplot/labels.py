@@ -82,7 +82,7 @@ BORDER_PAD_RATIO = 0.3
 BORDER_PAD_MIN_MM = 1.0
 CORNER_SEGMENTS = 8
 # Breathing room between artwork and the strip so the cleanup chain
-# (linemerge, default 0.5 mm) can't fuse image strokes into divider/frame.
+# (linemerge, default 0.5 mm) can't fuse image strokes into band/frame.
 LABEL_ARTWORK_GAP_MM = 1.0
 
 
@@ -227,7 +227,7 @@ def label_reserve_mm(
     """Vertical mm the title strip occupies above the bottom margin.
 
     The pipeline reserves this from the image area so artwork bottoms out
-    exactly on the divider (border) or the text top (borderless). Blank or
+    exactly on the band (border) or the text top (borderless). Blank or
     fully-unsupported text reserves nothing — matching render_label's no-op.
     """
     m = _strip_metrics(text, height_mm=height_mm, font=font)
