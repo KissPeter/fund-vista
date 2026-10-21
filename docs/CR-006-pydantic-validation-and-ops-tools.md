@@ -73,6 +73,11 @@ traversal, device files and outside links are refused instead of written.
 - [x] Tests: live-HTTP for the traffic query models
       (`backend/tests/test_traffic_query_models.py`), process-level for the
       tools (`backend/tests/test_tools.py`).
-- [x] Full backend suite green — except
-      `test_penplot_drawing.py::test_budget_overrun_returns_no_words_and_a_warning`,
-      which already fails on `main` (unrelated, recorded here).
+- [x] Full backend suite green: 754 passed, 1 skipped (the Linux-only
+      tesserocr-wheel test), 0 failed locally; 755 passed, 0 skipped,
+      0 failed on CI (Linux).
+- [x] The pre-existing failure
+      `test_penplot_drawing.py::test_budget_overrun_returns_no_words_and_a_warning`
+      (it resolved a real OCR backend on hosts without tesserocr /
+      pytesseract) is fixed in this branch — the test now pins the backend
+      resolution.
