@@ -88,7 +88,9 @@ def test_identical_bbox_hits_without_touching_upstream():
             (e["type"], e["id"]) for e in first
         }
     finally:
-        citymap_router.fetch_overpass = orig
+        # restore at the seam that was actually patched (citymap_fetching);
+        # citymap_router's binding is irrelevant at call time.
+        citymap_fetching.fetch_overpass = orig
 
 
 def _queried_area(query: str) -> float:
@@ -125,7 +127,9 @@ def test_panning_refetches_only_the_new_tiles():
             f"pan refetched {second:.4f} deg^2 of the original {first:.4f}"
         )
     finally:
-        citymap_router.fetch_overpass = orig
+        # restore at the seam that was actually patched (citymap_fetching);
+        # citymap_router's binding is irrelevant at call time.
+        citymap_fetching.fetch_overpass = orig
 
 
 def test_adding_a_layer_keeps_the_layers_already_held():
@@ -145,7 +149,9 @@ def test_adding_a_layer_keeps_the_layers_already_held():
             "highways was cached and must not be refetched"
         )
     finally:
-        citymap_router.fetch_overpass = orig
+        # restore at the seam that was actually patched (citymap_fetching);
+        # citymap_router's binding is irrelevant at call time.
+        citymap_fetching.fetch_overpass = orig
 
 
 def test_a_tile_with_no_features_is_remembered_as_empty():
@@ -160,7 +166,9 @@ def test_a_tile_with_no_features_is_remembered_as_empty():
         assert _load(bbox, ["highways"]) == ([], None)
         assert len(upstream.queries) == 1, "empty tiles must be cached too"
     finally:
-        citymap_router.fetch_overpass = orig
+        # restore at the seam that was actually patched (citymap_fetching);
+        # citymap_router's binding is irrelevant at call time.
+        citymap_fetching.fetch_overpass = orig
 
 
 def _body(bbox=(47.46, 19.04, 47.54, 19.14), **kw):
