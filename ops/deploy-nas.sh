@@ -25,6 +25,11 @@ CANDIDATE="fundvista-next"
 IMAGE="fundvista"
 NET="fundvista-net"
 DATA_VOL="fundvista-data"
+# Where /data lives: a Docker volume by default (NAS), or a host directory
+# when FV_DATA_DIR is set. The Mac CD sets FV_DATA_DIR so the store (traffic
+# slices, penplot content) lives on the Mac's own disk — durable across
+# container-engine/VM rebuilds — instead of inside the engine's disk image.
+DATA_DIR="${FV_DATA_DIR:-}"
 ENV_FILE="$REPO/.env"
 PORT="8100"
 SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-150}"
@@ -176,17 +181,43 @@ migrate_data() {
     log "data: live /data empty or unreadable — skipping migration"
     return 0
   fi
-  docker volume create "$DATA_VOL" >/dev/null
   img="$1"
-  log "data: migrating live /data into volume $DATA_VOL"
+  log "data: migrating live /data into $(data_source)"
   # NOTE: stream mode 'r|' — the tar arrives on a non-seekable stdin
   # pipe and plain tarfile.open() dies with "Illegal seek" (seen live).
   if docker cp "$CONTAINER:/data/." - 2>/dev/null \
-    | docker run --rm -i -v "$DATA_VOL:/to" "$img" \
+    | docker run --rm -i -v "$(data_source):/to" "$img" \
       python -c "import sys,tarfile; tarfile.open(fileobj=sys.stdin.buffer,mode='r|').extractall('/to')" 2>/dev/null; then
     log "data: migration done"
   else
-    log "data: migration FAILED (non-fatal, continuing with empty volume)"
+    log "data: migration FAILED (non-fatal, continuing with empty data dir)"
+  fi
+}
+
+# The /data source handed to docker run: the host directory when
+# FV_DATA_DIR is set (Mac: permanent storage on the host disk), else the
+# named volume (NAS).
+data_source() {
+  if [ -n "$DATA_DIR" ]; then
+    echo "$DATA_DIR"
+  else
+    echo "$DATA_VOL"
+  fi
+}
+
+# Make sure the data source exists before the swap.
+ensure_data() {
+  if [ -n "$DATA_DIR" ]; then
+    # The path is resolved by the daemon inside the VM, not by this shell —
+    # and docker auto-creates a missing bind source, so a typo would silently
+    # land the store in the engine's disk. Probe it daemon-side and require
+    # the marker file the operator puts in the real data dir.
+    if ! docker run --rm -v "$DATA_DIR:/probe" alpine \
+        sh -c 'test -f /probe/.fund-vista-data' >/dev/null 2>&1; then
+      fail "FV_DATA_DIR '$DATA_DIR' does not hold a .fund-vista-data marker — refusing to create a stray dir in the engine"
+    fi
+  else
+    docker volume create "$DATA_VOL" >/dev/null
   fi
 }
 
@@ -195,7 +226,7 @@ prod_run() {
   # shellcheck disable=SC2086
   docker run -d --name "$1" --network "$NET" --restart unless-stopped \
     -p 127.0.0.1:${PORT}:${PORT} --cpus="$FV_CPUS" --memory="${FV_MEMGB}g" \
-    -v "$DATA_VOL:/data" $3 --label "fundvista.commit=$4" $5 "$2" >/dev/null
+    -v "$(data_source):/data" $3 --label "fundvista.commit=$4" $5 "$2" >/dev/null
 }
 
 do_prune() {
@@ -257,7 +288,7 @@ if [ -n "$PREV_ID" ]; then
 fi
 
 ENV_ARGS=$(env_args)
-docker volume create "$DATA_VOL" >/dev/null
+ensure_data
 [ -n "$PREV_ID" ] && migrate_data "$NEW_IMAGE"
 
 log "== 3. candidate $CANDIDATE (WORKERS=1, internal only) =="
