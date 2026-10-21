@@ -1,4 +1,4 @@
-# fund-vista — production image (NAS primary, FastAPI Cloud fallback).
+# fund-vista — production image (Mac primary, FastAPI Cloud fallback).
 #
 # Build from the repo root:
 #   docker build -t fundvista:<tag> .

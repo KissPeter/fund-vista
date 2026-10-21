@@ -82,7 +82,7 @@ first; unit only for algorithms; negative coverage always).
 
 - Hermetic: no network, deterministic, order-independent, unique tmp
   state per test; a green run is `N passed, 0 failed, 0 errors, 0 skipped`.
-- What cannot run hermetically (NAS full-day ingest timing, nginx
+- What cannot run hermetically (full-day ingest timing on the host, nginx
   fallback exclusion, live upstream resolves) MUST be listed as manual /
   `@live` follow-ups in the test module docstring — never silently
   skipped.

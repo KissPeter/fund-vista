@@ -1,6 +1,6 @@
 #!/bin/sh
-# Daily traffic ingest → git push (cron/launchd; NAS: /etc/cron.d/traffic-ingest,
-# Mac: ~/Library/LaunchAgents/hu.linuxadm.traffic-ingest.plist).
+# Daily traffic ingest → git push (on the Mac: the launchd agent
+# ~/Library/LaunchAgents/hu.linuxadm.traffic-ingest.plist, 08:10 + 20:10).
 #
 # Flow: POST a traffic_ingest job for each recent day (UTC) to the local
 # backend — one job covers every ICAO, so one archive pass serves the whole

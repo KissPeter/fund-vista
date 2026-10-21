@@ -3,6 +3,6 @@
 #   day/{YYYY-MM-DD}/{ICAO}.json.gz   (L1: classified flight traces)
 #   pass/{YYYY-MM-DD}.json            (L0: which airports a pass covered)
 # Source: adsb.lol globe_history (ODbL) — attribution rides the API metadata,
-# never the artwork. Written by `ops/traffic-ingest-daily.sh` on the NAS
-# (ingest → export → commit → push); the NAS container reads the same files
+# never the artwork. Written by `ops/traffic-ingest-daily.sh` on the Mac
+# (ingest → export → commit → push); the Mac container reads the same files
 # from its `/data/traffic` volume. Do not hand-edit.
