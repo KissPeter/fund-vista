@@ -75,7 +75,29 @@ def _fnum(value: str | None) -> float | None:
 async def _fetch_csv(
     name: str, client: httpx.AsyncClient | None = None
 ) -> tuple[str, bool]:
-    """Return ``(csv_text, cache_hit)`` for ``airports|runways|airport-frequencies``."""
+    """Return ``(csv_text, cache_hit)`` for ``airports|runways|airport-frequencies``.
+
+    Fail-closed envelope: ANY unexpected error at this boundary (network
+    outage, TLS bundle, parse-side surprises, mock-mode UpstreamNotMocked)
+    becomes :class:`OurAirportsError` so every router maps it to its 502
+    envelope — never a bare ``Internal Server Error``. This is the boundary
+    whose constructor raised OSError on the corrupted-certifi deploy
+    (2026-10-20); regression tests: backend/tests/test_airports_api.py
+    (``*_upstream_outage_is_502_envelope``).
+    """
+    try:
+        return await _fetch_csv_uncached(name, client)
+    except OurAirportsError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — the boundary's own 502 gate
+        raise OurAirportsError(
+            f"{name}.csv fetch failed ({type(exc).__name__}: {exc})"
+        ) from exc
+
+
+async def _fetch_csv_uncached(
+    name: str, client: httpx.AsyncClient | None = None
+) -> tuple[str, bool]:
     key = cache_mod.airports_cache_key("ourairports", name)
     cached = await cache_mod.cache_get(key)
     if cached is not None:
