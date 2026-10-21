@@ -276,7 +276,19 @@ class ConvertParams(BaseModel):
     hatch_pitch_mm: float = Field(default=1.2, gt=0.0, le=10.0)
     hatch_angle_deg: float = Field(
         default=45.0, ge=0.0, lt=180.0,
-        description="Hatch line direction in degrees; cross pass runs at +90°.",
+        description=(
+            "Hatch line direction in degrees. The cross pass (see "
+            "cross_hatch) runs at +90° to this angle."
+        ),
+    )
+    cross_hatch: bool = Field(
+        default=True,
+        description=(
+            "Hatch method only: run the +90° cross pass over the darkest "
+            "areas for tone depth. False = the hatching runs in the "
+            "hatch_angle_deg direction only (single-direction hatch). "
+            "Ignored by contour/centerline/flow."
+        ),
     )
     contour_simplify: float = Field(default=2.0, ge=0.0, le=20.0)
     centerline_prune_px: int = Field(

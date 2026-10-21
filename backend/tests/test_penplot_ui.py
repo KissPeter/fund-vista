@@ -23,6 +23,7 @@ def test_ui_page_serves_html(http_client):
         'id="m_hatch"',
         'id="m_flow"',
         'id="hatch_angle_deg"',
+        'id="cross_hatch"',
         'id="threshold"',
         'id="hatch_pitch_mm"',
         'id="linesort"',

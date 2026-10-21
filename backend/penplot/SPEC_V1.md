@@ -1038,3 +1038,28 @@ subset woff2→TTF conversion used a one-off fonttools install (not a project
 dependency — committed files are plain TTF). Tests: lowercase/accent drawing
 per face, outline-ink point counts, nunito reserve↔divider consistency, all-6
 faces distinct over HTTP. Full suite at landing: **115 passed**.
+
+---
+
+## PART O — Cross-hatch opt-out (2026-10-22, pen-pixel-shop #1095)
+
+`params.cross_hatch` (bool, default **true**) turns the hatch generator's
++90° cross pass off. The pass was unconditional: `HatchMethod.generate` ran
+the main pass at `hatch_angle_deg` and a second pass at +90° over the darkest
+quartile (`gray < threshold - 64`) for tone depth. With `cross_hatch=false`
+the cross pass is skipped entirely, so the hatching runs in the
+`hatch_angle_deg` direction only — single-direction hatching for buyers who
+want a clean, non-crossed shade.
+
+`true` is the pre-flag behaviour: the output is byte-for-byte what it was
+before the flag existed. `cross_hatch` is therefore dropped from the cache
+key at its default (`effective_params_dump`), so the stored result files and
+cache entries from before the flag stay valid; only the opt-out gets its own
+entry. Ignored by contour/centerline/flow (it is a hatch-only knob, like
+`hatch_pitch_mm` / `hatch_angle_deg`).
+
+Tests: `backend/tests/test_penplot_cross_hatch.py` — the generator's emitted
+line directions (main angle vs +90°, on and off), the `MethodContext` default,
+and over live HTTP the flag reaching `/v1/convert`, the smaller stroke count
+with the cross pass off, the shared pre-flag cache entry for the explicit
+`true`, and the 422 on an uncoercible value.

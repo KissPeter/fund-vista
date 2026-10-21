@@ -42,6 +42,9 @@ class MethodContext:
     hatch_pitch_mm: float
     contour_simplify: float
     hatch_angle_deg: float = 45.0
+    # Hatch method only: the +90° cross pass over the darkest areas.
+    # False = single-direction hatching (hatch_angle_deg only).
+    cross_hatch: bool = True
     # Hatch pitch already converted to pixels by the pipeline (page-aware).
     hatch_pitch_px: float = 8.0
     # Centerline (skeleton) tracing: drop skeleton branches shorter than this
