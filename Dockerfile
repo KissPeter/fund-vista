@@ -3,7 +3,7 @@
 # Build from the repo root:
 #   docker build -t fundvista:<tag> .
 #
-# Run (NAS example — port/workers via env, data + redis alongside):
+# Run (Mac example — port/workers via env, data + redis alongside):
 #   docker network create fundvista-net
 #   docker run -d --name fundvista-redis --network fundvista-net \
 #     -v fundvista-redis-data:/data --restart unless-stopped redis:7 \
@@ -16,13 +16,14 @@
 #   # flags here.
 #   docker run -d --name fundvista --network fundvista-net \
 #     --restart unless-stopped -p 127.0.0.1:8100:8100 \
-#     --cpus=3.0 --memory=4g --env-file /opt/fund-vista/.env fundvista:nas
+#     --cpus=5.0 --memory=4g -v /Users/kissp/srv/fund-vista-data:/data \
+#     --env-file /opt/fund-vista/.env fundvista:mac
 #
-# The quota and the /data source are parameters of ops/deploy-nas.sh, not
-# of the image: FV_CPUS / FV_MEMGB (default 3.0 / 4, as above) and
-# FV_DATA_DIR (unset = the fundvista-data volume; set = a host directory
-# bind mount — the Mac CD sets /Users/kissp/srv/fund-vista-data so the
-# store survives a container-engine/VM rebuild).
+# The quota and the /data source are parameters of ops/deploy-mac.sh, not
+# of the image: FV_CPUS / FV_MEMGB (default 5.0 / 4, as above) and
+# FV_DATA_DIR (default /Users/kissp/srv/fund-vista-data — a host directory
+# bind mount, so the store survives a container-engine/VM rebuild; it is
+# never a Docker volume, which lives in the engine's disk image).
 #
 # Required env (see backend/.env.example): REDIS_CLOUD_URL,
 # PENPLOT_PUBLIC_BASE_URL, PENPIXEL_HMAC_SECRET, PENPLOT_DATA_DIR=/data.

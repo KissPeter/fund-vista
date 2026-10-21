@@ -176,7 +176,7 @@ if [ -n "$(git status --porcelain)" ]; then
   git commit -m "data(traffic): slices from an earlier run" || true
 fi
 # CD deploys leave the prod checkout detached at the deployed sha; the git
-# export needs a branch. The tree is clean here (deploy-nas.sh refuses dirty
+# export needs a branch. The tree is clean here (deploy-mac.sh refuses dirty
 # trees), so checking main out is safe.
 if [ -z "$(git symbolic-ref -q HEAD)" ]; then
   git checkout -q main || { log "cannot check out main (detached HEAD)"; exit 1; }

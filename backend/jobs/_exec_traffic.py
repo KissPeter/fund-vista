@@ -2,7 +2,7 @@
 
 Streams one adsb.lol day archive (~3.5 GB) and keeps the requesting
 airport's slice as L1 in the durable slice store, then classifies into L2
-movements in Redis. Runs on the NAS worker (never FastAPI Cloud —
+movements in Redis. Runs on the Mac worker (never FastAPI Cloud —
 512 MB / 60 s cannot hold the stream).
 
 Cancel: checkpoints before/after the blocking pass plus a ``cancelled``

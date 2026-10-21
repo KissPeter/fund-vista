@@ -4,6 +4,9 @@
 - Created: 2026-10-21
 - Last updated: 2026-10-21
 - Type: change request
+- Update (2026-10-21, CR-005): the NAS is decommissioned; the deploy script
+  was renamed `ops/deploy-mac.sh` and the named-volume branch removed
+  (the Mac's host directory is now the only `/data`).
 - Decided: the prod container's `/data` lives on a host directory
   (`~/srv/fund-vista-data`) on the Mac's own disk instead of a Docker named
   volume inside the container engine's disk image. The NAS keeps the volume

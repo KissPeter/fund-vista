@@ -3,7 +3,7 @@ Phase 5: extra filters + category pens + window stats).
 
 Render never touches the archive: it needs the cached L1 day dataset and
 the L3 basemap. If L1 is missing it answers ``409 traffic_not_ingested``
-and the UI offers "Load this day". NAS-only until R2 (plan §6.5):
+and the UI offers "Load this day". Mac-only until R2 (plan §6.5):
 ``/v1/traffic/*`` has no cloud fallback — nginx must exclude these paths
 (see ``docs/nas-fundvista.md``).
 """

@@ -1,21 +1,22 @@
 #!/bin/sh
-# Deploy fund-vista backend on the NAS (see docs/nas-cd.md).
+# Deploy the fund-vista backend on the Mac (see docs/mac-cd.md).
 # Same steps the runbook prescribes: sync -> build -> candidate smoke ->
 # swap -> live smoke (rollback on failure) -> prune.
 #
-# Usage (on the NAS host, or inside the laminar-ci container which mounts
+# Usage (on the Mac host, or inside the ci-webhook container which mounts
 # the host docker.sock AND /opt/fund-vista):
-#   ops/deploy-nas.sh              # deploy origin/main tip (pull, ff-only)
-#   ops/deploy-nas.sh <sha>        # deploy the exact tested commit (CD path)
-#   ops/deploy-nas.sh --verify     # read-only: smoke-test the live container
-#   ops/deploy-nas.sh --prune      # image GC only (never touches the live container)
+#   ops/deploy-mac.sh              # deploy origin/main tip (pull, ff-only)
+#   ops/deploy-mac.sh <sha>        # deploy the exact tested commit (CD path)
+#   ops/deploy-mac.sh --verify     # read-only: smoke-test the live container
+#   ops/deploy-mac.sh --prune      # image GC only (never touches the live container)
 #
 # Env overrides: FV_REPO (default /opt/fund-vista), SMOKE_TIMEOUT (default 150s),
-# FV_CPUS/FV_MEMGB (prod container quota, defaults 3.0/4 as on the NAS; the
-# Mac CD sets FV_CPUS=5.0 — the VM there has 6 CPUs and the airport traffic
-# ingest saturates the old 3-CPU quota).
+# FV_CPUS/FV_MEMGB (prod container quota, defaults 5.0/4 — the VM has 6 CPUs
+# and the airport traffic ingest saturates a smaller quota),
+# FV_DATA_DIR (default /Users/kissp/srv/fund-vista-data — the host directory
+# the container's /data is bind-mounted from; permanent across a VM rebuild).
 # Requires: live env from $FV_REPO/.env (never in git); falls back to the
-# live container's inspected env when the file is unreadable (laminar path
+# live container's inspected env when the file is unreadable (the CD path
 # uses the same /opt mount, so this is only a safety net).
 set -eu
 
@@ -24,16 +25,16 @@ CONTAINER="fundvista"
 CANDIDATE="fundvista-next"
 IMAGE="fundvista"
 NET="fundvista-net"
-DATA_VOL="fundvista-data"
-# Where /data lives: a Docker volume by default (NAS), or a host directory
-# when FV_DATA_DIR is set. The Mac CD sets FV_DATA_DIR so the store (traffic
-# slices, penplot content) lives on the Mac's own disk — durable across
-# container-engine/VM rebuilds — instead of inside the engine's disk image.
-DATA_DIR="${FV_DATA_DIR:-}"
+# Where /data lives: a host directory on the Mac's own disk, bind-mounted
+# into the container. Not a Docker volume — a volume lives inside the
+# container engine's disk image and is lost on a VM rebuild (the store did
+# not survive one). The path is resolved by the daemon inside the VM; the
+# Mac home is shared there over virtiofs at the same absolute path.
+DATA_DIR="${FV_DATA_DIR:-/Users/kissp/srv/fund-vista-data}"
 ENV_FILE="$REPO/.env"
 PORT="8100"
 SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-150}"
-FV_CPUS="${FV_CPUS:-3.0}"
+FV_CPUS="${FV_CPUS:-5.0}"
 FV_MEMGB="${FV_MEMGB:-4}"
 
 log() { echo "$(date -u +%FT%TZ) $*"; }
@@ -169,10 +170,10 @@ smoke() {
 }
 
 migrate_data() {
-  # First-CD fix: the live container was started without the data volume
-  # (drift vs docs/nas-fundvista.md), so /data is ephemeral. Copy it into
-  # the named volume once (best effort — the store is content-addressed and
-  # self-heals via re-upload, so a failed copy must never block the deploy).
+  # Safety net: if the live container's /data is not the host directory
+  # (drift vs docs/mac-fundvista.md), copy its content into the data dir
+  # once (best effort — the store is content-addressed and self-heals via
+  # re-upload, so a failed copy must never block the deploy).
   mounts=$(docker inspect "$CONTAINER" --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null || true)
   case "$mounts" in
     *"/data"*) log "data: /data already mounted — nothing to migrate"; return 0;;
@@ -182,11 +183,11 @@ migrate_data() {
     return 0
   fi
   img="$1"
-  log "data: migrating live /data into $(data_source)"
+  log "data: migrating live /data into $DATA_DIR"
   # NOTE: stream mode 'r|' — the tar arrives on a non-seekable stdin
   # pipe and plain tarfile.open() dies with "Illegal seek" (seen live).
   if docker cp "$CONTAINER:/data/." - 2>/dev/null \
-    | docker run --rm -i -v "$(data_source):/to" "$img" \
+    | docker run --rm -i -v "$DATA_DIR:/to" "$img" \
       python -c "import sys,tarfile; tarfile.open(fileobj=sys.stdin.buffer,mode='r|').extractall('/to')" 2>/dev/null; then
     log "data: migration done"
   else
@@ -194,30 +195,15 @@ migrate_data() {
   fi
 }
 
-# The /data source handed to docker run: the host directory when
-# FV_DATA_DIR is set (Mac: permanent storage on the host disk), else the
-# named volume (NAS).
-data_source() {
-  if [ -n "$DATA_DIR" ]; then
-    echo "$DATA_DIR"
-  else
-    echo "$DATA_VOL"
-  fi
-}
-
-# Make sure the data source exists before the swap.
+# Make sure the data source is the real store before the swap.
 ensure_data() {
-  if [ -n "$DATA_DIR" ]; then
-    # The path is resolved by the daemon inside the VM, not by this shell —
-    # and docker auto-creates a missing bind source, so a typo would silently
-    # land the store in the engine's disk. Probe it daemon-side and require
-    # the marker file the operator puts in the real data dir.
-    if ! docker run --rm -v "$DATA_DIR:/probe" alpine \
-        sh -c 'test -f /probe/.fund-vista-data' >/dev/null 2>&1; then
-      fail "FV_DATA_DIR '$DATA_DIR' does not hold a .fund-vista-data marker — refusing to create a stray dir in the engine"
-    fi
-  else
-    docker volume create "$DATA_VOL" >/dev/null
+  # The path is resolved by the daemon inside the VM, not by this shell —
+  # and docker auto-creates a missing bind source, so a typo would silently
+  # land the store in the engine's disk. Probe it daemon-side and require
+  # the marker file the operator puts in the real data dir.
+  if ! docker run --rm -v "$DATA_DIR:/probe" alpine \
+      sh -c 'test -f /probe/.fund-vista-data' >/dev/null 2>&1; then
+    fail "FV_DATA_DIR '$DATA_DIR' does not hold a .fund-vista-data marker — refusing to create a stray dir in the engine"
   fi
 }
 
@@ -226,18 +212,15 @@ prod_run() {
   # shellcheck disable=SC2086
   docker run -d --name "$1" --network "$NET" --restart unless-stopped \
     -p 127.0.0.1:${PORT}:${PORT} --cpus="$FV_CPUS" --memory="${FV_MEMGB}g" \
-    -v "$(data_source):/data" $3 --label "fundvista.commit=$4" $5 "$2" >/dev/null
+    -v "$DATA_DIR:/data" $3 --label "fundvista.commit=$4" $5 "$2" >/dev/null
 }
 
 do_prune() {
-  log "== 7. prune old images (keep newest 3 prod, newest 2 CI) =="
+  log "== 7. prune old images (keep newest 3 prod) =="
   docker images --format '{{.Repository}}:{{.Tag}} {{.CreatedAt}}' \
-    | grep "^$IMAGE:nas" | sort -k2 -r | tail -n +4 | awk '{print $1}' \
+    | grep "^$IMAGE:mac" | sort -k2 -r | tail -n +4 | awk '{print $1}' \
     | xargs -r docker rmi 2>&1 | tail -2 || true
-  docker images --format '{{.Repository}}:{{.Tag}} {{.CreatedAt}}' \
-    | grep '^fund-vista:ci-' | sort -k2 -r | tail -n +3 | awk '{print $1}' \
-    | xargs -r docker rmi 2>&1 | tail -2 || true
-  docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "^(fundvista:nas|fund-vista:ci-)" || true
+  docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "^$IMAGE:mac" || true
 }
 
 if [ "${1:-}" = "--verify" ]; then
@@ -257,7 +240,7 @@ BUILD_LOG_DIR="${BUILD_LOG_DIR:-/tmp}"
 
 WANT="${1:-}"
 case "$WANT" in
-  -* ) fail "usage: ops/deploy-nas.sh [<sha>|--verify|--prune]";;
+  -* ) fail "usage: ops/deploy-mac.sh [<sha>|--verify|--prune]";;
 esac
 
 log "== 0. disk space =="
@@ -267,7 +250,7 @@ log "== 1. sync $REPO ${WANT:-(origin/main tip)} =="
 SHA=$(sync_tree "$WANT")
 SHORT=$(git -C "$REPO" rev-parse --short "$SHA")
 log "target $SHA ($SHORT) on $(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
-NEW_IMAGE="$IMAGE:nas-$SHORT"
+NEW_IMAGE="$IMAGE:mac-$SHORT"
 
 if [ "$(live_commit)" = "$SHA" ] && [ -n "$(live_image)" ]; then
   log "already live ($SHORT) — nothing to do"
@@ -283,8 +266,8 @@ do_build "$NEW_IMAGE" "$SHA"
 
 PREV_ID="$(live_image)"
 if [ -n "$PREV_ID" ]; then
-  log "previous image $PREV_ID — tagging $IMAGE:nas-prev as rollback spare"
-  docker tag "$PREV_ID" "$IMAGE:nas-prev" 2>/dev/null || true
+  log "previous image $PREV_ID — tagging $IMAGE:mac-prev as rollback spare"
+  docker tag "$PREV_ID" "$IMAGE:mac-prev" 2>/dev/null || true
 fi
 
 ENV_ARGS=$(env_args)
@@ -313,8 +296,8 @@ sleep 5
 
 log "== 5. live smoke =="
 if smoke "$CONTAINER" "$NEW_IMAGE"; then
-  docker tag "$NEW_IMAGE" "$IMAGE:nas"
-  log "tagged $IMAGE:nas -> $SHORT"
+  docker tag "$NEW_IMAGE" "$IMAGE:mac"
+  log "tagged $IMAGE:mac -> $SHORT"
 else
   log "live smoke FAILED — rolling back"
   docker stop "$CONTAINER" >/dev/null 2>&1 || true

@@ -145,7 +145,7 @@ app.include_router(airports_router)
 app.include_router(airports_ui_router)
 # Negative-space wordmarks: pure local CPU, same rule.
 app.include_router(wordmark_router)
-# Airport traffic (Phase 1: availability + ingest job; NAS-only until R2).
+# Airport traffic (Phase 1: availability + ingest job; Mac-only until R2).
 app.include_router(traffic_router)
 app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]

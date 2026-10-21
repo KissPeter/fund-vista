@@ -5,7 +5,7 @@ httpx builds its TLS trust context EAGERLY at ``httpx.AsyncClient(...)`` /
 any network I/O (httpx ``_config.SSLConfig.load_ssl_context_verify``). When
 that file is unreadable at the OS level, every outbound HTTPS call fails
 the same way before a byte is sent. Observed 2026-10-20 on the
-``pen-pixel.hu`` NAS deploy:
+``pen-pixel.hu`` deploy:
 
     [Errno 5] Input/output error:
     '/usr/local/lib/python3.13/site-packages/certifi/cacert.pem'
@@ -36,7 +36,7 @@ import httpx
 log = logging.getLogger("fund-vista.http.tls")
 
 # First readable one wins, in order: explicit env override, then the
-# bundle the common base images ship (the NAS image is Debian-family),
+# bundle the common base images ship (the image is Debian-family),
 # then the rest of the usual suspects.
 _FALLBACK_BUNDLES = (
     "/etc/ssl/certs/ca-certificates.crt",  # Debian/Ubuntu/official python images

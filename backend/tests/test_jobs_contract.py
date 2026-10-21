@@ -14,7 +14,7 @@ Contract (pytest + real app, fake Overpass/vpype where noted):
 * Cross-check: ``result`` of async citymap_render deep-equals sync
   ``POST /v1/citymap/render`` for the HAR [24] body (modulo cache_hit).
 
-System (NAS curl) recipe in ``test_system_curl_recipe_documented``.
+System (live-host curl) recipe in ``test_system_curl_recipe_documented``.
 """
 
 from __future__ import annotations
@@ -351,7 +351,7 @@ def test_async_airport_render_cold_cache_completes(client, monkeypatch):
 
 
 def test_system_curl_recipe_documented():
-    """System acceptance via curl (NAS/staging, same deploy as P2):
+    """System acceptance via curl (live host/staging, same deploy as P2):
 
     .. code-block:: sh
 

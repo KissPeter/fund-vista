@@ -9,7 +9,7 @@ whose ``is_disconnected`` flips after 100 ms; assert the server-side wait is
 ≈ abort time (not the full delay), the fetch task is cancelled, and no cache
 write happens.
 
-System (NAS/staging, needs deploy + nginx) is a curl recipe in the docstring
+System (live host/staging, needs deploy + nginx) is a curl recipe in the docstring
 of ``test_system_recipe_documented`` — not executed here.
 
 HAR bodies (from ``penplot.linuxadm.hu2.har``): [23] aborted render + [24]
@@ -309,7 +309,7 @@ def test_citymap_render_checkpoint3_skips_build_and_cache_write():
 
 
 def test_system_recipe_documented():
-    """System (NAS/staging) recipe — executed manually after deploy:
+    """System (live host/staging) recipe — executed manually after deploy:
 
     1. Deploy per fund-vista rebuild (``fundvista:nas``, health check).
     2. Fire two overlapping renders (HAR [23] + [24] bodies above), abort

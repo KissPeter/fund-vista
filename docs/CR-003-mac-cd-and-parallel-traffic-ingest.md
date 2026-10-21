@@ -4,6 +4,9 @@
 - Created: 2026-10-20
 - Last updated: 2026-10-20
 - Type: change request
+- Update (2026-10-21, CR-005): the NAS is decommissioned; the deploy script
+  was renamed `ops/deploy-mac.sh` and the NAS-only volume/quotas dropped.
+  The Mac is the only backend.
 - Decided: the Mac is the deploy target (laminar retired locally); a main
   merge triggers one deploy pass via a GitHub push webhook; the traffic
   ingest parses the day archive in a process pool and serves every

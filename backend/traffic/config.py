@@ -17,11 +17,11 @@ class TrafficSettings(BaseSettings):
         env_ignore_empty=True,
     )
 
-    # Durable slice store backend: "file" (v1, NAS data volume) or "r2"
+    # Durable slice store backend: "file" (v1, Mac data directory) or "r2"
     # (Phase 7, same keys in a bucket). Any other value fails fast at import.
     store: str = "file"
     # Directory for FileSliceStore. Empty = <PENPLOT_DATA_DIR>/traffic so the
-    # NAS /data volume story needs no extra env var (plan §6.5).
+    # Mac /data directory story needs no extra env var (plan §6.5).
     store_dir: str = ""
     # Refuse a new ingest pass below this free-space floor (bytes).
     store_min_free_bytes: int = 5 * 1024 * 1024 * 1024
@@ -31,7 +31,7 @@ class TrafficSettings(BaseSettings):
     ingest_timeout_s: float = 60.0
     ingest_read_timeout_s: float = 300.0
     # Worker processes for the archive parse. 0/1 = serial (default: the
-    # NAS keeps the old single-threaded pass). >1 = the tar members are
+    # Mac keeps the old single-threaded pass). >1 = the tar members are
     # parsed in a process pool — the parse is the pass bottleneck
     # (gzip+json+point scans, GIL-bound in-process), the download is not.
     ingest_workers: int = 0

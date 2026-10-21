@@ -2,7 +2,7 @@
 
 L0/L1 are the only data expensive to recreate (a 3.4 GB download each) and
 must survive restarts, so they do NOT live in Redis. ``SliceStore`` is the
-interface (``get / put / exists``); v1 ships ``FileSliceStore`` on the NAS
+interface (``get / put / exists``); v1 ships ``FileSliceStore`` on the Mac
 data volume (``PENPLOT_DATA_DIR/traffic`` → ``/data/traffic`` in prod).
 ``R2SliceStore`` (Phase 7) keeps the same keys — switching is a one-off
 copy plus flipping ``TRAFFIC_STORE``.
@@ -66,7 +66,7 @@ class SliceStore:
 
 
 class FileSliceStore(SliceStore):
-    """Atomic-file store on the NAS data volume."""
+    """Atomic-file store on the Mac data directory."""
 
     def __init__(self, root: Path | str | None = None) -> None:
         self.root = Path(root) if root is not None else _store_root()

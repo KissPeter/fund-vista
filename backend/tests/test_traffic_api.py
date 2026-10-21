@@ -13,10 +13,10 @@ test-design skill) with stubbed upstreams (no network):
 Same process ⇒ `monkeypatch` stubs apply to the serving app; the socket
 round-trip still exercises the full stack (routing, middleware, envelopes).
 
-Manual / `@live` follow-ups (cannot run hermetically): NAS full-day
+Manual / `@live` follow-ups (cannot run hermetically): full-day
 3.5 GB ingest wall-time + memory, `/data/traffic` growth, GitHub 5xx →
 `traffic_source_unavailable` mapping, live OurAirports resolves
-(LHBP/LHDC/LHSM), nginx NAS-only exclusion of `/v1/traffic/*`.
+(LHBP/LHDC/LHSM), nginx host-only exclusion of `/v1/traffic/*`.
 """
 
 from __future__ import annotations
