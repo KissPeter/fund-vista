@@ -61,7 +61,26 @@ jobs:
           PENPLOT_RATE_LIMIT: "100000"
           PENPIXEL_HMAC_SECRET: test-secret-ci
           PYTHONPATH: .
-        run: python -m pytest backend/tests/ -q
+        run: >
+          python -m pytest backend/tests/ -q
+          --junitxml=backend/reports/junit.xml
+          --html=backend/reports/report.html --self-contained-html
+
+      - name: Publish pytest results (check-run annotations)
+        if: always()
+        uses: mikepenz/action-junit-report@v6
+        with:
+          check_name: integration (pytest)
+          report_paths: backend/reports/junit.xml
+
+      - name: Upload pytest reports (junit + self-contained HTML)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-reports
+          path: backend/reports/
+          if-no-files-found: warn
+          include-hidden-files: true
 
   schemathesis:
     runs-on: ubuntu-24.04
@@ -81,6 +100,13 @@ jobs:
 
       - name: Schemathesis smoke (mock-mode server)
         run: ./ops/schemathesis-smoke.sh .
+
+      - name: Publish schemathesis results (check-run annotations)
+        if: always()
+        uses: mikepenz/action-junit-report@v6
+        with:
+          check_name: schemathesis (smoke)
+          report_paths: schemathesis_results/schemathesis_smoke.xml
 
       - name: Upload test reports
         if: always()

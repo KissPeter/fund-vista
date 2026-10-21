@@ -4,4 +4,7 @@ __pycache__/
 schemathesis_results
 .hypothesis/
 .schemathesis/
+reports/
+backend/reports/
+schemathesis-report/
 schemathesis-report/
