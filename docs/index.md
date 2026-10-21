@@ -18,7 +18,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 | CR-003 | change request | Mac CD (push webhook → deploy) + parallel multi-airport traffic ingest | done | 2026-10-20 |
 | CR-004 | change request | fund-vista `/data` on permanent host storage (Mac) instead of a container-engine volume | done | 2026-10-21 |
 | CR-005 | change request | The Mac is the only backend — drop the NAS (script, runbooks, skill, comments) | done | 2026-10-21 |
-| CR-007 | change request | Parallel archive download + job progress counters + parent CPU profile (issue #66 follow-ups) | in progress | 2026-10-21 |
+| CR-007 | change request | Parallel archive download + job progress counters + parent CPU profile (issue #66 follow-ups) | done | 2026-10-21 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.

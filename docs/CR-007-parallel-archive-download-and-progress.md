@@ -1,6 +1,6 @@
 # CR-007 — Parallel archive download, job progress counters, parent profile
 
-- Status: in progress
+- Status: done
 - Created: 2026-10-21
 - Last updated: 2026-10-21
 - Type: change request
