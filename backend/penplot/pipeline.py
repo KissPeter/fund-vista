@@ -469,10 +469,11 @@ def run_convert(
             _timed("label", image_id, method_label, t0)
         else:
             lab_lines = []
-        # Whole-page margin frame (independent of the label). Skipped when the
-        # label border already draws the same rect — never double-ink it.
+        # Whole-page margin frame — a page-furniture element of its own,
+        # independent of the title-block band (the label never draws the
+        # margin rect), so a sheet can carry the frame, the band or both.
         frame_lines: list = []
-        if params.page.frame and not (lab_lines and params.label.border):
+        if params.page.frame:
             frame_lines = [labels.page_frame_rect(
                 page_w, page_h,
                 params.page.margin_mm, params.page.frame_radius_mm,

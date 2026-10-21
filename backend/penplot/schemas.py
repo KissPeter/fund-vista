@@ -39,7 +39,11 @@ class PageParams(BaseModel):
     )
     frame: bool = Field(
         default=False,
-        description="Draw the whole-page margin frame (rounded border).",
+        description=(
+            "Draw the whole-page margin frame (rounded border). Independent "
+            "of the title-block band: a sheet can carry the frame, the band "
+            "or both."
+        ),
     )
     frame_radius_mm: float = Field(
         default=2.0, ge=0.0, le=20.0,
@@ -64,6 +68,10 @@ class LabelParams(BaseModel):
     simplex covers A-Z 0-9 space + 18 marks; outline faces cover Latin text
     incl. accents. Anything else is skipped with a
     `label_unsupported_characters` warning.
+
+    ``border`` draws the title-block band around the lettering; the
+    whole-page margin frame (:class:`PageParams`) is a separate, independent
+    element, so a sheet can carry the frame, the band or both.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -73,7 +81,13 @@ class LabelParams(BaseModel):
     align: LabelAlign = "right"
     height_mm: float = Field(default=5.0, gt=0.0, le=25.0)
     font: LabelFont = "znikoslsvginot"
-    border: bool = True
+    border: bool = Field(
+        default=True,
+        description=(
+            "Draw the title-block band around the lettering (the padded text "
+            "slot at the bottom edge). Independent of the page frame."
+        ),
+    )
     border_radius_mm: float = Field(
         default=2.0, ge=0.0, le=20.0,
         description="Corner radius of the title-block frame; 0 is sharp.",

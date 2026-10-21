@@ -22,12 +22,13 @@ A line that is naturally wider than the inner width is scaled down to fit
 outside the face set are skipped and reported once via
 ``label_unsupported_characters``.
 
-Border: when ``border`` is true (default) a blueprint title-block strip is
-drawn: a page frame rect at the margin inset (corner radius
-``border_radius_mm``, 0 is sharp) plus one horizontal divider
-across the full inner width above the text, joining the left/right frame
-verticals and separating the image from the label. Two more pen-down
-strokes, same chain as the text.
+Border: when ``border`` is true (default) a blueprint title-block band is
+drawn: one closed rounded rect (corner radius ``border_radius_mm``, 0 is
+sharp) around the lettering, spanning the padded text slot from the top of
+the title strip down to the bottom margin. The band is page furniture of
+its own — the whole-page margin frame (``page_frame_rect()``) is drawn
+separately and independently, so a sheet can carry the frame, the band or
+both. One more pen-down stroke, same chain as the text.
 
 Outline faces (``excalifont``, ``comic-shanns``, ``nunito``) are TTF outlines
 traced to polylines — the pen draws every stem twice (once per outline side),
@@ -310,8 +311,8 @@ def render_label(
     inner_left = margin_mm
     inner_right = page_w - margin_mm
     inner_w = max(inner_right - inner_left, 1e-9)
-    # Text insets from the frame verticals; the frame/divider still span the
-    # full inner width. Oversized pads collapse to a tiny centered slot so an
+    # Text insets from the margin verticals; the title-block band spans the
+    # padded slot. Oversized pads collapse to a tiny centered slot so an
     # over-wide line scales down instead of inverting.
     text_left = inner_left + max(pad_left_mm, 0.0)
     text_right = inner_right - max(pad_right_mm, 0.0)
@@ -350,22 +351,21 @@ def render_label(
     lines = [[(x, y + (page_h - margin_mm - max(ys))) for x, y in pl] for pl in lines]
 
     if border:
-        # Blueprint title-block strip: lift the text off the frame bottom,
-        # then span a divider across the full inner width so it lands exactly
-        # on the left/right frame verticals. pad/gap come from _strip_metrics
-        # so label_reserve_mm (image-area reservation) always agrees.
+        # Blueprint title-block band: lift the text off the sheet bottom, then
+        # close one band around the lettering (the padded text slot, from the
+        # top of the title strip down to the bottom margin). pad/gap come from
+        # _strip_metrics so label_reserve_mm (image-area reservation) always
+        # agrees. The whole-page margin frame is a separate element
+        # (page_frame_rect) — the band never draws the margin rect.
         m = _strip_metrics(text, height_mm=height_mm, font=font)
         assert m is not None  # lines non-empty implies drawable glyphs
         _, pad, gap = m
         lines = [[(x, y - gap) for x, y in pl] for pl in lines]
-        xs = [x for pl in lines for x, _ in pl]
         ys = [y for pl in lines for _, y in pl]
-        divider_y = max(min(ys) - pad, margin_mm)
-        frame = _rounded_rect(
-            inner_left, margin_mm, inner_right, page_h - margin_mm,
+        band_top = max(min(ys) - pad, margin_mm)
+        band = _rounded_rect(
+            text_left, band_top, text_right, page_h - margin_mm,
             border_radius_mm,
         )
-        divider = [(inner_left, divider_y), (inner_right, divider_y)]
-        lines.append(divider)
-        lines.append(frame)
+        lines.append(band)
     return lines, warnings
