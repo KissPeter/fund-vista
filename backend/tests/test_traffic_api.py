@@ -303,6 +303,52 @@ def test_jobs_traffic_done_path(live, monkeypatch, tmp_path):
     assert l2 is not None and len(json.loads(l2)) == 4
 
 
+def test_jobs_traffic_progress_counters(live, monkeypatch, tmp_path):
+    """#66: the job doc must carry real counters, not just ``stage=download``.
+
+    The download thread publishes ``{"stage", "done", "total"}`` events; the
+    job poller copies them into the document, so a 4 GB pass is observable.
+    """
+    _stub_resolve(monkeypatch, "backend.jobs._exec_traffic.resolve_airport")
+    flights = _fixture_day()["flights"]
+    seen: list[dict] = []
+
+    def _fake_download(day, specs, cancelled, on_progress=None):
+        assert on_progress is not None, "the job must pass a progress callback"
+        for done in range(1, 4):
+            on_progress({"stage": "download", "done": done * 100, "total": 300})
+            time.sleep(0.4)  # the poller ticks every second
+            seen.append({"done": done * 100})
+        on_progress({"stage": "parse", "done": 42, "total": 0})
+        return {"LHBP": flights}
+
+    monkeypatch.setattr("backend.jobs._exec_traffic._download_and_extract", _fake_download)
+    day = _yesterday_iso()
+    resp = live.post("/v1/jobs", json={"type": "traffic_ingest",
+                                       "request": {"icao": "LHBP", "date": day},
+                                       "cancel_previous": False})
+    assert resp.status_code == 202, resp.text
+    job_id = resp.json()["job_id"]
+    # Poll while the job runs: a progress snapshot with counters must appear.
+    deadline = time.time() + 15.0
+    progress = None
+    while time.time() < deadline:
+        body = live.get(f"/v1/jobs/{job_id}").json()
+        if body["status"] in ("done", "failed", "cancelled"):
+            break
+        if body.get("progress", {}).get("done"):
+            progress = body["progress"]
+            break
+        time.sleep(0.2)
+    final = _wait_done(live, job_id)
+    assert final["status"] == "done", final
+    assert progress is not None, "no progress counters were published"
+    assert progress["stage"] in ("download", "parse")
+    assert progress["done"] > 0
+    if progress["stage"] == "download":
+        assert progress["total"] == 300
+
+
 def test_jobs_traffic_l1_hit_idempotent(live, monkeypatch, tmp_path):
     day = _yesterday_iso()
     raw = gzip.compress(json.dumps(_fixture_day(), separators=(",", ":")).encode("utf-8"))

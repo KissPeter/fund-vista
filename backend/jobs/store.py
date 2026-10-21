@@ -24,6 +24,8 @@ import json
 import logging
 import time
 
+from redis.exceptions import WatchError
+
 from backend.jobs.schemas import (
     CANCELLED_TTL_S,
     FAILURE_TTL_S,
@@ -144,6 +146,11 @@ async def _write_doc(job_id: str, doc: dict, ttl_s: int) -> None:
             await _redis.setex(_job_key(job_id), ttl_s, json.dumps(doc))
         except Exception as exc:
             log.warning("jobs.redis write failed id=%s: %s", job_id[:12], exc)
+    _remember(job_id, doc, ttl_s)
+
+
+def _remember(job_id: str, doc: dict, ttl_s: int) -> None:
+    """Keep the in-process mirror in sync (the fallback read path)."""
     now = time.time()
     _prune(now)
     _memory[_job_key(job_id)] = (now + ttl_s, doc)
@@ -184,12 +191,69 @@ async def set_status(
     return doc
 
 
+def _progress_doc(doc: dict | None, progress: dict) -> dict | None:
+    """The document with the progress counters applied, or None to skip.
+
+    A cancelling or terminal job is never written to: the progress writer
+    must not resurrect a job that was cancelled (the document is replaced
+    as a whole, so a stale write would bring the status back to
+    "running" and the cancel would be lost).
+    """
+    if doc is None:
+        return None
+    status = doc.get("status")
+    if status in TERMINAL or status == "cancelling":
+        return None
+    updated = dict(doc)
+    updated["progress"] = progress
+    return updated
+
+
 async def set_progress(job_id: str, stage: str, done: int = 0, total: int = 0) -> None:
-    doc = await get_job(job_id)
-    if doc is None or doc.get("status") in TERMINAL:
+    """Publish the job's progress counters.
+
+    The job document is replaced as a whole, so a plain read-modify-write
+    would overwrite whatever another writer put there in the meantime. A
+    lost cancel is the dangerous case: the job would keep running with
+    nobody able to stop it. So the Redis path is a compare-and-set — the
+    document must not have changed since it was read, and a cancelling or
+    terminal document is never written to.
+
+    The in-process fallback has no await point between the read and the
+    write, so the plain path is atomic there.
+    """
+    progress = {"stage": stage, "done": done, "total": total}
+    if _redis is not None:
+        key = _job_key(job_id)
+        try:
+            for _ in range(8):  # bounded retry — a busy job is rewritten often
+                try:
+                    async with _redis.pipeline(transaction=True) as pipe:
+                        await pipe.watch(key)
+                        raw = await pipe.get(key)
+                        doc = json.loads(raw) if raw is not None else None
+                        updated = _progress_doc(doc, progress)
+                        if updated is None:
+                            await pipe.unwatch()
+                            return
+                        updated["updated_at"] = time.time()
+                        ttl = _ttl_for(updated.get("status", "running"))
+                        pipe.multi()
+                        pipe.setex(key, ttl, json.dumps(updated))
+                        await pipe.execute()
+                        _remember(job_id, updated, ttl)
+                        return
+                except WatchError:
+                    continue  # somebody else wrote — re-read and retry
+            log.warning("jobs.progress write gave up id=%s (too many conflicts)", job_id[:12])
+        except Exception as exc:
+            log.warning("jobs.redis progress write failed id=%s: %s", job_id[:12], exc)
         return
-    doc["progress"] = {"stage": stage, "done": done, "total": total}
-    await _write_doc(job_id, doc, _ttl_for(doc.get("status", "running")))
+    doc = await get_job(job_id)
+    updated = _progress_doc(doc, progress)
+    if updated is None:
+        return
+    await _write_doc(job_id, updated, _ttl_for(updated.get("status", "running")))
 
 
 async def set_result(job_id: str, result: dict) -> None:
