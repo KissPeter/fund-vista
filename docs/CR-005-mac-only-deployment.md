@@ -1,6 +1,6 @@
 # CR-005 — the Mac is the only backend (drop the NAS)
 
-- Status: in progress
+- Status: done
 - Created: 2026-10-21
 - Last updated: 2026-10-21
 - Type: change request
@@ -75,6 +75,14 @@ new name. The rename therefore lands over two deploys:
 The runner prefers the new file name and falls back to the old one, so
 neither step can fail on a missing script.
 
+The runner is a **long-lived process**: it keeps the hook code it was
+started with, so an edit to `~/srv/ci/hooks/hook-github.sh` only reaches
+the runner after it is restarted (kill the pid in
+`~/srv/ci/cd/lock/pid`, remove the stale `running` dir). The same is
+true for a rename of the script the runner copies — the first deploy after
+the rename can otherwise fail with `No such file or directory` while the
+live container stays untouched (the deploy fails before it touches it).
+
 ## Explicitly unchanged
 
 - The deploy algorithm (sync → build → candidate smoke → swap → live
@@ -99,8 +107,9 @@ neither step can fail on a missing script.
 - [x] Backend code comments and the Dockerfile example name the Mac.
 - [x] The CD receiver follows the rename without a gap (old name
       fallback) and a real deploy lands on the new script.
-- [ ] The live container runs the new image tag, keeps the host-directory
-      `/data`, and passes both smokes.
+- [x] The live container runs the new image tag (`fundvista:mac-<sha>`),
+      keeps the host-directory `/data`, and passes both smokes; the old
+      `fundvista:nas*` images are pruned.
 - [x] The obsolete laminar-ui reverse tunnel (Mac side) removed; the VPS
       still has its `location /` → `:8091` for the retired UI, which needs
       root on the VPS to drop.
@@ -110,7 +119,11 @@ neither step can fail on a missing script.
 
 ## Follow-ups
 
-- The nginx vhost still carries two "NAS" comments and the
+- The VPS nginx vhost (`ci.linuxadm.hu`) still has the Laminar UI
+  location (`location /` → `:8091`) and two comments that name the
+  NAS; the Mac-side tunnel for it is gone, so the UI path 502s. Dropping
+  it needs root on the VPS — the tunnel user has no sudo.
+- The `pen-pixel.hu` vhost still has two "NAS" comments and its
   `@fundvista_cloud` fallback would answer `/v1/traffic/*` with a
   `job_not_found` if the Mac ever answers 502/504 on that path — the
   documented exclusion is not implemented in the vhost.
