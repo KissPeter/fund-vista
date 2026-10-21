@@ -10,9 +10,11 @@ A ``queued`` job deleted before its task starts never runs.
 Run path reuses the sync handler bodies refactored to take the parsed body +
 a ``cancelled: () -> bool`` (P2 checkpoints poll it instead of the more
 expensive ``is_disconnected()`` in background): Overpass races watch it,
-vpype loops break on it, partial files are never stored. Max runtime 300 s
-(matches nginx 310 s); on timeout the task is killed and the job fails with
-``{error:{code:"timeout"}}``.
+vpype loops break on it, partial files are never stored. Max runtime is
+per type (``MAX_RUNTIME_S``, 300 s matching nginx 310 s for the awaited
+paths; ``MAX_RUNTIME_INGEST_S`` for the detached traffic ingest); on
+timeout the task is killed, the download thread sees the stop event, and
+the job fails with ``{error:{code:"timeout"}}``.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from backend.jobs._exec_airports import _exec_airport_import, _exec_airport_rend
 from backend.jobs._exec_citymap import _exec_citymap_import, _exec_citymap_render
 from backend.jobs._exec_convert import _exec_convert
 from backend.jobs._exec_traffic import _exec_traffic_ingest
-from backend.jobs.schemas import MAX_RUNTIME_S
+from backend.jobs.schemas import MAX_RUNTIME_INGEST_S, MAX_RUNTIME_S
 from backend.penplot.errors import PenPlotError
 
 log = logging.getLogger(__name__)
@@ -160,13 +162,27 @@ async def _run_job(job_id: str, stop: threading.Event) -> None:
     poller = asyncio.create_task(_cancel_poller(job_id, stop))
     try:
         try:
+            runtime_s = (
+                MAX_RUNTIME_INGEST_S if job_type == "traffic_ingest" else MAX_RUNTIME_S
+            )
             result = await asyncio.wait_for(
                 _execute(job_type, payload, job_id, stop),
-                timeout=MAX_RUNTIME_S,
+                timeout=runtime_s,
             )
         except asyncio.TimeoutError:
-            log.warning("jobs.timeout id=%s type=%s", job_id[:12], job_type)
-            await _store.set_error(job_id, "timeout", "Job exceeded 300 s and was stopped.")
+            # Stop the thread too: wait_for cancels only the awaiter, a
+            # ``to_thread`` download would otherwise keep streaming the
+            # archive in a detached thread after the job failed (#1031).
+            stop.set()
+            log.warning(
+                "jobs.timeout id=%s type=%s cap=%ds",
+                job_id[:12], job_type, int(runtime_s),
+            )
+            await _store.set_error(
+                job_id,
+                "timeout",
+                f"Job exceeded {int(runtime_s)} s and was stopped.",
+            )
             return
         except asyncio.CancelledError:
             await _store.set_cancelled(job_id)

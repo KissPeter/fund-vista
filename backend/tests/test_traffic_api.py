@@ -357,6 +357,48 @@ def test_jobs_traffic_out_of_range_fails(live, monkeypatch):
     assert resolve_calls == []  # range check precedes lookup + download
 
 
+def test_ingest_runtime_cap_exceeds_flat_cap():
+    """#1031: the ingest override exists and loosens only the detached job,
+    never the synchronously awaited render/convert cap."""
+    from backend.jobs.schemas import MAX_RUNTIME_INGEST_S, MAX_RUNTIME_S
+
+    assert MAX_RUNTIME_INGEST_S > MAX_RUNTIME_S
+
+
+def test_jobs_traffic_timeout_uses_ingest_cap(live, monkeypatch):
+    """#1031: the flat 300 s cap killed the ingest mid-download. The job is
+    bound by ``MAX_RUNTIME_INGEST_S`` (patched small here); the timeout
+    envelope carries the actual cap and the stop signal reaches the
+    download thread, which returns on ``cancelled`` instead of streaming on
+    detached."""
+    import backend.jobs.runner as runner_mod
+
+    stop_seen = threading.Event()
+
+    def slow_download(day, specs, cancelled, on_progress=None):
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
+            if cancelled():
+                stop_seen.set()
+                return {}
+            time.sleep(0.05)
+        return {}
+
+    monkeypatch.setattr(runner_mod, "MAX_RUNTIME_INGEST_S", 0.5)
+    monkeypatch.setattr("backend.jobs._exec_traffic._download_and_extract", slow_download)
+    _stub_resolve(monkeypatch, "backend.jobs._exec_traffic.resolve_airport")
+    day = _yesterday_iso()
+    resp = live.post("/v1/jobs", json={"type": "traffic_ingest",
+                                       "request": {"icao": "LHBP", "date": day},
+                                       "cancel_previous": False})
+    assert resp.status_code == 202, resp.text
+    final = _wait_done(live, resp.json()["job_id"], timeout_s=15.0)
+    assert final["status"] == "failed", final
+    assert final["error"]["code"] == "timeout", final
+    assert "exceeded" in final["error"]["message"] and "stopped." in final["error"]["message"], final
+    assert stop_seen.wait(timeout=5.0), "download thread never saw the stop signal"
+
+
 # -- multi-airport pass (one archive pass, many airports) --------------------
 
 HU_ROW_DC = {

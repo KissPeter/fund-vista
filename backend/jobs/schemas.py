@@ -36,8 +36,18 @@ FAILURE_TTL_S = 600
 CANCELLED_TTL_S = 3600
 QUEUED_TTL_S = 3600
 
-#: Max wall-clock per job (matches nginx 310 s with headroom).
+#: Max wall-clock per job type (seconds): ``MAX_RUNTIME_S`` matches the nginx
+#: 310 s proxy timeouts with headroom — correct only for the synchronously
+#: awaited paths (renders/converts/imports finish inside one browser
+#: request). ``MAX_RUNTIME_INGEST_S`` exempts ``traffic_ingest``: it runs
+#: detached from any HTTP request (POST answers 202, the client polls), so
+#: nginx never bounds it, and one adsb.lol day archive is a multi-minute
+#: stream (job #1031: the flat 300 s cap killed it mid-download). The
+#: override stays under the shop's 15 min poll deadline (TrafficTab
+#: ``DEADLINE_MS``) so the client sees the terminal state, never a phantom
+#: still-running job.
 MAX_RUNTIME_S = 300.0
+MAX_RUNTIME_INGEST_S = 840.0
 
 #: Per-IP cap on non-terminal jobs (extra POST → 429 rate_limited).
 MAX_NONTERMINAL_PER_IP = 3
@@ -99,6 +109,7 @@ __all__ = [
     "CANCELLED_TTL_S",
     "QUEUED_TTL_S",
     "MAX_RUNTIME_S",
+    "MAX_RUNTIME_INGEST_S",
     "MAX_NONTERMINAL_PER_IP",
     "SUPERSEDE_SET_TTL_S",
 ]
