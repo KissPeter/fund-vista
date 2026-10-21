@@ -24,6 +24,12 @@ on:
     paths: *backend_paths
   workflow_dispatch:
 
+# The junit-report step annotates the commit with check runs — the default
+# token is read-mostly, so checks:write must be granted explicitly.
+permissions:
+  contents: read
+  checks: write
+
 jobs:
   integration:
     # Pinned instead of ubuntu-latest: the label migrates to Ubuntu 26 and
