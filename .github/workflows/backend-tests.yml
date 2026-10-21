@@ -26,12 +26,14 @@ on:
 
 jobs:
   integration:
-    runs-on: ubuntu-latest
+    # Pinned instead of ubuntu-latest: the label migrates to Ubuntu 26 and
+    # the pinned image keeps the suite environment deterministic.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -62,12 +64,12 @@ jobs:
         run: python -m pytest backend/tests/ -q
 
   schemathesis:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -80,10 +82,12 @@ jobs:
       - name: Schemathesis smoke (mock-mode server)
         run: ./ops/schemathesis-smoke.sh .
 
-      - name: Upload junit report
+      - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: schemathesis-report
-          path: schemathesis_results/
+          path: |
+            schemathesis_results/
+            smoke-server.log
           if-no-files-found: ignore
