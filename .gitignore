@@ -8,3 +8,14 @@ reports/
 backend/reports/
 schemathesis-report/
 schemathesis-report/
+
+# Local dependency trees and build output (issue #100). A stray
+# `git add .` used to stage the whole node_modules/ tree and the built
+# bundle; they are artifacts, never sources.
+node_modules/
+dist/
+
+# The Python venv, without a trailing slash on purpose: the worktree
+# recipe symlinks `backend/.venv` to the developer's real venv, and git
+# treats a symlink as a file - `backend/.venv/` would not match it.
+.venv

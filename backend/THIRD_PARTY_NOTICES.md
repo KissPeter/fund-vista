@@ -12,6 +12,10 @@ Licence allowlist rule (D4): new dependencies only per the shop repo
 backend outside the documented D1 server-side-only exception (Potrace /
 vpype-flow-imager — currently neither vendored nor installed).
 
+Section D is the other half of that rule: `backend/uv.lock` is also an
+input of the **shop's** licence inventory, so every dependency bump here
+has a shop-side step.
+
 ## A. Vendored files (copyright lines, verbatim from the artefacts)
 
 - `backend/penplot/fonts/Znikoslsvginot8-GOB3y.ttf` —
@@ -53,6 +57,9 @@ vpype-flow-imager — currently neither vendored nor installed).
 All permissive. Licence labels verified against the PyPI `license` /
 `License :: OSI Approved` metadata; holder names are the upstream projects.
 
+The source of truth for this list is `backend/uv.lock` — and a change to
+that file has a shop-side consequence, see §D.
+
 | Package | Licence | Holder / upstream |
 |---|---|---|
 | fastapi | MIT | (c) Sebastián Ramírez — https://github.com/fastapi/fastapi |
@@ -86,3 +93,41 @@ Engines used but NOT vendored and NOT Python dependencies: libtesseract /
   importable server-side-only per D1; output (SVG/G-code) is not GPL. Neither
   is vendored nor installed; contour/centerline tracing uses the permissive
   OpenCV/NumPy stack instead (see `backend/penplot/methods.py` licence note).
+
+## D. A `backend/uv.lock` change needs a shop-side regeneration
+
+The shop repo (`KissPeter/pen-pixel-shop`) carries this backend as a git
+submodule and generates **its own** licence inventory from this repo's
+lockfile:
+
+- the generator is `tools/licenses/inventory.py` in the shop repo;
+- it reads `fund-vista/backend/uv.lock` — that is this repo's
+  `backend/uv.lock`;
+- it stamps a digest of that file into the "Inputs" line of the shop's
+  committed `docs/third-party-inventory.md`;
+- the shop's unit lane (`src/lib/third-party-inventory.test.ts`) compares
+  the committed file with a fresh generator run. Only the
+  `package-lock.json` digest is masked (npm rewrites that lockfile), so
+  the `uv.lock` digest is gated.
+
+**So every change of `backend/uv.lock` — a routine dependency bump —
+reddens the shop's unit lane until the shop repo regenerates the
+inventory and commits it:**
+
+```sh
+# in the shop repo (KissPeter/pen-pixel-shop)
+python3 tools/licenses/inventory.py   # rewrites docs/third-party-inventory.md
+git commit -am "chore(licences): regenerate the third-party inventory"
+```
+
+The same step is needed when the shop moves its submodule pointer: the
+inventory then runs against the newly pinned backend lockfile.
+
+The failure arrives from the other repository and the shop's CI log names
+a docs file, not this lockfile — the shop side made the failure message
+say so (pen-pixel-shop #1158). This section is the backend-side half:
+read it before you bump a dependency, and say in the PR that the shop
+needs a regeneration.
+
+Refs: pen-pixel-shop #1158 (shop-side failure hint), pen-pixel-shop #1165
+(submodule pointer state), fund-vista #103 (this section).
