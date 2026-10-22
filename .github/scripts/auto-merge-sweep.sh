@@ -32,6 +32,11 @@
 #                             (default: empty - the owner decides)
 #   AUTOMERGE_REQUIRE_MAIN_GREEN true | false                (default: true)
 #   AUTOMERGE_DISPATCH_CI    auto | never                   (default: auto)
+#   AUTOMERGE_MAX_DISPATCH   merge-ref CI runs one sweep may start   (default: 3)
+#                             A merge moves `main`, so every other PR must be
+#                             re-verified; starting all of them at once floods
+#                             the runners. The sweeps chain (each finished gate
+#                             run triggers the next), so the rest follow.
 #   AUTOMERGE_DRY_RUN        true | false                   (default: false)
 #   CI_WORKFLOW              workflow file to re-dispatch   (default: ci.yml)
 
@@ -45,6 +50,7 @@ BLOCKED_PATHS="${AUTOMERGE_BLOCKED_PATHS:-}"
 BLOCK_LABELS="${AUTOMERGE_BLOCK_LABELS:-automerge:block,needs-human}"
 REQUIRE_MAIN_GREEN="${AUTOMERGE_REQUIRE_MAIN_GREEN:-true}"
 DISPATCH_CI="${AUTOMERGE_DISPATCH_CI:-auto}"
+MAX_DISPATCH="${AUTOMERGE_MAX_DISPATCH:-3}"
 DRY_RUN="${AUTOMERGE_DRY_RUN:-false}"
 TOKEN_SOURCE="${AUTOMERGE_TOKEN_SOURCE:-bot}"
 CI_WORKFLOW="${CI_WORKFLOW:-ci.yml}"
@@ -541,7 +547,7 @@ refresh_ci_after_merges() {
     dispatch_ci "$workflow" "main" || true
   done
 
-  local prs pr number head_sha ref_sha state mstate mergeable verdict
+  local prs pr number head_sha ref_sha state mstate mergeable verdict status dispatched=0
   prs="$(list_open_prs || echo '[]')"
   while IFS= read -r pr; do
     [ -n "$pr" ] || continue
@@ -561,15 +567,26 @@ refresh_ci_after_merges() {
       workflow="$(gate_workflow_name "$entry")"
       state="$(ci_run_jobs_state "$(fresh_ci_run "$workflow" "$head_sha" "$ref_sha")" "$(gate_workflow_jobs "$entry")")"
       [ "$state" = "green" ] && continue
-      verdict="$(merge_ref_verdict "$(merge_ref_status "$head_sha" "automerge/merge-ref/$workflow")" "$ref_sha")"
+      status="$(merge_ref_status "$head_sha" "automerge/merge-ref/$workflow")"
+      verdict="$(merge_ref_verdict "$status" "$ref_sha")"
       if [ "$verdict" = "green" ]; then
+        continue
+      fi
+      # Red on exactly this merge ref: a rerun would give the same answer.
+      if [ "$verdict" = "red" ] && [ "${status##* }" = "$ref_sha" ]; then
         continue
       fi
       if active_run_for_sha "$ref_sha" || active_run_for_sha "$head_sha"; then
         log "#$number already has a running CI run"
         continue
       fi
-      dispatch_ci_for_pr "$workflow" "$number" || true
+      if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
+        log "dispatch limit ($MAX_DISPATCH) reached: #$number is verified by a later sweep"
+        continue
+      fi
+      if dispatch_ci_for_pr "$workflow" "$number"; then
+        dispatched=$((dispatched + 1))
+      fi
     done
   done < <(jq -c '.[]' <<<"$prs")
 }
