@@ -1,0 +1,69 @@
+name: Auto merge
+
+# Sweeps the open pull requests and merges the ones that have no conflict
+# with `main` and whose CI gate is green. See docs/auto-merge.md for the
+# rules and for the escape hatches.
+#
+# The workflow always reads the script from the BASE branch (the job checks
+# out `main`), so a pull request can never change the rules that merge it.
+#
+# Triggers:
+#   pull_request_target  a PR is opened, updated, reopened or marked ready
+#   workflow_run         a gate workflow finished (the green verdict lands here)
+#   push                 `main` moved (a merge invalidates the other merge refs)
+#   workflow_dispatch    a manual sweep
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_run:
+    workflows: [backend-tests, frontend-checks]
+    types: [completed]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report what would be merged, merge nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  checks: read
+  statuses: read
+  actions: write
+
+concurrency:
+  # The sweeps are serialized: two sweeps must not merge the same PR twice.
+  group: auto-merge
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Sweep the open pull requests
+        env:
+          # A PAT (`AUTOMERGE_TOKEN`) is preferred: its pushes trigger the
+          # workflows. With the GITHUB_TOKEN the sweep re-dispatches the gate
+          # by hand, because a push made with the GITHUB_TOKEN does not
+          # trigger any workflow run.
+          GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
+          AUTOMERGE_TOKEN_SOURCE: ${{ secrets.AUTOMERGE_TOKEN && 'pat' || 'bot' }}
+          AUTOMERGE_MERGE_METHOD: merge
+          # The gate workflows and the jobs that must be green in each of
+          # them. A workflow with a path filter that did not run for a PR is
+          # not counted.
+          AUTOMERGE_GATE_WORKFLOWS: backend-tests=integration+schemathesis,frontend-checks=checks
+          AUTOMERGE_ADVISORY_CHECKS: ""
+          AUTOMERGE_BLOCK_LABELS: automerge:block,needs-human
+          AUTOMERGE_REQUIRE_MAIN_GREEN: ${{ vars.AUTOMERGE_REQUIRE_MAIN_GREEN || 'true' }}
+          AUTOMERGE_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        run: bash .github/scripts/auto-merge-sweep.sh
