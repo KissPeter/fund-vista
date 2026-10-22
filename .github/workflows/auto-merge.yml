@@ -46,9 +46,17 @@ jobs:
     runs-on: [self-hosted, linux, ARM64]
     timeout-minutes: 20
     steps:
-      # The runner service starts with a minimal PATH; gh lives in Homebrew.
-      - name: Put Homebrew on PATH
-        run: echo /opt/homebrew/bin >> "$GITHUB_PATH"
+      # The self-hosted runner is a Linux container without gh: fetch the binary
+      # (no root needed) when it is missing.
+      - name: Ensure gh
+        run: |
+          if ! command -v gh >/dev/null; then
+            arch="$(uname -m)"; case "$arch" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
+            v=2.101.0
+            curl -fsSL "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
+              | tar -xz -C "$RUNNER_TEMP"
+            echo "$RUNNER_TEMP/gh_${v}_linux_${arch}/bin" >> "$GITHUB_PATH"
+          fi
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
