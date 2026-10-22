@@ -27,6 +27,7 @@ Contract (pytest + the real app, the process-local job store):
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tempfile
 import threading
@@ -38,6 +39,7 @@ os.environ["PENPLOT_RATE_LIMIT"] = "100000"
 
 import pytest
 from fastapi.testclient import TestClient
+from redis.exceptions import WatchError
 
 from backend.jobs import runner as jobs_runner
 from backend.jobs import store as jobs_store
@@ -45,6 +47,72 @@ from backend.jobs.schemas import ORPHAN_GRACE_S
 from backend.main import app as full_app
 
 JOB_ID = "a" * 32
+
+
+class FakePipeline:
+    """The slice of redis-py's async pipeline the job store uses."""
+
+    def __init__(self, client: "FakeRedis") -> None:
+        self.client = client
+        self.watched: dict[str, str | None] = {}
+        self.queued: list[tuple[str, str, str, int]] = []
+
+    async def __aenter__(self) -> "FakePipeline":
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        await self.reset()
+
+    async def watch(self, key: str) -> None:
+        self.watched[key] = self.client.data.get(key)
+
+    async def exists(self, key: str) -> int:
+        # In watch mode redis-py runs the command immediately.
+        return await self.client.exists(key)
+
+    def multi(self) -> None:
+        if self.client.on_multi is not None:
+            self.client.on_multi()
+
+    def set(self, key: str, value: str, ex: int | None = None) -> None:
+        self.queued.append(("set", key, value, ex or 0))
+
+    async def execute(self) -> list[bool]:
+        for key, snapshot in self.watched.items():
+            if self.client.data.get(key) != snapshot:
+                raise WatchError(f"Watched key changed: {key}")
+        for _cmd, key, value, ex in self.queued:
+            await self.client.setex(key, ex, value)
+        self.queued = []
+        return [True]
+
+    async def reset(self) -> None:
+        self.watched = {}
+        self.queued = []
+
+
+class FakeRedis:
+    """A Redis double with the one semantic that matters here: a WATCHed
+    key that changes before EXEC aborts the transaction."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+        self.on_multi = None
+
+    async def get(self, key: str) -> str | None:
+        return self.data.get(key)
+
+    async def setex(self, key: str, ttl: int, value: str) -> None:
+        self.data[key] = value
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self.data else 0
+
+    async def delete(self, key: str) -> None:
+        self.data.pop(key, None)
+
+    def pipeline(self, transaction: bool = True) -> FakePipeline:
+        return FakePipeline(self)
 
 
 @pytest.fixture()
@@ -148,6 +216,99 @@ def test_reaped_job_frees_the_per_ip_slot(client):
     resp = client.get(f"/v1/jobs/{JOB_ID}")
     assert resp.status_code == 200, resp.text
     assert asyncio.run(jobs_store.count_nonterminal_by_ip("10.0.0.9")) == 0
+
+
+def _redis_job(fake: FakeRedis, job_id: str = JOB_ID, status: str = "running",
+               age_s: float = 600.0) -> dict:
+    """A job doc straight in the Redis double (no runner, no network)."""
+    now = time.time() - age_s
+    doc = {
+        "job_id": job_id,
+        "type": "convert",
+        "request": {"image_id": "x"},
+        "status": status,
+        "progress": {"stage": "download", "done": 0, "total": 0},
+        "result": None,
+        "error": None,
+        "client_ip": "10.0.0.2",
+        "superseded": [],
+        "created_at": now,
+        "updated_at": now,
+    }
+    fake.data[f"job:{job_id}"] = json.dumps(doc)
+    return doc
+
+
+def test_redis_branch_fails_the_orphaned_job():
+    """The production path (Redis, not the process-local fallback)."""
+    fake = FakeRedis()
+    jobs_store.configure_jobs_redis(fake)
+    _redis_job(fake)
+
+    doc = asyncio.run(jobs_store.reap_orphaned(JOB_ID))
+    assert doc is not None and doc["status"] == "failed", doc
+    assert doc["error"]["code"] == "orphaned", doc
+    stored = json.loads(fake.data[f"job:{JOB_ID}"])
+    assert stored["status"] == "failed", stored
+    assert stored["error"]["code"] == "orphaned", stored
+
+
+def test_redis_branch_never_fails_a_live_job():
+    fake = FakeRedis()
+    jobs_store.configure_jobs_redis(fake)
+    _redis_job(fake)
+    asyncio.run(jobs_store.heartbeat(JOB_ID))  # the owner is alive
+
+    doc = asyncio.run(jobs_store.reap_orphaned(JOB_ID))
+    assert doc is not None and doc["status"] == "running", doc
+    stored = json.loads(fake.data[f"job:{JOB_ID}"])
+    assert stored["status"] == "running", stored
+
+
+def test_redis_branch_aborts_when_the_owner_heartbeats_mid_transaction():
+    """The WATCH guard: a heartbeat between the check and the EXEC wins."""
+    fake = FakeRedis()
+    jobs_store.configure_jobs_redis(fake)
+    _redis_job(fake)
+
+    def heartbeat_mid_transaction() -> None:
+        fake.data[f"job:live:{JOB_ID}"] = "1"
+
+    fake.on_multi = heartbeat_mid_transaction
+
+    doc = asyncio.run(jobs_store.reap_orphaned(JOB_ID))
+    assert doc is not None and doc["status"] == "running", doc
+    stored = json.loads(fake.data[f"job:{JOB_ID}"])
+    assert stored["status"] == "running", stored
+
+
+def test_heartbeat_redis_failure_keeps_the_job_alive():
+    """A broken Redis write must not make a running job look dead."""
+    fake = FakeRedis()
+
+    async def broken_setex(*_args, **_kwargs):
+        raise ConnectionError("redis is down")
+
+    fake.setex = broken_setex  # type: ignore[method-assign]
+    jobs_store.configure_jobs_redis(fake)
+    _redis_job(fake)
+
+    asyncio.run(jobs_store.heartbeat(JOB_ID))
+    assert asyncio.run(jobs_store.is_alive(JOB_ID)) is True
+
+    doc = asyncio.run(jobs_store.reap_orphaned(JOB_ID))
+    assert doc is not None and doc["status"] == "running", doc
+
+
+def test_redis_branch_cancels_a_stale_cancelling_job():
+    fake = FakeRedis()
+    jobs_store.configure_jobs_redis(fake)
+    _redis_job(fake, status="cancelling")
+
+    doc = asyncio.run(jobs_store.reap_orphaned(JOB_ID))
+    assert doc is not None and doc["status"] == "cancelled", doc
+    stored = json.loads(fake.data[f"job:{JOB_ID}"])
+    assert stored["status"] == "cancelled", stored
 
 
 def test_runner_keeps_the_liveness_key_alive(client, monkeypatch):

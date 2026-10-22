@@ -299,11 +299,14 @@ async def is_alive(job_id: str) -> bool:
     """True while a live owner refreshes the liveness key.
 
     Fail-safe: a Redis read error answers True (assume the owner lives), so
-    a hiccup can never fail a healthy job.
+    a hiccup can never fail a healthy job. The process-local fallback is
+    consulted too: the heartbeat writes it when its Redis write fails, so
+    one broken write does not make a running job look dead.
     """
     if _redis is not None:
         try:
-            return bool(await _redis.exists(_live_key(job_id)))
+            if await _redis.exists(_live_key(job_id)):
+                return True
         except Exception as exc:
             log.warning("jobs.redis liveness read failed id=%s: %s", job_id[:12], exc)
             return True
@@ -312,19 +315,19 @@ async def is_alive(job_id: str) -> bool:
     return exp is not None and exp > time.time()
 
 
-async def _write_if_still_orphaned(job_id: str, doc: dict) -> bool:
+async def _write_if_still_orphaned(job_id: str, doc: dict, ttl_s: int) -> bool:
     """Write the terminal doc only while the job is still an orphan.
 
     Redis: the liveness key is WATCHed, so a heartbeat that lands between
     the check and the write aborts the transaction — a live job is never
     failed by a racing reap. The process-local fallback has a single writer.
     """
+    if await is_alive(job_id):
+        return False
     if _redis is None:
-        if await is_alive(job_id):
-            return False
         now = time.time()
         _prune(now)
-        _memory[_job_key(job_id)] = (now + FAILURE_TTL_S, doc)
+        _memory[_job_key(job_id)] = (now + ttl_s, doc)
         return True
     try:
         async with _redis.pipeline(transaction=True) as pipe:
@@ -333,7 +336,7 @@ async def _write_if_still_orphaned(job_id: str, doc: dict) -> bool:
                 await pipe.reset()
                 return False
             pipe.multi()
-            pipe.set(_job_key(job_id), json.dumps(doc), ex=FAILURE_TTL_S)
+            pipe.set(_job_key(job_id), json.dumps(doc), ex=ttl_s)
             await pipe.execute()
     except WatchError:
         # The owner refreshed the liveness key mid-write: it is alive.
@@ -343,7 +346,7 @@ async def _write_if_still_orphaned(job_id: str, doc: dict) -> bool:
         return False
     now = time.time()
     _prune(now)
-    _memory[_job_key(job_id)] = (now + FAILURE_TTL_S, doc)
+    _memory[_job_key(job_id)] = (now + ttl_s, doc)
     return True
 
 
@@ -358,7 +361,9 @@ async def reap_orphaned(job_id: str) -> dict | None:
     owner is gone.
 
     A stale ``cancelling`` doc is the same leak with another terminal state:
-    the client asked to cancel and nobody carried it out.
+    the client asked to cancel and nobody carried it out. It is written
+    through the same guarded write, so an owner that is still alive (and
+    about to finish) wins the race.
 
     Returns the job doc (reaped or untouched); None when the id is unknown.
     """
@@ -375,11 +380,19 @@ async def reap_orphaned(job_id: str) -> dict | None:
     if await is_alive(job_id):
         return doc
     if status == "cancelling":
-        await set_cancelled(job_id)
+        terminal = {
+            **doc,
+            "status": "cancelled",
+            "result": None,
+            "updated_at": now,
+        }
+        if not await _write_if_still_orphaned(job_id, terminal, CANCELLED_TTL_S):
+            return await get_job(job_id)
+        await _remove_from_ip_sets(job_id, terminal)
         log.warning(
             "jobs.orphan id=%s type=%s was=cancelling", job_id[:12], doc.get("type")
         )
-        return await get_job(job_id)
+        return terminal
     failed = {
         **doc,
         "status": "failed",
@@ -390,7 +403,7 @@ async def reap_orphaned(job_id: str) -> dict | None:
         "result": None,
         "updated_at": now,
     }
-    if not await _write_if_still_orphaned(job_id, failed):
+    if not await _write_if_still_orphaned(job_id, failed, FAILURE_TTL_S):
         # The owner (or another worker) got there first — never overwrite.
         return await get_job(job_id)
     await _remove_from_ip_sets(job_id, failed)
