@@ -37,20 +37,29 @@ pen-pixel-shop issues are out of scope here).
    issue, and set the labels to `agent:in-progress` (done) or
    `agent:failed` + `agent:supervised` (needs a human).
 
-   **Assert.** Right after `session.create`, call `session.status` on the new
-   session: `directory` must equal the prepared worktree (the branch follows
-   — without `branch`/`startRef` the session inherits the worktree's
-   `agent/issue-<N>`). A mismatch means the session was re-homed: the
-   dispatch **failed** — go straight to the fallback, and never let that
-   session commit outside the worktree.
+   The dispatch prompt tells the worker to check its own place **first**:
+   `pwd`, `git rev-parse --show-toplevel`, `git branch --show-current`. If
+   they are not the prepared worktree and `agent/issue-<N>`, it stops and
+   says so — the orchestrator takes over.
+
+   **Trap.** `session.status.directory` and `session.messages.directory`
+   report the session's *project* directory (they echo the scope you query
+   them in), not its working directory — never use them as the worktree
+   assertion.
+
+   **Check from outside.** After the dispatch, the main checkout must still
+   be clean (`git status` in it): a worker that wrote there is a failed
+   dispatch — stop it, discard its changes in the main checkout (the
+   worktree rule forbids feature commits there) and take over in the
+   worktree.
 
    **Fallback.** Take over whenever the worker produced no work: the
-   dispatch failed (the assert above found a foreign directory), the session
-   stays idle without a single assistant message (~2 min), **or** its
-   `session.status` reports state `error` (upstream failure, e.g.
-   "Insufficient account funds"). Each of those is dead on arrival — the
-   orchestrator does the work itself in the same worktree, then follows
-   step 5 for its own PR.
+   dispatch failed (the worker stopped on its self-check, or it touched the
+   main checkout), the session stays idle without a single assistant
+   message (~2 min), **or** `session.status` reports state `error` (upstream
+   failure, e.g. "Insufficient account funds"). Each of those is dead on
+   arrival — the orchestrator does the work itself in the same worktree,
+   then follows step 5 for its own PR.
 
 5. **Verify.** The PR exists, points at `agent/issue-<N>`, its base is `main`,
    and the tests ran. If the run failed or timed out: `agent:in-progress` →
