@@ -50,13 +50,17 @@ jobs:
       # (no root needed) when it is missing.
       - name: Ensure gh
         run: |
+          set -euo pipefail
           if ! command -v gh >/dev/null; then
             arch="$(uname -m)"; case "$arch" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
             v=2.101.0
             curl -fsSL "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
               | tar -xz -C "$RUNNER_TEMP"
             echo "$RUNNER_TEMP/gh_${v}_linux_${arch}/bin" >> "$GITHUB_PATH"
+            export PATH="$RUNNER_TEMP/gh_${v}_linux_${arch}/bin:$PATH"
           fi
+          # Fail here, loudly, when gh is still unusable.
+          gh --version
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
