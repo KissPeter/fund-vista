@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { investmentApi, type Fund } from "@/services/investmentApi";
 import { useToast } from "@/hooks/use-toast";
-import { readJsonCache } from "@/services/jsonCache";
+import { readJsonCache, writeJsonCache } from "@/services/jsonCache";
 import type { YieldsApi } from "@/hooks/useYields";
 
 export type Provider = "KH" | "ERSTE";
@@ -107,11 +107,11 @@ export function useFunds(provider: Provider, deps: FundsDeps) {
         throw new Error("KH fund list is temporarily empty (likely throttled)");
       }
 
-      // Cache the data
-      localStorage.setItem(cacheKey, JSON.stringify({
+      // Cache the data (best effort: a full quota must not fail the load)
+      writeJsonCache(cacheKey, {
         data,
         timestamp: now
-      }));
+      });
 
       setFunds(data);
       setFilteredFunds(data);

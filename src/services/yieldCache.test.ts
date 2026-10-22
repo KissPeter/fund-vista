@@ -75,23 +75,43 @@ test("a corrupt cache entry does not throw and the load completes", async () => 
 test("the loading flag is cleared even when the load throws", async () => {
   const storage = new FakeStorage();
   const recorded = setup(storage);
-  // A full localStorage: the cache write throws, so the load rejects.
-  const full = new FakeStorage();
-  full.setItem = () => { throw new Error("QuotaExceededError"); };
-  (globalThis as unknown as { localStorage: FakeStorage }).localStorage = full;
 
   await assert.rejects(
     loadYields(FUNDS, FUNDS.length, RANGE, {
+      // The progress callback throws - an unexpected failure outside the
+      // per-fund try/catch, i.e. the whole load gives up.
       fetchYield: async (primaryKey) => `${primaryKey}.00%`,
       setLoading: (loading) => recorded.loading.push(loading),
-      setProgress: (percent) => recorded.progress.push(percent),
+      setProgress: () => { throw new Error("boom"); },
       onLoaded: () => { recorded.loaded = { yields: {}, range: RANGE }; },
       sleep: async () => undefined,
     }),
-    /QuotaExceededError/,
+    /boom/,
   );
 
   assert.deepEqual(recorded.loading, [true, false], "the flag is cleared on the error path");
+});
+
+test("a full localStorage does not lose the fetched yields", async () => {
+  const storage = new FakeStorage();
+  const recorded = setup(storage);
+  // The cache write fails (full quota), but the yield was fetched fine.
+  storage.setItem = () => { throw new Error("QuotaExceededError"); };
+
+  await loadYields(FUNDS, FUNDS.length, RANGE, {
+    fetchYield: async (primaryKey) => `${primaryKey}.00%`,
+    setLoading: (loading) => recorded.loading.push(loading),
+    setProgress: (percent) => recorded.progress.push(percent),
+    onLoaded: (yields, range) => { recorded.loaded = { yields, range }; },
+    sleep: async () => undefined,
+  });
+
+  assert.deepEqual(
+    recorded.loaded?.yields,
+    { 1: "1.00%", 2: "2.00%" },
+    "the yields survive a failing cache write",
+  );
+  assert.deepEqual(recorded.loading, [true, false]);
 });
 
 test("the loading flag is set and cleared on the happy path", async () => {

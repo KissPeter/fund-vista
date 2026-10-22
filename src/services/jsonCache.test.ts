@@ -12,7 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { readJsonCache } from "./jsonCache.ts";
+import { readJsonCache, removeCacheEntry, writeJsonCache } from "./jsonCache.ts";
 
 /** Minimal in-memory localStorage double. */
 class FakeStorage {
@@ -105,4 +105,39 @@ test("an unavailable storage is a miss, not a throw", () => {
 
   assert.doesNotThrow(() => readJsonCache("k", isStringEntry));
   assert.equal(readJsonCache("k", isStringEntry), null);
+});
+
+test("a failing removal does not turn a corrupt entry into a throw", () => {
+  const storage = new FakeStorage();
+  withStorage(storage);
+  storage.setItem("k", "{broken");
+  storage.removeItem = () => { throw new Error("QuotaExceededError"); };
+
+  assert.doesNotThrow(() => readJsonCache("k", isStringEntry));
+  assert.equal(readJsonCache("k", isStringEntry), null, "still a miss");
+});
+
+test("a failing write is reported, not thrown", () => {
+  const storage = new FakeStorage();
+  withStorage(storage);
+  storage.setItem = () => { throw new Error("QuotaExceededError"); };
+
+  assert.doesNotThrow(() => writeJsonCache("k", { data: "1.23%" }));
+  assert.equal(writeJsonCache("k", { data: "1.23%" }), false, "the write failed");
+});
+
+test("a successful write stores the entry", () => {
+  const storage = new FakeStorage();
+  withStorage(storage);
+
+  assert.equal(writeJsonCache("k", { data: "1.23%" }), true);
+  assert.deepEqual(JSON.parse(storage.getItem("k") as string), { data: "1.23%" });
+});
+
+test("a failing removal is swallowed", () => {
+  const storage = new FakeStorage();
+  withStorage(storage);
+  storage.removeItem = () => { throw new Error("QuotaExceededError"); };
+
+  assert.doesNotThrow(() => removeCacheEntry("k"));
 });

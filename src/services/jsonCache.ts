@@ -14,6 +14,18 @@
  */
 
 /**
+ * Drop a cache entry. Best effort: a failing removal (storage disabled,
+ * a full quota) must never turn a cache miss into a throw (#96).
+ */
+export const removeCacheEntry = (key: string): void => {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // The entry stays; the next read treats it as a miss again.
+  }
+};
+
+/**
  * Read a JSON cache entry.
  *
  * @param key - localStorage key.
@@ -37,13 +49,29 @@ export const readJsonCache = <T>(
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!isValid(parsed)) {
-      localStorage.removeItem(key);
+      removeCacheEntry(key);
       return null;
     }
     return parsed;
   } catch {
     // Corrupt entry: drop it, it can never be read again.
-    localStorage.removeItem(key);
+    removeCacheEntry(key);
     return null;
+  }
+};
+
+/**
+ * Write a JSON cache entry. Best effort: the cache is an optimisation,
+ * so a failing write (a full quota) must not fail the caller - the data
+ * it was about to cache has already been fetched (#96).
+ *
+ * @returns whether the entry was stored.
+ */
+export const writeJsonCache = (key: string, value: unknown): boolean => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
   }
 };

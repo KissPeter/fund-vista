@@ -12,7 +12,7 @@
 // The explicit ".ts" extension is required here: node's test runner (the
 // only runner this repo has for the frontend) resolves ESM imports by their
 // exact path, and tsconfig.app.json allows it (allowImportingTsExtensions).
-import { readJsonCache } from "./jsonCache.ts";
+import { readJsonCache, removeCacheEntry, writeJsonCache } from "./jsonCache.ts";
 
 /** The minimum a fund must offer for a yield lookup. */
 export interface YieldFund {
@@ -91,9 +91,12 @@ export async function loadYields(
   const yieldsMap: Record<number, string> = {};
 
   deps.setLoading(true);
-  deps.setProgress(0);
 
   try {
+    // Inside the try on purpose: the loading flag must be cleared even if
+    // this throws (#96).
+    deps.setProgress(0);
+
     for (let i = 0; i < fundBatch.length; i++) {
       const fund = fundBatch[i];
       const cacheKey = yieldCacheKey(fund.primaryKey, range);
@@ -108,7 +111,7 @@ export async function loadYields(
         if (timeSinceFailure < THIRTY_MINUTES_MS) {
           continue;
         }
-        localStorage.removeItem(failCacheKey);
+        removeCacheEntry(failCacheKey);
       }
 
       // Use cached success if available
@@ -118,7 +121,7 @@ export async function loadYields(
           yieldsMap[fund.primaryKey] = cached.data;
           continue;
         }
-        localStorage.removeItem(cacheKey);
+        removeCacheEntry(cacheKey);
       }
 
       // Calculate yield for funds not in cache
@@ -129,21 +132,21 @@ export async function loadYields(
           yieldsMap[fund.primaryKey] = yieldPercent;
 
           // Cache successful result
-          localStorage.setItem(cacheKey, JSON.stringify({
+          writeJsonCache(cacheKey, {
             data: yieldPercent,
             timestamp: now
-          }));
+          });
         } else {
           // Cache failure for shorter time
-          localStorage.setItem(failCacheKey, JSON.stringify({
+          writeJsonCache(failCacheKey, {
             timestamp: now
-          }));
+          });
         }
       } catch {
         // Cache failure for shorter time
-        localStorage.setItem(failCacheKey, JSON.stringify({
+        writeJsonCache(failCacheKey, {
           timestamp: now
-        }));
+        });
       }
 
       // Update progress
