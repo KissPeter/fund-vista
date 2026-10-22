@@ -27,16 +27,28 @@ pen-pixel-shop issues are out of scope here).
 3. **Announce.** Comment on the issue:
    `🤖 opencode-orchestrator picked this up on <short-sha> (slot 1).`
    Labels: remove `agent-ready`, add `agent:in-progress`.
-4. **Dispatch.** Start an OpenChamber session in the worktree
-   (`branch: agent/issue-<N>`, `startRef: origin/main`) with the issue body,
-   the Definition of Done, and the repo conventions. The worker must:
+4. **Dispatch.** Start an OpenChamber session with `session.create`,
+   `directory` set to the prepared worktree and **no** `branch`/`startRef`:
+   step 2 already prepared the branch there, and passing them lets the
+   session be re-homed to the main checkout. Pass the issue body, the
+   Definition of Done, and the repo conventions. The worker must:
    implement the issue, keep `runtests.sh` green, push the branch, open a PR,
    link the issue to its session (`session.link`), comment the PR URL on the
    issue, and set the labels to `agent:in-progress` (done) or
    `agent:failed` + `agent:supervised` (needs a human).
 
-   **Fallback:** a dispatched worker that stays idle without a single
-   assistant message (~2 min) never started — do not wait for it. The
+   **Assert.** Right after `session.create`, call `session.status` on the new
+   session: `directory` must equal the prepared worktree (the branch follows
+   — without `branch`/`startRef` the session inherits the worktree's
+   `agent/issue-<N>`). A mismatch means the session was re-homed: the
+   dispatch **failed** — go straight to the fallback, and never let that
+   session commit outside the worktree.
+
+   **Fallback.** Take over whenever the worker produced no work: the
+   dispatch failed (the assert above found a foreign directory), the session
+   stays idle without a single assistant message (~2 min), **or** its
+   `session.status` reports state `error` (upstream failure, e.g.
+   "Insufficient account funds"). Each of those is dead on arrival — the
    orchestrator does the work itself in the same worktree, then follows
    step 5 for its own PR.
 
