@@ -17,15 +17,15 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 | B-001 | bug | Outbound HTTPS dies on an unreadable certifi CA bundle (NAS image layer corruption) — guarded client construction + fallback + /healthz surfacing | done | 2026-10-20 |
 | CR-003 | change request | Mac CD (push webhook → deploy) + parallel multi-airport traffic ingest | done | 2026-10-20 |
 | CR-004 | change request | fund-vista `/data` on permanent host storage (Mac) instead of a container-engine volume | done | 2026-10-21 |
-| CR-005 | change request | The Mac is the only backend — drop the NAS (script, runbooks, skill, comments) | done | 2026-10-21 |
 | CR-008 | change request | A `backend/uv.lock` change needs a shop-side licence-inventory regeneration (licence docs §D + PR template) | done | 2026-10-22 |
+| CR-005 | change request | The Mac is the only backend — drop the NAS (script, runbooks, skill, comments) | done | 2026-10-21 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
 Doc: `docs/CR-003-mac-cd-and-parallel-traffic-ingest.md`.
 Doc: `docs/CR-004-permanent-data-storage.md`.
-Doc: `docs/CR-005-mac-only-deployment.md`.
 Doc: `docs/CR-008-shop-licence-inventory-coupling.md`.
+Doc: `docs/CR-005-mac-only-deployment.md`.
 Doc: `docs/B-001-tls-ca-fallback.md`.
 Doc: `docs/F-001-airport-diagrams.md`.
 Doc: `docs/F-005-technical-drawing.md`, CLI manual `docs/img2plot-cli.md`, SVG ownership metadata `docs/svg-metadata.md`.
