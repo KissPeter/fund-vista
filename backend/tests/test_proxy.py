@@ -356,6 +356,30 @@ class TestCacheBehavior:
         assert len(stub) == 1
         assert fake.deletes == [key]
 
+    def test_corrupt_base64_body_falls_back_to_upstream(self, live, monkeypatch):
+        """A syntactically valid JSON entry with an undecodable body is corrupt too.
+
+        Covers the ``binascii.Error`` branch of the decode (issue #94).
+        """
+        import backend.main as backend_main
+        from backend.main import _cache_key
+
+        stub = _stub_upstream(monkeypatch, _echo)
+        key = _cache_key("api", "fib/badb64", "", "GET", b"")
+        payload = {
+            "status": 200,
+            "headers": {"content-type": "application/json", "x-cache": "MISS"},
+            "body": "!!! not base64 !!!",
+        }
+        fake = _FakeRedis(stored={key: json.dumps(payload)})
+        monkeypatch.setattr(backend_main, "redis_client", fake)
+
+        resp = live.get("/api/fib/badb64")
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["x-cache"] == "MISS"
+        assert len(stub) == 1
+        assert fake.deletes == [key]
+
     def test_redis_error_does_not_disable_caching(self, live, monkeypatch):
         """A transient Redis error is a cache miss, not a permanent outage."""
         import backend.main as backend_main
