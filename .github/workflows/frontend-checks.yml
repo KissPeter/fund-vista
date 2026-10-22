@@ -1,0 +1,75 @@
+# Frontend checks on pull requests.
+#
+# The backend has a hermetic live-server CI lane (backend-tests.yml); the
+# frontend had NONE: backend-tests.yml's paths filter never covers a frontend
+# path and deploy-pages.yml only runs on push to main. A PR that broke the
+# frontend install, the lint or the type check was therefore green on CI.
+#
+# This lane closes that gap: install -> lint -> type check -> build.
+# The type check is separate from the build on purpose: `npm run build` is
+# `vite build` only and does NOT type-check, so TypeScript errors in src/
+# would otherwise never fail a build.
+name: frontend-checks
+
+on:
+  push:
+    branches: [main]
+    paths: &frontend_paths
+      - src/**
+      - public/**
+      - index.html
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - tsconfig.app.json
+      - tsconfig.node.json
+      - eslint.config.js
+      - vite.config.ts
+      - .github/workflows/frontend-checks.yml
+  pull_request:
+    paths: *frontend_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    # Pinned instead of ubuntu-latest: the label migrates to a new Ubuntu
+    # release and the pinned image keeps the toolchain deterministic (same
+    # reasoning as backend-tests.yml).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        # `npm ci --legacy-peer-deps` instead of plain `npm ci`: the lockfile
+        # on main still resolves @vitejs/plugin-react-swc 3.11.0 against vite 8
+        # and plain `npm ci` aborts with ERESOLVE (issue #91). The dependency
+        # bump that fixes it is open PR #99 and not merged yet, so this lane
+        # would go red before it starts. The flag is dropped together with
+        # that PR. It changes no resolved version - the lockfile is still the
+        # single source of truth.
+        run: npm ci --legacy-peer-deps
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        # `npm run build` is `vite build` only - it does not type-check.
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        # The frontend test lane (node's built-in runner, no new dependency)
+        # lands with PR #114. `--if-present` keeps this step green until the
+        # script exists on the branch.
+        run: npm test --if-present
