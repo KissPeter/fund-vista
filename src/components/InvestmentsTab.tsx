@@ -7,7 +7,12 @@ import { Download, Upload, TrendingDown, AlertCircle, Trash2 } from "lucide-reac
 import { investmentStorage } from "@/services/investmentStorage";
 import { investmentApi } from "@/services/investmentApi";
 import { exchangeRateApi } from "@/services/exchangeRateApi";
-import type { Investment, InvestmentCalculation } from "@/types/investment";
+import type { Investment } from "@/types/investment";
+import {
+  calculateInvestment,
+  calculatePortfolioTotals,
+  isFiniteNumber,
+} from "@/lib/investmentMath";
 import { useToast } from "@/hooks/use-toast";
 
 interface InvestmentsTabProps {
@@ -31,14 +36,15 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
   const loadInvestments = async () => {
     setLoading(true);
     const storedInvestments = investmentStorage.getInvestments();
-    
+    const failedInvestments: string[] = [];
+
     // Update current fund values for unsold investments
     const updatedInvestments = await Promise.all(
       storedInvestments.map(async (investment) => {
         if (investment.sold) {
           return investment;
         }
-        
+
         try {
           const data = await investmentApi.getCalculationData(investment.fundId);
           const currentValue = data.diagram?.series?.[0]?.values?.slice(-1)[0];
@@ -49,15 +55,28 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
             ? (investment.soldFxRateToHuf ?? investment.currentFxRateToHuf ?? await exchangeRateApi.getRateToHuf(currency))
             : await exchangeRateApi.getRateToHuf(currency);
 
+          // A missing or non-numeric series value is a failed valuation,
+          // not a zero: fall back to the stored value only when that one
+          // is a usable number.
+          const nextValue = isFiniteNumber(currentValue)
+            ? currentValue
+            : (isFiniteNumber(investment.currentFundValue) ? investment.currentFundValue : undefined);
+
+          if (nextValue === undefined) {
+            failedInvestments.push(investment.fundName);
+          }
+
           return {
             ...investment,
             fundCurrency: currency,
             fxRateToHufAtInvestment,
             amountInFundCurrency: investment.amountInFundCurrency ?? (investment.amount / fxRateToHufAtInvestment),
             currentFxRateToHuf,
-            currentFundValue: currentValue || investment.currentFundValue
+            currentFundValue: nextValue
           };
         } catch (error) {
+          console.error("Failed to refresh the valuation of an investment:", error);
+          failedInvestments.push(investment.fundName);
           return investment;
         }
       })
@@ -66,32 +85,14 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
     investmentStorage.replaceInvestments(updatedInvestments);
     setInvestments(updatedInvestments);
     setLoading(false);
-  };
 
-  const calculateInvestment = (investment: Investment): InvestmentCalculation => {
-    const currentValue = investment.sold ? investment.soldFundValue! : investment.currentFundValue!;
-    const fxAtInvestment = investment.fxRateToHufAtInvestment ?? 1;
-    const currentFx = investment.sold
-      ? (investment.soldFxRateToHuf ?? investment.currentFxRateToHuf ?? 1)
-      : (investment.currentFxRateToHuf ?? 1);
-    const amountInFundCurrency = investment.amountInFundCurrency ?? (investment.amount / fxAtInvestment);
-    const shares = amountInFundCurrency / investment.fundValueAtInvestment;
-    const grossValue = shares * currentValue;
-    const grossValueHuf = grossValue * currentFx;
-    const grossProfit = grossValueHuf - investment.amount;
-    const grossProfitPercent = (grossProfit / investment.amount) * 100;
-    const netValue = grossValueHuf;
-    const netProfit = netValue - investment.amount;
-    const netProfitPercent = (netProfit / investment.amount) * 100;
-    
-    return {
-      grossValue: grossValueHuf,
-      netValue,
-      grossProfit,
-      netProfit,
-      grossProfitPercent,
-      netProfitPercent
-    };
+    if (failedInvestments.length > 0) {
+      toast({
+        title: "Valuation unavailable",
+        description: `Could not refresh the current value for: ${failedInvestments.join(", ")}. The affected rows are shown as unavailable.`,
+        variant: "destructive",
+      });
+    }
   };
 
   const handleSell = async (investmentId: string) => {
@@ -220,14 +221,13 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
   );
   const activeInvestments = visibleInvestments.filter((investment) => !investment.sold);
 
-  const totalPortfolio = activeInvestments.reduce((total, investment) => {
-    const calc = calculateInvestment(investment);
-    return total + calc.netValue;
-  }, 0);
-
-  const totalInvested = activeInvestments.reduce((total, investment) => total + investment.amount, 0);
-  const totalNetProfit = totalPortfolio - totalInvested;
-  const totalNetProfitPercent = totalInvested > 0 ? (totalNetProfit / totalInvested) * 100 : 0;
+  // The totals only count the priced investments; an investment without a
+  // valuation is skipped, so no NaN can reach the summary cards.
+  const totals = calculatePortfolioTotals(activeInvestments);
+  const totalPortfolio = totals.value;
+  const totalInvested = totals.invested;
+  const totalNetProfit = totals.profit;
+  const totalNetProfitPercent = totals.profitPercent;
 
   return (
     <div className="space-y-6">
@@ -291,6 +291,16 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
         </Card>
       </div>
 
+      {totals.unavailableCount > 0 && (
+        <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>
+            {totals.unavailableCount} investment{totals.unavailableCount === 1 ? "" : "s"} could not be
+            valued and {totals.unavailableCount === 1 ? "is" : "are"} excluded from the totals above.
+          </span>
+        </div>
+      )}
+
       {/* Investments Table */}
       <Card>
         <CardHeader>
@@ -323,8 +333,8 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
                 <tbody>
                   {visibleInvestments.map((investment) => {
                     const calc = calculateInvestment(investment);
-                    const isPositive = calc.grossProfit >= 0;
-                    
+                    const isPositive = calc ? calc.grossProfit >= 0 : false;
+
                     return (
                       <tr key={getInvestmentKey(investment)}>
                         <td className="border border-border p-3">
@@ -347,20 +357,32 @@ export const InvestmentsTab = ({ onAnalyzeFund }: InvestmentsTabProps) => {
                           {investment.investmentDate}
                         </td>
                         <td className="border border-border p-3 text-right">
-                          {formatHuf(calc.grossValue)}
+                          {calc ? formatHuf(calc.grossValue) : <span className="text-muted-foreground">Unavailable</span>}
                         </td>
                         <td className={`border border-border p-3 text-right font-semibold ${
-                          isPositive ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
+                          calc
+                            ? (isPositive ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400')
+                            : 'text-muted-foreground'
                         }`}>
-                          {isPositive ? "+" : ""}{formatHuf(calc.grossProfit)}
-                          <div className="text-xs font-normal">
-                            {isPositive ? '+' : ''}{calc.grossProfitPercent.toFixed(2)}%
-                          </div>
+                          {calc ? (
+                            <>
+                              {isPositive ? "+" : ""}{formatHuf(calc.grossProfit)}
+                              <div className="text-xs font-normal">
+                                {isPositive ? '+' : ''}{calc.grossProfitPercent.toFixed(2)}%
+                              </div>
+                            </>
+                          ) : (
+                            <span className="font-normal">Unavailable</span>
+                          )}
                         </td>
                         <td className="border border-border p-3 text-center">
-                          <Badge variant={investment.sold ? "secondary" : "default"}>
-                            {investment.sold ? "Sold" : "Active"}
-                          </Badge>
+                          {!calc ? (
+                            <Badge variant="outline">Valuation unavailable</Badge>
+                          ) : (
+                            <Badge variant={investment.sold ? "secondary" : "default"}>
+                              {investment.sold ? "Sold" : "Active"}
+                            </Badge>
+                          )}
                         </td>
                         <td className="border border-border p-3 text-center">
                           {!investment.sold ? (
