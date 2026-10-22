@@ -46,4 +46,5 @@ Doc: `docs/F-005-technical-drawing.md`, CLI manual `docs/img2plot-cli.md`, SVG o
 - `docs/ui-airports.md` — `/airports` Jinja page: controls, JS, backend.
 - `docs/REF-001-router-pipeline-refactor.md` — refactor plan (PLAN): router/pipeline extraction with the fix-once rule (domains stay separate, shared machinery + shared tests).
 - `docs/REF-002-large-file-refactor-plan.md` — refactor plan (PLAN, issue #45): >500-line inventory with 21-day churn ranking, per-file findings + lint notes, sequenced phases 1–5 (routers → jobs runner → penplot helpers → dashboard).
+- `docs/REF-003-pr-landing-order.md` — landing order of the open agent PRs + the `docs/index.md` anchor rule (one anchor per branch, one canonical fix per problem, issue #86).
 - `docs/python-service-shop-changes.md` — pen-pixel work-order §§1–8 implementation record.
