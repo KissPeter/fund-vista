@@ -52,6 +52,25 @@ MAX_RUNTIME_INGEST_S = 840.0
 #: Per-IP cap on non-terminal jobs (extra POST → 429 rate_limited).
 MAX_NONTERMINAL_PER_IP = 3
 
+#: Liveness heartbeat (issue #1061). The runner task, its cancel poller and
+#: the runtime watchdog live in the memory of ONE uvicorn worker: a worker
+#: or container restart loses them and nothing marks the Redis doc terminal
+#: (the doc then only dies with its TTL, and the client sees a 404 instead
+#: of a failed job). The owning worker therefore refreshes a liveness key
+#: (``job:live:{id}``) every ``HEARTBEAT_S`` while the task runs; the key
+#: expires ``LIVE_TTL_S`` after the last refresh, which is what tells a live
+#: job from an orphan.
+HEARTBEAT_S = 30.0
+LIVE_TTL_S = 180.0
+
+#: Grace before a stale non-terminal job is reaped: the doc must show no
+#: activity for this long AND its liveness key must be gone. The grace is
+#: deliberately generous — a healthy job refreshes the liveness key every
+#: ``HEARTBEAT_S``, so the key alone would do; the doc age keeps a job that
+#: never started (created, owner died before the task ran) from being
+#: reaped while its creator is still alive.
+ORPHAN_GRACE_S = 180.0
+
 #: Per-(IP,type) singleflight set TTL (plan §P3.2).
 SUPERSEDE_SET_TTL_S = 600
 
@@ -112,4 +131,7 @@ __all__ = [
     "MAX_RUNTIME_INGEST_S",
     "MAX_NONTERMINAL_PER_IP",
     "SUPERSEDE_SET_TTL_S",
+    "HEARTBEAT_S",
+    "LIVE_TTL_S",
+    "ORPHAN_GRACE_S",
 ]

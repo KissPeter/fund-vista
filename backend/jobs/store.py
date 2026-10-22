@@ -12,6 +12,9 @@ Redis is the source of truth across the 4 uvicorn workers:
   ``cancel_previous`` singleflight (TTL 10 min).
 * ``job:cancel:{id}`` — PUBLISH on cancel (wake-up; runners also poll the
   status every 200 ms so a missed pubsub message still cancels).
+* ``job:live:{id}`` — liveness key (issue #1061): the owning worker
+  refreshes it while its task runs; when it expires the worker is gone
+  (restart) and the job doc is an orphan. See :func:`reap_orphaned`.
 
 Without Redis (tests, degraded mode) the same API runs on a process-local
 dict with per-key expiry so contract tests stay hermetic. All Redis errors
@@ -24,9 +27,13 @@ import json
 import logging
 import time
 
+from redis.exceptions import WatchError
+
 from backend.jobs.schemas import (
     CANCELLED_TTL_S,
     FAILURE_TTL_S,
+    LIVE_TTL_S,
+    ORPHAN_GRACE_S,
     QUEUED_TTL_S,
     RESULT_TTL_S,
     SUPERSEDE_SET_TTL_S,
@@ -41,6 +48,7 @@ _redis = None
 _memory: dict[str, tuple[float, dict]] = {}
 _ip_sets: dict[str, tuple[float, set[str]]] = {}
 _pending: list[str] = []
+_live: dict[str, float] = {}
 
 
 def configure_jobs_redis(client) -> None:
@@ -50,10 +58,15 @@ def configure_jobs_redis(client) -> None:
     _memory.clear()
     _ip_sets.clear()
     _pending.clear()
+    _live.clear()
 
 
 def _job_key(job_id: str) -> str:
     return f"job:{job_id}"
+
+
+def _live_key(job_id: str) -> str:
+    return f"job:live:{job_id}"
 
 
 def _ip_key(ip: str, job_type: str) -> str:
@@ -65,6 +78,8 @@ def _prune(now: float) -> None:
         del _memory[key]
     for key in [k for k, (exp, _) in _ip_sets.items() if exp <= now]:
         del _ip_sets[key]
+    for key in [k for k, exp in _live.items() if exp <= now]:
+        del _live[key]
 
 
 def _ttl_for(status: str) -> int:
@@ -250,6 +265,139 @@ async def request_cancel(job_id: str) -> bool:
     return True
 
 
+async def heartbeat(job_id: str) -> None:
+    """Refresh the job's liveness key — its owner is alive.
+
+    The runner task, the cancel poller and the runtime watchdog live in the
+    memory of ONE worker: a worker or container restart loses them and
+    nothing moves the job doc on any more (#1061). This key is the liveness
+    signal the reaper reads; it expires ``LIVE_TTL_S`` after the last
+    refresh.
+    """
+    if _redis is not None:
+        try:
+            await _redis.setex(_live_key(job_id), int(LIVE_TTL_S), "1")
+            return
+        except Exception as exc:
+            log.warning("jobs.redis heartbeat failed id=%s: %s", job_id[:12], exc)
+    now = time.time()
+    _prune(now)
+    _live[_live_key(job_id)] = now + LIVE_TTL_S
+
+
+async def clear_heartbeat(job_id: str) -> None:
+    """Drop the liveness key (the job reached a terminal state)."""
+    if _redis is not None:
+        try:
+            await _redis.delete(_live_key(job_id))
+        except Exception as exc:
+            log.warning("jobs.redis heartbeat clear failed id=%s: %s", job_id[:12], exc)
+    _live.pop(_live_key(job_id), None)
+
+
+async def is_alive(job_id: str) -> bool:
+    """True while a live owner refreshes the liveness key.
+
+    Fail-safe: a Redis read error answers True (assume the owner lives), so
+    a hiccup can never fail a healthy job.
+    """
+    if _redis is not None:
+        try:
+            return bool(await _redis.exists(_live_key(job_id)))
+        except Exception as exc:
+            log.warning("jobs.redis liveness read failed id=%s: %s", job_id[:12], exc)
+            return True
+    _prune(time.time())
+    exp = _live.get(_live_key(job_id))
+    return exp is not None and exp > time.time()
+
+
+async def _write_if_still_orphaned(job_id: str, doc: dict) -> bool:
+    """Write the terminal doc only while the job is still an orphan.
+
+    Redis: the liveness key is WATCHed, so a heartbeat that lands between
+    the check and the write aborts the transaction — a live job is never
+    failed by a racing reap. The process-local fallback has a single writer.
+    """
+    if _redis is None:
+        if await is_alive(job_id):
+            return False
+        now = time.time()
+        _prune(now)
+        _memory[_job_key(job_id)] = (now + FAILURE_TTL_S, doc)
+        return True
+    try:
+        async with _redis.pipeline(transaction=True) as pipe:
+            await pipe.watch(_live_key(job_id))
+            if await pipe.exists(_live_key(job_id)):
+                await pipe.reset()
+                return False
+            pipe.multi()
+            pipe.set(_job_key(job_id), json.dumps(doc), ex=FAILURE_TTL_S)
+            await pipe.execute()
+    except WatchError:
+        # The owner refreshed the liveness key mid-write: it is alive.
+        return False
+    except Exception as exc:
+        log.warning("jobs.orphan write failed id=%s: %s", job_id[:12], exc)
+        return False
+    now = time.time()
+    _prune(now)
+    _memory[_job_key(job_id)] = (now + FAILURE_TTL_S, doc)
+    return True
+
+
+async def reap_orphaned(job_id: str) -> dict | None:
+    """Fail a job whose owner is gone (worker/container restart).
+
+    The doc is the source of truth, but the thing that would move it on —
+    the runner task — lives in one worker's memory. When that worker dies
+    the doc stays ``running`` until its TTL expires and the client sees a
+    404 instead of a terminal state (#1061). The liveness key tells the two
+    apart: the owner refreshes it while the task runs, it expires when the
+    owner is gone.
+
+    A stale ``cancelling`` doc is the same leak with another terminal state:
+    the client asked to cancel and nobody carried it out.
+
+    Returns the job doc (reaped or untouched); None when the id is unknown.
+    """
+    doc = await get_job(job_id)
+    if doc is None:
+        return None
+    status = doc.get("status")
+    if status not in ("queued", "running", "cancelling"):
+        return doc
+    now = time.time()
+    updated_at = float(doc.get("updated_at") or 0.0)
+    if now - updated_at < ORPHAN_GRACE_S:
+        return doc
+    if await is_alive(job_id):
+        return doc
+    if status == "cancelling":
+        await set_cancelled(job_id)
+        log.warning(
+            "jobs.orphan id=%s type=%s was=cancelling", job_id[:12], doc.get("type")
+        )
+        return await get_job(job_id)
+    failed = {
+        **doc,
+        "status": "failed",
+        "error": {
+            "code": "orphaned",
+            "message": "The job's worker restarted before it finished.",
+        },
+        "result": None,
+        "updated_at": now,
+    }
+    if not await _write_if_still_orphaned(job_id, failed):
+        # The owner (or another worker) got there first — never overwrite.
+        return await get_job(job_id)
+    await _remove_from_ip_sets(job_id, failed)
+    log.warning("jobs.orphan id=%s type=%s", job_id[:12], doc.get("type"))
+    return failed
+
+
 async def list_nonterminal_by_ip_type(ip: str, job_type: str) -> list[str]:
     out: list[str] = []
     if _redis is not None:
@@ -325,6 +473,7 @@ def reset_memory() -> None:
     _memory.clear()
     _ip_sets.clear()
     _pending.clear()
+    _live.clear()
 
 
 __all__ = [
@@ -338,6 +487,10 @@ __all__ = [
     "set_error",
     "set_cancelled",
     "request_cancel",
+    "heartbeat",
+    "clear_heartbeat",
+    "is_alive",
+    "reap_orphaned",
     "list_nonterminal_by_ip_type",
     "count_nonterminal_by_ip",
     "expire_job",

@@ -229,6 +229,36 @@ curl -s -X DELETE $BASE/v1/jobs/$J
 
 Acceptance: interactive cancel always server-visible (`DELETE` or auto-supersede); no >100 ms POST; sync shapes preserved inside `result`/`error`.
 
+#### P3.5 Orphan reaping (issue #1061 — a restart must not strand a job)
+
+The runner task, its cancel poller and the runtime watchdog live in the
+memory of ONE uvicorn worker. A worker or container restart loses all
+three: the Redis doc stays `running` until its TTL expires and the poll
+then answers `404 job_not_found` — the client sees a vanished job instead
+of a failed one (the shop showed a raw error, not the ingest-failed copy).
+
+- **Liveness key.** The runner refreshes `job:live:{id}` every
+  `HEARTBEAT_S` (30 s) while its task runs; the key expires `LIVE_TTL_S`
+  (180 s) after the last refresh. It is a separate key on purpose: a
+  heartbeat must never rewrite the job doc (a lost update could undo a
+  cancel).
+- **Reap on poll.** `GET /v1/jobs/{id}` fails a job whose doc shows no
+  activity for `ORPHAN_GRACE_S` (180 s) AND whose liveness key is gone:
+  `failed {error:{code:"orphaned"}}` — a terminal state the client can
+  show, never a 404. A stale `cancelling` doc becomes `cancelled` (the
+  client asked to cancel, nobody carried it out).
+- **Race safety.** The reap writes the doc inside a Redis transaction that
+  WATCHes the liveness key: a heartbeat that lands between the check and
+  the write aborts it, so a live job is never failed by a racing reap. A
+  Redis read error answers "alive" (fail-safe: a hiccup never fails a
+  healthy job).
+- **Per-IP slot.** A reaped job leaves the `ip:{ip}:{type}` set, so the
+  per-IP non-terminal cap is not blocked by a dead job.
+
+Tests: `backend/tests/test_jobs_orphan.py` (the stale-doc, live-doc,
+grace-window, terminal-doc, cancelling-doc and per-IP cases, plus the
+runner's heartbeat).
+
 ## Appendix — HAR bodies (standalone fixtures, no .har file needed)
 
 ```json
