@@ -1,5 +1,10 @@
 name: Deploy Frontend to GitHub Pages
 
+# The Pages deploy of the frontend. It runs on `main` pushes only and is
+# NOT a merge gate (the gate is the backend-tests / frontend-checks lane).
+# The runner is pinned instead of ubuntu-latest: the label migrates to a new
+# Ubuntu release and the pinned image keeps the build deterministic.
+
 on:
   push:
     branches: [main]
@@ -16,13 +21,13 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, ARM64]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -34,7 +39,7 @@ jobs:
         run: npm run build
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: dist
 
@@ -42,9 +47,9 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, ARM64]
     needs: build
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
