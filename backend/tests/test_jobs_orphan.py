@@ -165,6 +165,18 @@ def test_stale_running_job_without_liveness_is_failed_as_orphaned(client):
     assert body["result"] is None
 
 
+def test_stale_queued_job_is_failed_as_orphaned(client):
+    """The owner died before the task started: the doc never left `queued`."""
+    _make_job("queued")
+    _age_doc(ORPHAN_GRACE_S + 60)
+
+    resp = client.get(f"/v1/jobs/{JOB_ID}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "failed", body
+    assert body["error"]["code"] == "orphaned", body
+
+
 def test_live_job_is_never_reaped(client):
     _make_job("running")
     _age_doc(ORPHAN_GRACE_S + 60)
