@@ -175,7 +175,7 @@ Keep existing sync `POST` paths untouched. Add:
 - `POST /v1/jobs` → `202 {job_id, status:"queued", status_url:"/v1/jobs/{id}", cancel_url:"/v1/jobs/{id}", poll_after_ms:500}`
   body: `{type:"citymap_render"|"citymap_import"|"airport_render"|"airport_import"|"convert", request:<original POST body verbatim — see P2.1 for exact shapes>, cancel_previous:true (default)}`
   Validate `request` synchronously with the existing pydantic schemas: `422 {error:{code:"invalid_params",…}}` immediately, no job created. Rate-limit enforced here too. Must respond in `<100ms` (enqueue only).
-- `GET /v1/jobs/{id}` → `200 {job_id, type, status:"queued"|"running"|"done"|"failed"|"cancelled", progress?:{stage, done, total}, result?:<sync success JSON verbatim per P2.1>, error?:{error:{code,message}}}`. `404 {error:{code:"job_not_found"}}` on unknown/expired id. No auth beyond the unguessable id (`secrets.token_hex(16)`, 32 hex chars).
+- `GET /v1/jobs/{id}` → `200 {job_id, type, status:"queued"|"running"|"done"|"failed"|"cancelled", progress?:{stage, done, total}, result?:<sync success JSON verbatim per P2.1>, error?:{error:{code,message}}}`. `404 {error:{code:"job_not_found"}}` on unknown/expired id. No auth beyond the unguessable id (`secrets.token_hex(16)`, 32 hex chars). The poll also reaps an orphaned job (§P3.5): a stale `queued|running` doc whose liveness key is gone answers `200` with `status:"failed"` and `error:{code:"orphaned"}` — a terminal state, never a 404.
 - `DELETE /v1/jobs/{id}` → `200 {job_id, status:"cancelled"}` (idempotent; deleting a `done` job expires it + best-effort artifact cleanup; `queued|running` jobs are cancelled without running further / killed with partial files deleted).
 
 `result` on `done` is byte-shape-identical to the sync success in P2.1 (same `svg_url` absolute-host rule `PENPLOT_PUBLIC_BASE_URL` or request origin, same `warnings`, `stats`). `error` on `failed` reuses the sync tokens (`invalid_params` is sync-422 at enqueue; runtime failures reuse the sync envelope; timeout → `{error:{code:"timeout"}}`). Job TTL: results 1 h, failures 10 min, cancelled 1 h, then `404`.
@@ -205,6 +205,7 @@ Contract (in-process app, memory job store, fake Overpass/vpype where noted):
 - `cancel_previous:true`: `POST A` then `POST B` same IP+type → `A = cancelled`, `B` runs; response `B` carries `X-Penplot-Superseded: A`.
 - Limits: 4th non-terminal same-IP `POST` → `429 rate_limited` + `Retry-After: 60`.
 - TTL: `GET` unknown id → `404 job_not_found`; done-job `GET` after TTL → `404`.
+- Orphan reaping (§P3.5, `backend/tests/test_jobs_orphan.py`): a stale `queued|running` doc whose liveness key is gone → `GET` → `200 failed` with `error.code = "orphaned"` (a live job is never reaped; the write is WATCH-guarded); a stale `cancelling` doc → `200 cancelled`.
 - Cross-check: `result` of async `citymap_render` deep-equals sync `POST /v1/citymap/render` for the HAR `[24]` body (modulo `cache_hit` + cache-hit warning tokens).
 
 System: curl acceptance (no client code needed):

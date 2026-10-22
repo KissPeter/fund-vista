@@ -133,12 +133,15 @@ async def _heartbeat_loop(job_id: str) -> None:
     """
     try:
         while True:
-            await _store.heartbeat(job_id)
+            try:
+                await _store.heartbeat(job_id)
+            except Exception as exc:  # noqa: BLE001 — a heartbeat must never kill the job
+                # Keep the loop alive: a dead heartbeat would make the store
+                # reap a running job (a live job must never look orphaned).
+                log.warning("jobs.heartbeat failed id=%s: %r", job_id[:12], exc)
             await asyncio.sleep(HEARTBEAT_S)
     except asyncio.CancelledError:
         pass
-    except Exception as exc:  # noqa: BLE001 — a heartbeat must never kill the job
-        log.warning("jobs.heartbeat failed id=%s: %r", job_id[:12], exc)
 
 
 async def _execute(
