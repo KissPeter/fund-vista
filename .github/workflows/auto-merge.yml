@@ -43,9 +43,12 @@ concurrency:
 
 jobs:
   sweep:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, ARM64]
     timeout-minutes: 20
     steps:
+      # The runner service starts with a minimal PATH; gh lives in Homebrew.
+      - name: Put Homebrew on PATH
+        run: echo /opt/homebrew/bin >> "$GITHUB_PATH"
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}

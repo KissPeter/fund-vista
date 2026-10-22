@@ -50,8 +50,11 @@ jobs:
   integration:
     # Pinned instead of ubuntu-latest: the label migrates to Ubuntu 26 and
     # the pinned image keeps the suite environment deterministic.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, ARM64]
     steps:
+      # The runner service starts with a minimal PATH; gh/tesseract live in Homebrew.
+      - name: Put Homebrew on PATH
+        run: echo /opt/homebrew/bin >> "$GITHUB_PATH"
       - uses: actions/checkout@v7
         with:
           # A dispatched run with pr_number tests the merge of the PR into
@@ -75,7 +78,8 @@ jobs:
           uv pip install --system -r pyproject.toml --group test
 
       - name: OCR system dep (pytesseract fallback path)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr
+        # Self-hosted runner: tesseract is preinstalled via Homebrew.
+        run: tesseract --version
 
       - name: Run integration suite (live servers, mocked upstreams)
         env:
@@ -109,8 +113,11 @@ jobs:
           include-hidden-files: true
 
   schemathesis:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, ARM64]
     steps:
+      # The runner service starts with a minimal PATH; gh/tesseract live in Homebrew.
+      - name: Put Homebrew on PATH
+        run: echo /opt/homebrew/bin >> "$GITHUB_PATH"
       - uses: actions/checkout@v7
         with:
           # A dispatched run with pr_number tests the merge of the PR into
@@ -155,9 +162,12 @@ jobs:
     name: verdict
     if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.pr_number != '' && needs.integration.result != 'cancelled' && needs.schemathesis.result != 'cancelled' }}
     needs: [integration, schemathesis]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, ARM64]
     timeout-minutes: 5
     steps:
+      # The runner service starts with a minimal PATH; gh/tesseract live in Homebrew.
+      - name: Put Homebrew on PATH
+        run: echo /opt/homebrew/bin >> "$GITHUB_PATH"
       - name: Report the merge-ref verdict
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
