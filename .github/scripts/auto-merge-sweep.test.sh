@@ -146,6 +146,26 @@ else
   expect "an unknown merge method is rejected" "rejected" "rejected"
 fi
 
+# --- a broken sweep fails, it does not report green -------------------------
+
+# `fail` must end the shell with a non-zero status and an error annotation.
+status=0
+out="$(fail "boom" 2>&1)" || status=$?
+expect "fail annotates the error" "::error::boom" "$out"
+expect "fail exits non-zero" "1" "$status"
+
+# preflight without gh on the PATH is an error, not a skipped sweep.
+status=0
+out="$(/bin/bash -c 'source "$1"; REPO=o/r; command() { [ "$2" = gh ] && return 1; builtin command "$@"; }; preflight' _ "$SCRIPT_DIR/auto-merge-sweep.sh" 2>&1)" || status=$?
+expect "preflight rejects a runner without gh" "1" "$status"
+expect "preflight names the missing tool" "::error::gh is not installed on this runner" "$out"
+
+# a failed PR is counted, a skipped one is not.
+FAILED_COUNT=0; SKIPPED_COUNT=0; MERGED_COUNT=0; SUMMARY_ROWS=""
+add_row "#1" "t" "failed" "d"
+add_row "#2" "t" "skipped" "d"
+expect "a failed row is counted as failed" "1/1" "$FAILED_COUNT/$SKIPPED_COUNT"
+
 echo ""
 if [ "$FAILURES" -gt 0 ]; then
   echo "$FAILURES of $CHECKS checks FAILED"

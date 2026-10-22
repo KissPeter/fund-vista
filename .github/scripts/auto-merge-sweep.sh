@@ -69,10 +69,28 @@ validate_config() {
 SUMMARY_ROWS=""
 MERGED_COUNT=0
 SKIPPED_COUNT=0
+FAILED_COUNT=0
 MAIN_SHA=""
 
 log() {
   printf '%s %s\n' "$(date -u '+%H:%M:%S')" "$*"
+}
+
+# fail <message> - a broken sweep must turn the job red: a sweep that could
+# not do its work is not a sweep that found nothing to merge.
+fail() {
+  printf '::error::%s\n' "$*"
+  exit 1
+}
+
+# preflight - the tools and the API access the sweep cannot work without.
+# Without it a missing `gh` or a bad token is swallowed by the `|| true` and
+# `2>/dev/null` of the helpers below and the job ends green with nothing done.
+preflight() {
+  command -v gh >/dev/null 2>&1 || fail "gh is not installed on this runner"
+  command -v jq >/dev/null 2>&1 || fail "jq is not installed on this runner"
+  gh api "repos/$REPO" --jq '.full_name' >/dev/null 2>&1 \
+    || fail "the GitHub API is not reachable or GH_TOKEN cannot read $REPO"
 }
 
 # add_row <pr> <title> <decision> <detail>
@@ -81,6 +99,7 @@ add_row() {
 "
   case "$3" in
     merged | would-merge) MERGED_COUNT=$((MERGED_COUNT + 1)) ;;
+    failed) FAILED_COUNT=$((FAILED_COUNT + 1)) ;;
     *) SKIPPED_COUNT=$((SKIPPED_COUNT + 1)) ;;
   esac
 }
@@ -94,7 +113,7 @@ write_summary() {
     echo "- merge method: \`${MERGE_METHOD}\`"
     echo "- token source: \`${TOKEN_SOURCE}\`"
     echo "- dry run: \`${DRY_RUN}\`"
-    echo "- merged: ${MERGED_COUNT}, skipped: ${SKIPPED_COUNT}"
+    echo "- merged: ${MERGED_COUNT}, skipped: ${SKIPPED_COUNT}, failed: ${FAILED_COUNT}"
     echo ""
     echo "| PR | title | decision | detail |"
     echo "| --- | --- | --- | --- |"
@@ -289,8 +308,8 @@ main_is_green() {
   local entry workflow run_id state
   refresh_main_sha
   if [ -z "$MAIN_SHA" ]; then
-    log "could not read main; treating it as not green"
-    return 1
+    # An unreadable `main` is a broken sweep, not a red `main`.
+    fail "could not read the head of main"
   fi
   for entry in $GATE_WORKFLOW_LIST; do
     workflow="$(gate_workflow_name "$entry")"
@@ -558,9 +577,11 @@ refresh_ci_after_merges() {
 main() {
   validate_config
   log "sweep start: repo=$REPO token=$TOKEN_SOURCE method=$MERGE_METHOD gates=$GATE_WORKFLOWS dry_run=$DRY_RUN"
+  preflight
 
   if [ "$REQUIRE_MAIN_GREEN" = "true" ] && ! main_is_green; then
     log "main is not green: no PR is merged in this run"
+    printf '::warning::main is not green: the sweep merged nothing\n'
     add_row "-" "-" "skipped" "main is not green"
     write_summary
     exit 0
@@ -595,7 +616,9 @@ main() {
     [ -n "$pr" ] || continue
     number="$(jq -r '.number' <<<"$pr")"
     title="$(jq -r '.title' <<<"$pr")"
-    decision="$(cat "$eval_dir/$number" 2>/dev/null || echo "skip|no verdict")"
+    # A PR without a verdict file means its evaluation crashed: that is a
+    # failure of the sweep, not a PR that is merely not ready.
+    decision="$(cat "$eval_dir/$number" 2>/dev/null || echo "error|the evaluation produced no verdict")"
     detail="${decision#*|}"
     decision="${decision%%|*}"
     case "$decision" in
@@ -614,6 +637,9 @@ main() {
           add_row "#$number" "$title" "failed" "$detail"
         fi
         ;;
+      error)
+        add_row "#$number" "$title" "failed" "$detail"
+        ;;
       *)
         add_row "#$number" "$title" "skipped" "$detail"
         ;;
@@ -622,8 +648,11 @@ main() {
 
   refresh_ci_after_merges
 
-  log "sweep done: merged=$MERGED_COUNT skipped=$SKIPPED_COUNT"
+  log "sweep done: merged=$MERGED_COUNT skipped=$SKIPPED_COUNT failed=$FAILED_COUNT"
   write_summary
+  if [ "$FAILED_COUNT" -gt 0 ]; then
+    fail "$FAILED_COUNT pull request(s) could not be processed (see the summary)"
+  fi
 }
 
 # Sourcing the script (the self test does) must not run the sweep.
