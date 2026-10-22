@@ -73,27 +73,26 @@ def request_cancel_local(job_id: str) -> None:
         stop.set()
 
 
-def drop_queued(job_id: str) -> None:
-    """If the task hasn't started running, cancel it so it never runs."""
+async def drop_queued(job_id: str) -> None:
+    """Drop a job that never started: cancel the task and make the doc terminal.
 
-    async def _drop() -> None:
-        await asyncio.sleep(0)
-        task = _tasks.get(job_id)
-        doc = await _store.get_job(job_id)
-        if (
-            task is not None
-            and not task.done()
-            and doc is not None
-            and doc.get("status") in ("cancelling", "cancelled")
-            and doc.get("progress", {}).get("stage") == "queued"
-        ):
-            task.cancel()
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_drop())
-    except RuntimeError:
-        pass
+    A queued job deleted before its task starts would otherwise stay in the
+    non-terminal ``cancelling`` state for the whole ``CANCELLED_TTL_S`` and
+    keep consuming the caller's per-IP job quota (issue #92). A job that is
+    already running is left to the cancel poller, which stops it and writes
+    the terminal state itself.
+    """
+    doc = await _store.get_job(job_id)
+    if doc is None:
+        return
+    if doc.get("status") in ("done", "failed"):
+        return
+    if doc.get("progress", {}).get("stage") != "queued":
+        return  # already running: the runner finishes the cancellation
+    task = _tasks.get(job_id)
+    if task is not None and not task.done():
+        task.cancel()
+    await _store.set_cancelled(job_id)
 
 
 def reset_local() -> None:
@@ -186,7 +185,14 @@ async def _run_job(job_id: str, stop: threading.Event) -> None:
     job_type = doc["type"]
     payload = doc.get("request", {})
     started = time.monotonic()
-    await _store.set_status(job_id, "running", progress={"stage": "running", "done": 0, "total": 0})
+    started_doc = await _store.set_status(
+        job_id, "running", progress={"stage": "running", "done": 0, "total": 0})
+    if started_doc is None or started_doc.get("status") != "running":
+        # The job was cancelled between the enqueue and this start: the store
+        # keeps the terminal state, so the job must not run (issue #92).
+        await _store.set_cancelled(job_id)
+        _stops.pop(job_id, None)
+        return
     poller = asyncio.create_task(_cancel_poller(job_id, stop))
     heartbeat = asyncio.create_task(_heartbeat_loop(job_id))
     try:
