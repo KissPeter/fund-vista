@@ -15,10 +15,10 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 | F-004 | feature | Airport layer toggles (tick any) | in progress | 2026-09-14 |
 | F-005 | feature | Technical-drawing convert: OCR labels → single-stroke font, exact circles, thin lines (`/penplot` opt-in) | in progress | 2026-10-07 |
 | B-001 | bug | Outbound HTTPS dies on an unreadable certifi CA bundle (NAS image layer corruption) — guarded client construction + fallback + /healthz surfacing | done | 2026-10-20 |
+| B-002 | bug | Local suite showed a false red without the `tesseract-ocr` system binary (issue #80) — the OCR read degrades with a warning instead of `KeyError: None`, and the OCR tests are host-independent | done | 2026-10-22 |
 | CR-003 | change request | Mac CD (push webhook → deploy) + parallel multi-airport traffic ingest | done | 2026-10-20 |
 | CR-004 | change request | fund-vista `/data` on permanent host storage (Mac) instead of a container-engine volume | done | 2026-10-21 |
 | CR-005 | change request | The Mac is the only backend — drop the NAS (script, runbooks, skill, comments) | done | 2026-10-21 |
-| B-002 | bug | Local suite showed a false red without the `tesseract-ocr` system binary (issue #80) — the OCR read degrades with a warning instead of `KeyError: None`, and the OCR tests are host-independent | done | 2026-10-22 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
