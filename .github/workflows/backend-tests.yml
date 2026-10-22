@@ -59,7 +59,8 @@ jobs:
           if ! command -v gh >/dev/null; then
             arch="$(uname -m)"; case "$arch" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
             v=2.101.0
-            curl -fsSL "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+              "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
               | tar -xz -C "$RUNNER_TEMP"
             echo "$RUNNER_TEMP/gh_${v}_linux_${arch}/bin" >> "$GITHUB_PATH"
           fi
@@ -132,7 +133,8 @@ jobs:
           if ! command -v gh >/dev/null; then
             arch="$(uname -m)"; case "$arch" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
             v=2.101.0
-            curl -fsSL "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+              "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
               | tar -xz -C "$RUNNER_TEMP"
             echo "$RUNNER_TEMP/gh_${v}_linux_${arch}/bin" >> "$GITHUB_PATH"
           fi
@@ -193,7 +195,8 @@ jobs:
           if ! command -v gh >/dev/null; then
             arch="$(uname -m)"; case "$arch" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
             v=2.101.0
-            curl -fsSL "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+              "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
               | tar -xz -C "$RUNNER_TEMP"
             echo "$RUNNER_TEMP/gh_${v}_linux_${arch}/bin" >> "$GITHUB_PATH"
           fi

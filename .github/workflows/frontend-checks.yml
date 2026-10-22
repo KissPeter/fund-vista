@@ -28,19 +28,35 @@ on:
       - .github/workflows/frontend-checks.yml
   pull_request:
     paths: *frontend_paths
+  # Manual run, two modes (same contract as backend-tests):
+  #   - no input: the checks on the dispatched ref.
+  #   - pr_number=<n>: the checks against `refs/pull/<n>/merge`; the verdict
+  #     is reported as the commit status `automerge/merge-ref/frontend-checks`
+  #     on the head commit of the PR (see docs/auto-merge.md).
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number: test against refs/pull/<n>/merge"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
+  statuses: write
+  pull-requests: read
 
 jobs:
   checks:
-    # Pinned instead of ubuntu-latest: the label migrates to a new Ubuntu
-    # release and the pinned image keeps the toolchain deterministic (same
-    # reasoning as backend-tests.yml).
-    runs-on: ubuntu-24.04
+    # Self-hosted like backend-tests: the hosted runners are unavailable
+    # (billing), and a lane that never runs would never turn green.
+    runs-on: [self-hosted, linux, ARM64]
     steps:
       - uses: actions/checkout@v7
+        with:
+          # A dispatched run with pr_number tests the merge of the PR into
+          # main, the same thing the pull_request event tests.
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || '' }}
 
       - name: Set up Node 24
         uses: actions/setup-node@v4
@@ -73,3 +89,46 @@ jobs:
         # lands with PR #114. `--if-present` keeps this step green until the
         # script exists on the branch.
         run: npm test --if-present
+
+  verdict:
+    # Reports the verdict of a dispatched run as a commit status, so the
+    # auto-merge sweep can read it. A normal run needs no verdict: its check
+    # run is the verdict.
+    name: verdict
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.pr_number != '' && needs.checks.result != 'cancelled' }}
+    needs: [checks]
+    runs-on: [self-hosted, linux, ARM64]
+    timeout-minutes: 5
+    steps:
+      # The self-hosted runner is a Linux container without gh: fetch the binary
+      # (no root needed) when it is missing.
+      - name: Ensure gh
+        run: |
+          set -euo pipefail
+          if ! command -v gh >/dev/null; then
+            arch="$(uname -m)"; case "$arch" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
+            v=2.101.0
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+              "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
+              | tar -xz -C "$RUNNER_TEMP"
+            echo "$RUNNER_TEMP/gh_${v}_linux_${arch}/bin" >> "$GITHUB_PATH"
+            export PATH="$RUNNER_TEMP/gh_${v}_linux_${arch}/bin:$PATH"
+          fi
+          gh --version
+      - name: Report the merge-ref verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          WORKFLOW: ${{ github.workflow }}
+          CHECKS: ${{ needs.checks.result }}
+        run: |
+          merge_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/pull/$PR_NUMBER/merge" --jq '.object.sha')"
+          head_sha="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+          state=success
+          if [ "$CHECKS" != success ]; then
+            state=failure
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$head_sha" \
+            -f state="$state" \
+            -f context="automerge/merge-ref/$WORKFLOW" \
+            -f description="merge ref $merge_sha"
