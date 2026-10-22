@@ -270,12 +270,6 @@ def test_budget_overrun_returns_no_words_and_a_warning(monkeypatch, tmp_path):
             return [_word()]
 
     monkeypatch.setattr(ocr_text, "SheetEngine", Slow)
-    # The engine is stubbed, so no real OCR is needed: pin the backend
-    # resolution instead of depending on tesserocr/pytesseract being installed
-    # on the host. Without this the test dies with KeyError(None) on a machine
-    # without an OCR backend (it passed on Linux CI only).
-    monkeypatch.setattr(drawing, "resolve_backend", lambda settings=None: "tesseract")
-    monkeypatch.setitem(drawing.OCR_BACKENDS, "tesseract", (lambda: True, lambda: object()))
     warns: list[str] = []
     out = drawing._read_words(np.zeros((10, 10), np.uint8),
                               settings=Settings(data_dir=str(tmp_path)),

@@ -79,5 +79,10 @@ traversal, device files and outside links are refused instead of written.
 - [x] The pre-existing failure
       `test_penplot_drawing.py::test_budget_overrun_returns_no_words_and_a_warning`
       (it resolved a real OCR backend on hosts without tesserocr /
-      pytesseract) is fixed in this branch — the test now pins the backend
-      resolution.
+      pytesseract) is **not** fixed in this branch: the canonical fix lives
+      in PR #83 (issue #80) — the production `KeyError: None` degrade plus
+      the host-independent OCR tests. This branch landed a duplicate of that
+      test fix, which was removed again in commit "revert(penplot): the OCR
+      test fix belongs to PR #83" because both branches changed the same
+      hunk of `backend/tests/test_penplot_drawing.py` and could not be
+      merged in any order. **Landing order: PR #83 first, then this PR.**
