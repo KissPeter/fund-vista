@@ -57,6 +57,7 @@ import json
 import httpx
 import pytest
 import uvicorn
+from redis.exceptions import RedisError
 
 
 def _free_port() -> int:
@@ -111,6 +112,7 @@ class _FakeRedis:
         self.stored = {k: v.encode() for k, v in (stored or {}).items()}
         self.gets: list[str] = []
         self.setexes: list[tuple[str, int, str]] = []
+        self.deletes: list[str] = []
 
     async def get(self, key: str):
         self.gets.append(key)
@@ -119,6 +121,11 @@ class _FakeRedis:
     async def setex(self, key: str, ttl: int, value: str):
         self.setexes.append((key, int(ttl), value))
         self.stored[key] = value.encode()  # write-through: next get() hits
+
+    async def delete(self, key: str):
+        self.deletes.append(key)
+        self.stored.pop(key, None)
+        return 1
 
 
 def _stub_upstream(monkeypatch, responder):
@@ -311,6 +318,75 @@ class TestCacheBehavior:
             assert resp.headers["x-cache"] == "MISS"
         assert fake.setexes == []  # only upstream 200 responses are cached
         assert len(stub) == 2
+
+    def test_corrupt_cache_entry_falls_back_to_upstream(self, live, monkeypatch):
+        """A malformed cache entry must not become a 500 (issue #94).
+
+        The poisoned key is deleted and the request falls through to the
+        upstream, which answers 200.
+        """
+        import backend.main as backend_main
+        from backend.main import _cache_key
+
+        stub = _stub_upstream(monkeypatch, _echo)
+        key = _cache_key("api", "fib/corrupt", "", "GET", b"")
+        fake = _FakeRedis(stored={key: "{not json at all"})
+        monkeypatch.setattr(backend_main, "redis_client", fake)
+
+        resp = live.get("/api/fib/corrupt")
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["x-cache"] == "MISS"
+        assert resp.json() == {"fib": [1, 1, 2, 3, 5, 8]}
+        assert len(stub) == 1  # the upstream was consulted
+        assert fake.deletes == [key]  # the poisoned entry was dropped
+
+    def test_corrupt_entry_missing_body_key_falls_back(self, live, monkeypatch):
+        """A JSON entry without a "body" key is corrupt too (KeyError path)."""
+        import backend.main as backend_main
+        from backend.main import _cache_key
+
+        stub = _stub_upstream(monkeypatch, _echo)
+        key = _cache_key("api", "fib/nobody", "", "GET", b"")
+        fake = _FakeRedis(stored={key: json.dumps({"status": 200, "headers": {}})})
+        monkeypatch.setattr(backend_main, "redis_client", fake)
+
+        resp = live.get("/api/fib/nobody")
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["x-cache"] == "MISS"
+        assert len(stub) == 1
+        assert fake.deletes == [key]
+
+    def test_redis_error_does_not_disable_caching(self, live, monkeypatch):
+        """A transient Redis error is a cache miss, not a permanent outage."""
+        import backend.main as backend_main
+        from backend.main import _cache_key
+
+        class _FlakyRedis(_FakeRedis):
+            def __init__(self):
+                super().__init__()
+                self.fail_next = True
+
+            async def get(self, key: str):
+                self.gets.append(key)
+                if self.fail_next:
+                    self.fail_next = False
+                    raise RedisError("connection reset")
+                return self.stored.get(key)
+
+        stub = _stub_upstream(monkeypatch, _echo)
+        fake = _FlakyRedis()
+        monkeypatch.setattr(backend_main, "redis_client", fake)
+
+        first = live.get("/api/latest")
+        assert first.status_code == 200, first.text
+        assert first.headers["x-cache"] == "MISS"
+        # the client survived the error: the next request still reads the cache
+        second = live.get("/api/latest")
+        assert second.status_code == 200, second.text
+        assert second.headers["x-cache"] == "HIT"
+        assert len(stub) == 1
+        assert backend_main.redis_client is fake
+        assert _cache_key("api", "latest", "", "GET", b"") in fake.gets
 
     def test_redis_none_skips_cache_entirely(self, live, monkeypatch):
         # _caching_off leaves redis_client = None (the state after a failed
