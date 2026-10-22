@@ -79,6 +79,13 @@ pen-pixel-shop issues are out of scope here).
   typed settings object; no inline `os.getenv`.
 - Tests: live-HTTP integration by default (see the test-design skill),
   unit only for complex algorithms.
+- The MCP wrapper takes real booleans: `session.create` with
+  `returnResult: true` and `session.list` with `all: true` both work
+  (verified 2026-10-22, fund-vista #107). If a wrapper build answers
+  `... must be a boolean` (the coercion bug of #107), drop the flag
+  instead of working around it: omit `returnResult` and poll
+  `session.messages` for the worker's progress.
+- Do not merge: a human reviews the PR.
 - **CI merges the PR.** The auto-merge sweep
   (`.github/workflows/auto-merge.yml`, `docs/auto-merge.md`) merges every
   open PR whose gate is green and whose branch has no conflict with
