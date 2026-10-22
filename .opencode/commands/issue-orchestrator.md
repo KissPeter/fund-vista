@@ -58,4 +58,10 @@ pen-pixel-shop issues are out of scope here).
   typed settings object; no inline `os.getenv`.
 - Tests: live-HTTP integration by default (see the test-design skill),
   unit only for complex algorithms.
-- Do not merge: a human reviews the PR.
+- **CI merges the PR.** The auto-merge sweep
+  (`.github/workflows/auto-merge.yml`, `docs/auto-merge.md`) merges every
+  open PR whose gate is green and whose branch has no conflict with
+  `main`. The worker MUST NOT merge the PR itself and MUST NOT open a
+  ticket to track the CI status of a PR. A PR that must not be merged
+  automatically carries the `automerge:block` label, which the owner
+  adds by hand.
