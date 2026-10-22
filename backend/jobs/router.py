@@ -112,6 +112,10 @@ async def create_job(body: JobCreateRequest, request: Request, response: Respons
             try:
                 await _store.request_cancel(old_id)
                 _runner.request_cancel_local(old_id)
+                # A superseded job that never started must not linger in the
+                # non-terminal 'cancelling' state (it would keep consuming the
+                # caller's per-IP job quota) - see issue #92.
+                await _runner.drop_queued(old_id)
                 superseded.append(old_id)
             except Exception:
                 continue
@@ -176,8 +180,10 @@ async def delete_job(job_id: str):
     if status in ("queued", "running", "cancelling"):
         await _store.request_cancel(job_id)
         _runner.request_cancel_local(job_id)
-        # If it was still queued locally, drop it without running.
-        _runner.drop_queued(job_id)
+        # If it was still queued locally, drop it without running and let the
+        # store reach a terminal state (a queued cancel must not keep the
+        # per-IP job quota occupied - see issue #92).
+        await _runner.drop_queued(job_id)
         log.info("jobs.cancel id=%s was=%s", job_id[:12], status)
     elif status == "done":
         # Mark expired + best-effort artifact cleanup; still idempotent.
