@@ -270,11 +270,36 @@ def test_budget_overrun_returns_no_words_and_a_warning(monkeypatch, tmp_path):
             return [_word()]
 
     monkeypatch.setattr(ocr_text, "SheetEngine", Slow)
+    # The backend is pinned to a fake one so the test does not depend on the
+    # host having tesseract installed.
+    monkeypatch.setitem(drawing.OCR_BACKENDS, "fake", (lambda: True, lambda: None))
     warns: list[str] = []
     out = drawing._read_words(np.zeros((10, 10), np.uint8),
-                              settings=Settings(data_dir=str(tmp_path)),
+                              settings=Settings(data_dir=str(tmp_path),
+                                                ocr_backend="fake"),
                               cancelled=None, warnings=warns)
     assert out is None and drawing.WARNING_OCR_BUDGET in warns
+
+
+def test_no_ocr_backend_skips_the_read_with_a_warning(tmp_path):
+    """Without a backend the step degrades; it must not raise KeyError: None."""
+    warns: list[str] = []
+    out = drawing._read_words(np.zeros((10, 10), np.uint8),
+                              settings=Settings(data_dir=str(tmp_path),
+                                                ocr_backend="none"),
+                              cancelled=None, warnings=warns)
+    assert out is None
+    assert drawing.WARNING_OCR_UNAVAILABLE in warns
+    assert drawing.WARNING_OCR_BUDGET not in warns
+
+
+def test_erase_titles_without_a_backend_leaves_the_image_untouched(tmp_path):
+    img = np.full((40, 60), 255, np.uint8)
+    img[5:10, 5:20] = 0  # a title band
+    out = drawing._erase_titles(img.copy(), img,
+                                Settings(data_dir=str(tmp_path), ocr_backend="none"),
+                                lambda a: a, 1.0)
+    assert np.array_equal(out, img)
 
 
 def test_ocr_waits_for_the_slot_then_gives_up_with_ocr_busy(tmp_path):
