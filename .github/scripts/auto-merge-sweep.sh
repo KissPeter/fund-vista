@@ -593,16 +593,17 @@ main() {
   # calls, and the number of open PRs can be large. The verdicts are
   # written to one file per PR number; the merge itself stays serial (one
   # merge per cycle, because `main` moves after a merge).
-  local eval_dir
-  eval_dir="$(mktemp -d)"
-  trap 'rm -rf "$eval_dir"' EXIT
+  # Global on purpose: the EXIT trap runs after main() returned, when a local
+  # would be out of scope and `set -u` would turn the cleanup into a failure.
+  EVAL_DIR="$(mktemp -d)"
+  trap 'rm -rf "${EVAL_DIR:-}"' EXIT
   local pids=()
   while IFS= read -r pr; do
     [ -n "$pr" ] || continue
     number="$(jq -r '.number' <<<"$pr")"
     (
       result="$(decide_pr "$pr")"
-      printf '%s\n' "$result" >"$eval_dir/$number"
+      printf '%s\n' "$result" >"$EVAL_DIR/$number"
     ) &
     pids+=($!)
     if [ "${#pids[@]}" -ge 8 ]; then
@@ -618,7 +619,7 @@ main() {
     title="$(jq -r '.title' <<<"$pr")"
     # A PR without a verdict file means its evaluation crashed: that is a
     # failure of the sweep, not a PR that is merely not ready.
-    decision="$(cat "$eval_dir/$number" 2>/dev/null || echo "error|the evaluation produced no verdict")"
+    decision="$(cat "$EVAL_DIR/$number" 2>/dev/null || echo "error|the evaluation produced no verdict")"
     detail="${decision#*|}"
     decision="${decision%%|*}"
     case "$decision" in

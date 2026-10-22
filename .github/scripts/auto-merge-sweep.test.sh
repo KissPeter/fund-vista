@@ -166,6 +166,28 @@ add_row "#1" "t" "failed" "d"
 add_row "#2" "t" "skipped" "d"
 expect "a failed row is counted as failed" "1/1" "$FAILED_COUNT/$SKIPPED_COUNT"
 
+# --- the sweep runs to the end and exits 0 ----------------------------------
+# Regression: the EXIT trap used a `local` of main(), so every sweep that got
+# past the main-is-green check ended with "unbound variable" and a red job.
+shim_dir="$(mktemp -d)"
+cat >"$shim_dir/gh" <<'SHIM'
+#!/usr/bin/env bash
+case "$*" in
+  *"--jq .full_name"* | *"--jq '.full_name'"*) echo "o/r" ;;
+  *"commits/main"*) echo "abc123" ;;
+  *"actions/runs?head_sha"*) echo '{"workflow_runs":[]}' ;;
+  "pr list"*) echo '[]' ;;
+  *) echo '{}' ;;
+esac
+SHIM
+chmod +x "$shim_dir/gh"
+status=0
+out="$(PATH="$shim_dir:$PATH" GITHUB_REPOSITORY=o/r AUTOMERGE_GATE_WORKFLOWS=ci /bin/bash \
+  "$SCRIPT_DIR/auto-merge-sweep.sh" 2>&1)" || status=$?
+expect "a sweep over no PRs exits 0" "0" "$status"
+expect "a sweep over no PRs reaches the end" "1" "$(echo "$out" | grep -c 'sweep done')"
+rm -rf "$shim_dir"
+
 echo ""
 if [ "$FAILURES" -gt 0 ]; then
   echo "$FAILURES of $CHECKS checks FAILED"
