@@ -4,6 +4,7 @@ import { InvestmentsTab } from "@/components/InvestmentsTab";
 import { useFunds, type Provider } from "@/hooks/useFunds";
 import { useYields } from "@/hooks/useYields";
 import { useFundChart } from "@/hooks/useFundChart";
+import { useToast } from "@/hooks/use-toast";
 import { PrivacyBanner } from "@/components/dashboard/PrivacyBanner";
 import { FilterBar } from "@/components/dashboard/FilterBar";
 import { FundGrid } from "@/components/dashboard/FundGrid";
@@ -22,6 +23,7 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState("funds");
 
   const yields = useYields();
+  const { toast } = useToast();
   const chart = useFundChart({
     provider,
     onShowAnalysis: () => setActiveTab("analysis"),
@@ -34,6 +36,24 @@ const Index = () => {
     resetDetail: chart.resetDetail,
   });
 
+  /**
+   * Start a yield load without letting its rejection escape (#96).
+   *
+   * The loader clears its own loading flag in a `finally`, but a rejection
+   * that nobody handles still surfaces as an unhandled promise rejection,
+   * so every call site catches it and reports the failure.
+   */
+  const startYieldLoad = (range: number): void => {
+    yields.loadYieldData(funds.funds, funds.funds.length, range).catch((error) => {
+      console.error("Failed to load yields:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load yields.",
+        variant: "destructive",
+      });
+    });
+  };
+
   // Load yields when switching back to funds tab if needed
   useEffect(() => {
     if (
@@ -43,7 +63,7 @@ const Index = () => {
       !yields.yieldsLoading &&
       yields.loadedYieldRange !== funds.selectedRange
     ) {
-      yields.loadYieldData(funds.funds, funds.funds.length, funds.selectedRange);
+      startYieldLoad(funds.selectedRange);
     }
   }, [provider, activeTab, funds.selectedRange, funds.funds, yields.yieldsLoading, yields.loadedYieldRange]);
 
@@ -58,7 +78,7 @@ const Index = () => {
       return;
     }
     if (funds.funds.length > 0) {
-      yields.loadYieldData(funds.funds, funds.funds.length, months);
+      startYieldLoad(months);
     }
   };
 
@@ -67,7 +87,7 @@ const Index = () => {
       funds.loadFunds(funds.selectedRange);
       return;
     }
-    yields.loadYieldData(funds.funds, funds.funds.length, funds.selectedRange);
+    startYieldLoad(funds.selectedRange);
   };
 
   return (
