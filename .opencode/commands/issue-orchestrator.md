@@ -27,18 +27,39 @@ pen-pixel-shop issues are out of scope here).
 3. **Announce.** Comment on the issue:
    `🤖 opencode-orchestrator picked this up on <short-sha> (slot 1).`
    Labels: remove `agent-ready`, add `agent:in-progress`.
-4. **Dispatch.** Start an OpenChamber session in the worktree
-   (`branch: agent/issue-<N>`, `startRef: origin/main`) with the issue body,
-   the Definition of Done, and the repo conventions. The worker must:
+4. **Dispatch.** Start an OpenChamber session with `session.create`,
+   `directory` set to the prepared worktree and **no** `branch`/`startRef`:
+   step 2 already prepared the branch there, and passing them lets the
+   session be re-homed to the main checkout. Pass the issue body, the
+   Definition of Done, and the repo conventions. The worker must:
    implement the issue, keep `runtests.sh` green, push the branch, open a PR,
    link the issue to its session (`session.link`), comment the PR URL on the
    issue, and set the labels to `agent:needs-review` (the PR is open, waiting
    for the human) or `agent:failed` + `agent:supervised` (needs a human).
 
-   **Fallback:** a dispatched worker that stays idle without a single
-   assistant message (~2 min) never started — do not wait for it. The
-   orchestrator does the work itself in the same worktree, then follows
-   step 5 for its own PR.
+   The dispatch prompt tells the worker to check its own place **first**:
+   `pwd`, `git rev-parse --show-toplevel`, `git branch --show-current`. If
+   they are not the prepared worktree and `agent/issue-<N>`, it stops and
+   says so — the orchestrator takes over.
+
+   **Trap.** `session.status.directory` and `session.messages.directory`
+   report the session's *project* directory (they echo the scope you query
+   them in), not its working directory — never use them as the worktree
+   assertion.
+
+   **Check from outside.** After the dispatch, the main checkout must still
+   be clean (`git status` in it): a worker that wrote there is a failed
+   dispatch — stop it, discard its changes in the main checkout (the
+   worktree rule forbids feature commits there) and take over in the
+   worktree.
+
+   **Fallback.** Take over whenever the worker produced no work: the
+   dispatch failed (the worker stopped on its self-check, or it touched the
+   main checkout), the session stays idle without a single assistant
+   message (~2 min), **or** `session.status` reports state `error` (upstream
+   failure, e.g. "Insufficient account funds"). Each of those is dead on
+   arrival — the orchestrator does the work itself in the same worktree,
+   then follows step 5 for its own PR.
 
 5. **Verify.** The PR exists, points at `agent/issue-<N>`, its base is `main`,
    and the tests ran. If the run failed or timed out: `agent:in-progress` →
@@ -47,22 +68,7 @@ pen-pixel-shop issues are out of scope here).
    retry budget is spent.
 6. **Link.** Link the issue to this orchestrator session with `session.link`
    as soon as it is known.
-7. **Watch.** Every PR needs one CI-watch issue: the PR's CI result, not its
-   implementation. File it right after the PR is open:
-   ```sh
-   gh issue create --title "[ci-watch] #<N> / PR #<M>" \
-     --body "PR: #<M> (Closes #<N>). Waiting for green CI. Red runs get fixed on this branch, pushed, re-read. Green -> the human merges, then this watch issue closes." \
-     --label "agent:in-progress" --label "priority:p1"
-   ```
-   Both labels exist in this repo (`priority:p1` since #76). Never file a
-   watch issue for a PR that already has one, and never watch the same PR
-   from two issues.
-   Keep watching it: on red, root-cause the failure, fix it on the same
-   branch (`agent/issue-<N>`), push, and re-read the CI result; on green,
-   leave the merge to the human (never merge) and close the watch issue with
-   a comment that names the observations filed in step 8. A watch issue whose
-   PR is already merged or closed is closed as stale, with a written reason.
-8. **Capture.** Every run ends with observation capture, also after a failed
+7. **Capture.** Every run ends with observation capture, also after a failed
    run. Harvest what was seen: environment and tooling quirks, pre-existing
    breakage outside the blast radius, doc/test gaps, and follow-ups that were
    deliberately out of scope. An observation that is written nowhere is
@@ -111,10 +117,23 @@ one — a finished issue then blocks its own number in the queue forever.
   typed settings object; no inline `os.getenv`.
 - Tests: live-HTTP integration by default (see the test-design skill),
   unit only for complex algorithms.
+- The MCP wrapper takes real booleans: `session.create` with
+  `returnResult: true` and `session.list` with `all: true` both work
+  (verified 2026-10-22, fund-vista #107). If a wrapper build answers
+  `... must be a boolean` (the coercion bug of #107), drop the flag
+  instead of working around it: omit `returnResult` and poll
+  `session.messages` for the worker's progress.
 - Do not merge: a human reviews the PR.
 - An empty queue is a result, not a silent no-op: when no `agent-ready`
   issue qualifies, the run says so in its session summary and stops. The
-  queue is refilled by step 8 (observation capture), never by the
+  queue is refilled by step 7 (observation capture), never by the
   orchestrator inventing work.
 - The worktree of a run stays until its PR lands; it is removed afterwards
   (track-work skill).
+- **CI merges the PR.** The auto-merge sweep
+  (`.github/workflows/auto-merge.yml`, `docs/auto-merge.md`) merges every
+  open PR whose gate is green and whose branch has no conflict with
+  `main`. The worker MUST NOT merge the PR itself and MUST NOT open a
+  ticket to track the CI status of a PR. A PR that must not be merged
+  automatically carries the `automerge:block` label, which the owner
+  adds by hand.

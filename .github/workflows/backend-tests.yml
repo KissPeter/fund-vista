@@ -22,40 +22,79 @@ on:
       - .github/workflows/backend-tests.yml
   pull_request:
     paths: *backend_paths
+  # Manual run, two modes:
+  #   - no input: the suite on the dispatched ref.
+  #   - pr_number=<n>: the suite against `refs/pull/<n>/merge`, exactly what
+  #     the pull_request event tests. The verdict is reported as the commit
+  #     status `automerge/merge-ref/backend-tests` on the head commit of the
+  #     PR, because the run itself is attached to `main` (see
+  #     docs/auto-merge.md).
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number: test against refs/pull/<n>/merge"
+        required: false
+        type: string
+        default: ""
 
 # The junit-report step annotates the commit with check runs — the default
 # token is read-mostly, so checks:write must be granted explicitly.
+# statuses:write is for the merge-ref verdict of the dispatched run.
 permissions:
   contents: read
   checks: write
+  statuses: write
+  pull-requests: read
 
 jobs:
   integration:
     # Pinned instead of ubuntu-latest: the label migrates to Ubuntu 26 and
     # the pinned image keeps the suite environment deterministic.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, ARM64]
     steps:
+      # The self-hosted runner is a Linux container without gh: fetch the binary
+      # (no root needed) when it is missing.
+      - name: Ensure gh
+        run: |
+          if ! command -v gh >/dev/null; then
+            arch="$(uname -m)"; case "$arch" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
+            v=2.101.0
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+              "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
+              | tar -xz -C "$RUNNER_TEMP"
+            echo "$RUNNER_TEMP/gh_${v}_linux_${arch}/bin" >> "$GITHUB_PATH"
+          fi
       - uses: actions/checkout@v7
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          # A dispatched run with pr_number tests the merge of the PR into
+          # main, the same thing the pull_request event tests.
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || '' }}
+
+      # actions/setup-python has no 3.13 build for the self-hosted debian/arm64
+      # container: uv installs the interpreter and owns a venv instead.
+      - uses: astral-sh/setup-uv@v7
+      - name: Set up Python 3.13
+        run: |
+          uv venv --python 3.13 "$RUNNER_TEMP/venv"
+          echo "VIRTUAL_ENV=$RUNNER_TEMP/venv" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: Lockfile is current (a deploy installs from backend/uv.lock)
+        working-directory: backend
+        run: uv lock --check
 
       - name: Install deps (uv reads backend/pyproject.toml + test group)
         working-directory: backend
         run: |
-          python -m pip install --upgrade pip uv
           # `pip install ./backend` cannot work here: the repo root is the
           # import namespace (backend/ is one big package, not a wheel),
           # and setuptools flat-layout discovery fails on it. uv reads the
           # PEP 621 dependencies + the [dependency-groups] test group
           # (pytest, httpx, schemathesis) straight from backend/pyproject.toml.
-          uv pip install --system -r pyproject.toml --group test
+          uv pip install -r pyproject.toml --group test
 
       - name: OCR system dep (pytesseract fallback path)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr
+        run: command -v tesseract >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr)
 
       - name: Run integration suite (live servers, mocked upstreams)
         env:
@@ -89,20 +128,39 @@ jobs:
           include-hidden-files: true
 
   schemathesis:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, ARM64]
     steps:
+      # The self-hosted runner is a Linux container without gh: fetch the binary
+      # (no root needed) when it is missing.
+      - name: Ensure gh
+        run: |
+          if ! command -v gh >/dev/null; then
+            arch="$(uname -m)"; case "$arch" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
+            v=2.101.0
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+              "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
+              | tar -xz -C "$RUNNER_TEMP"
+            echo "$RUNNER_TEMP/gh_${v}_linux_${arch}/bin" >> "$GITHUB_PATH"
+          fi
       - uses: actions/checkout@v7
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          # A dispatched run with pr_number tests the merge of the PR into
+          # main, the same thing the pull_request event tests.
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || '' }}
+
+      # actions/setup-python has no 3.13 build for the self-hosted debian/arm64
+      # container: uv installs the interpreter and owns a venv instead.
+      - uses: astral-sh/setup-uv@v7
+      - name: Set up Python 3.13
+        run: |
+          uv venv --python 3.13 "$RUNNER_TEMP/venv"
+          echo "VIRTUAL_ENV=$RUNNER_TEMP/venv" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
       - name: Install deps (same as integration)
         working-directory: backend
         run: |
-          python -m pip install --upgrade pip uv
-          uv pip install --system -r pyproject.toml --group test
+          uv pip install -r pyproject.toml --group test
 
       - name: Schemathesis smoke (mock-mode server)
         run: ./ops/schemathesis-smoke.sh .
@@ -123,3 +181,44 @@ jobs:
             schemathesis_results/
             smoke-server.log
           if-no-files-found: ignore
+
+  verdict:
+    # Reports the verdict of a dispatched run as a commit status, so the
+    # auto-merge sweep can read it (docs/auto-merge.md). A normal run needs
+    # no verdict: its check runs are the verdict.
+    name: verdict
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.pr_number != '' && needs.integration.result != 'cancelled' && needs.schemathesis.result != 'cancelled' }}
+    needs: [integration, schemathesis]
+    runs-on: [self-hosted, linux, ARM64]
+    timeout-minutes: 5
+    steps:
+      # The self-hosted runner is a Linux container without gh: fetch the binary
+      # (no root needed) when it is missing.
+      - name: Ensure gh
+        run: |
+          if ! command -v gh >/dev/null; then
+            arch="$(uname -m)"; case "$arch" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
+            v=2.101.0
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+              "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_${arch}.tar.gz" \
+              | tar -xz -C "$RUNNER_TEMP"
+            echo "$RUNNER_TEMP/gh_${v}_linux_${arch}/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Report the merge-ref verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          WORKFLOW: ${{ github.workflow }}
+          INTEGRATION: ${{ needs.integration.result }}
+          SCHEMATHESIS: ${{ needs.schemathesis.result }}
+        run: |
+          merge_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/pull/$PR_NUMBER/merge" --jq '.object.sha')"
+          head_sha="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+          state=success
+          if [ "$INTEGRATION" != success ] || [ "$SCHEMATHESIS" != success ]; then
+            state=failure
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$head_sha" \
+            -f state="$state" \
+            -f context="automerge/merge-ref/$WORKFLOW" \
+            -f description="merge ref $merge_sha"

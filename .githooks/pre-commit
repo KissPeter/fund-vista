@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+#
+# pre-commit: keep backend/uv.lock in step with backend/pyproject.toml.
+#
+# A locked install (the deploy) fails with "Your lockfile is out of date" when
+# a dependency lands in pyproject.toml without `uv lock`. When pyproject.toml
+# (or the lockfile) is staged, regenerate the lockfile and stage it.
+#
+# Enable once per clone: `git config core.hooksPath .githooks`
+# (`npm ci` / `npm install` do it through the `prepare` script).
+
+set -euo pipefail
+
+staged="$(git diff --cached --name-only)"
+if ! grep -qE '^backend/(pyproject\.toml|uv\.lock)$' <<<"$staged"; then
+  exit 0
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "pre-commit: uv is not installed; cannot refresh backend/uv.lock." >&2
+  echo "            install uv (https://docs.astral.sh/uv/) or run 'uv lock' in backend/ yourself." >&2
+  exit 1
+fi
+
+(cd backend && uv lock)
+if ! git diff --quiet -- backend/uv.lock; then
+  git add backend/uv.lock
+  echo "pre-commit: backend/uv.lock regenerated and staged."
+fi
+
+if grep -qE '^backend/uv\.lock$' <<<"$(git diff --cached --name-only)"; then
+  echo "pre-commit: backend/uv.lock changed - the shop's third-party inventory" >&2
+  echo "            needs a regeneration too (docs/CR-008-shop-licence-inventory-coupling.md)." >&2
+fi

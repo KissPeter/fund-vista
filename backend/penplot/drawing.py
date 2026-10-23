@@ -134,6 +134,19 @@ def ocr_available(settings: Settings | None = None) -> bool:
     return resolve_backend(settings) is not None
 
 
+def _reader(settings: Settings | None = None):
+    """The reader factory of the resolved backend, or None when there is none.
+
+    ``resolve_backend`` returns None when no backend is installed (no
+    tesseract binary, no tesserocr wheel) or when the configured one is
+    unavailable; callers must degrade instead of indexing ``OCR_BACKENDS``
+    with None.
+    """
+    name = resolve_backend(settings)
+    entry = OCR_BACKENDS.get(name) if name else None
+    return entry[1] if entry else None
+
+
 def _acquire_slot(settings: Settings, cancelled, give_up: float, *,
                   prefix: str = "slot", n: int | None = None) -> int | None:
     """Take one of ``n`` machine-wide slots (default ``ocr_max_concurrent``).
@@ -246,8 +259,12 @@ def _read_words(
         warnings.append(WARNING_OCR_BUSY)
         return None
     try:
+        reader = _reader(settings)
+        if reader is None:
+            warnings.append(WARNING_OCR_UNAVAILABLE)
+            return None
         engine = ocr_text.SheetEngine(
-            reader=OCR_BACKENDS[resolve_backend(settings)][1](),
+            reader=reader(),
             workers=max(1, min(settings.ocr_workers, os.cpu_count() or 1)),
             deadline=time.monotonic() + settings.ocr_budget_s,
             cancelled=cancelled)
@@ -323,8 +340,11 @@ def _erase_titles(tone: np.ndarray, img: np.ndarray, settings: Settings, small_o
     invisible to it; one whole-page read finds it. Best effort: any OCR
     failure leaves the image untouched.
     """
+    reader_factory = _reader(settings)
+    if reader_factory is None:
+        return img  # no OCR backend on this host: nothing to erase
     try:
-        reader = OCR_BACKENDS[resolve_backend(settings)][1]()
+        reader = reader_factory()
         page = ocr_text._PAGE_FOR[reader]
         small = small_of(tone)
         # Only the top strip is read: artwork reaching up (wing tips) confuses a
