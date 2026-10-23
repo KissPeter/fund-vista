@@ -46,6 +46,20 @@ By default it points to `https://fund-vista.fastapicloud.dev`.
 
 Redis is optional on the proxy: if it is unavailable, requests still work and caching is skipped.
 
+### Backend tests
+
+```sh
+backend/.venv/bin/python -m pytest backend/tests/ -q   # from the repo root
+./runtests.sh                                          # inside the fundvista-dev container
+```
+
+The suite needs the `tesseract-ocr` system binary for the penplot OCR step
+(`brew install tesseract` on macOS; CI installs it with
+`apt-get install -y -qq tesseract-ocr`). Without it there is no OCR backend
+on the host: the OCR read is skipped with an `ocr_unavailable` warning and
+the tests that mock the engine still run — a red OCR test on a bare Mac is
+not a code regression.
+
 ## Production
 
 ```sh
