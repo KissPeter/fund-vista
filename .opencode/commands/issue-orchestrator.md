@@ -34,8 +34,8 @@ pen-pixel-shop issues are out of scope here).
    Definition of Done, and the repo conventions. The worker must:
    implement the issue, keep `runtests.sh` green, push the branch, open a PR,
    link the issue to its session (`session.link`), comment the PR URL on the
-   issue, and set the labels to `agent:in-progress` (done) or
-   `agent:failed` + `agent:supervised` (needs a human).
+   issue, and set the labels to `agent:needs-review` (the PR is open, waiting
+   for the human) or `agent:failed` + `agent:supervised` (needs a human).
 
    The dispatch prompt tells the worker to check its own place **first**:
    `pwd`, `git rev-parse --show-toplevel`, `git branch --show-current`. If
@@ -68,6 +68,44 @@ pen-pixel-shop issues are out of scope here).
    retry budget is spent.
 6. **Link.** Link the issue to this orchestrator session with `session.link`
    as soon as it is known.
+7. **Capture.** Every run ends with observation capture, also after a failed
+   run. Harvest what was seen: environment and tooling quirks, pre-existing
+   breakage outside the blast radius, doc/test gaps, and follow-ups that were
+   deliberately out of scope. An observation that is written nowhere is
+   lost — session context does not survive into the next run.
+   Dedup before filing, with at least two distinct keyword searches:
+   ```sh
+   gh issue list --state all --limit 30 --search "<keywords>"
+   ```
+   - already on an **open** issue → add the new evidence as a comment there,
+     do not create a second ticket;
+   - already on a **closed** issue but still true → file a new ticket and
+     reference the closed one (`Related: #<N>`);
+   - new → file **one** ticket per observation (never batch unrelated
+     observations):
+     ```sh
+     gh issue create --title "[obs] <one-line topic>" \
+       --body "Observed during #<N>: <what, with file:line / CI run / URL evidence>.
+     Why it matters: <risk or opportunity>.
+     Suggested next step: <smallest useful action>." \
+       --label "agent-ready"
+     ```
+   The body must stand alone (an agent that never saw the run must be able
+   to act on it) and must not contain secrets or raw session dumps. The
+   closing comment of the run (issue or watch issue) states the filed
+   ticket numbers, or that there were none.
+
+## Review state
+
+`agent:in-progress` means a worker session owns the issue **right now**.
+When the PR is open and waits for the human reviewer, the issue carries
+`agent:needs-review` instead (create the label once with
+`gh label create "agent:needs-review" --color ededed`).
+
+Without that second state, "a worker is running" and "the PR is open" look
+identical, and the orchestrator cannot tell a live worker from a finished
+one — a finished issue then blocks its own number in the queue forever.
+`agent:needs-review` is removed when the PR lands.
 
 ## Rules
 
@@ -86,6 +124,12 @@ pen-pixel-shop issues are out of scope here).
   instead of working around it: omit `returnResult` and poll
   `session.messages` for the worker's progress.
 - Do not merge: a human reviews the PR.
+- An empty queue is a result, not a silent no-op: when no `agent-ready`
+  issue qualifies, the run says so in its session summary and stops. The
+  queue is refilled by step 7 (observation capture), never by the
+  orchestrator inventing work.
+- The worktree of a run stays until its PR lands; it is removed afterwards
+  (track-work skill).
 - **CI merges the PR.** The auto-merge sweep
   (`.github/workflows/auto-merge.yml`, `docs/auto-merge.md`) merges every
   open PR whose gate is green and whose branch has no conflict with
