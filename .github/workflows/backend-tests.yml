@@ -81,7 +81,9 @@ jobs:
 
       - name: Lockfile is current (a deploy installs from backend/uv.lock)
         working-directory: backend
-        run: uv lock --check
+        # Pinned and run through uvx: the runner's `uv` on PATH is not always
+        # the one setup-uv installed, and the lock check flapped on it.
+        run: uvx --from uv==0.13.5 uv lock --check
 
       - name: Install deps (uv reads backend/pyproject.toml + test group)
         working-directory: backend
