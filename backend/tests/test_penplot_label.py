@@ -73,7 +73,7 @@ def test_empty_text_is_noop_and_unknown_chars_warn():
     assert any(w.startswith("label_unsupported_characters") for w in warnings)
 
 
-def test_border_draws_title_block_strip():
+def test_border_draws_title_block_band():
     plain, _ = labels.render_label(
         "AB", height_mm=5.0, align="right",
         page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
@@ -84,24 +84,38 @@ def test_border_draws_title_block_strip():
         page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
         border=True, border_radius_mm=0.0,
     )
-    assert len(boxed) == len(plain) + 2
-    divider, frame = boxed[-2], boxed[-1]
-    # Divider spans the full inner width, joining the frame verticals.
-    assert len(divider) == 2
-    assert abs(divider[0][0] - MARGIN) < 1e-6
-    assert abs(divider[1][0] - (PAGE_W - MARGIN)) < 1e-6
-    assert abs(divider[0][1] - divider[1][1]) < 1e-9
-    # Frame is the closed margin rect.
-    assert len(frame) == 5 and frame[0] == frame[-1]
-    assert abs(frame[0][0] - MARGIN) < 1e-6
-    assert abs(frame[1][0] - (PAGE_W - MARGIN)) < 1e-6
-    # Divider sits above the text, below the page top; text in the strip.
+    # One extra polyline: the band. The page frame is NOT drawn here any more.
+    assert len(boxed) == len(plain) + 1
+    band = boxed[-1]
+    assert len(band) == 5 and band[0] == band[-1]
+    # The band spans the padded text slot (no pads here: the inner width).
+    assert abs(band[0][0] - MARGIN) < 1e-6
+    assert abs(band[1][0] - (PAGE_W - MARGIN)) < 1e-6
+    # Its bottom edge is the bottom margin; its top edge sits above the text.
     px0, py0, px1, py1 = _bbox(plain)
-    assert divider[0][1] < py0
-    assert divider[0][1] > MARGIN
     bx0, by0, bx1, by1 = _bbox(boxed)
+    assert abs(by1 - (PAGE_H - MARGIN)) < 1e-6
+    assert by0 < py0
+    # The band is a bottom strip, never the whole-page margin rect.
+    assert by0 > MARGIN
     assert bx0 == MARGIN and bx1 == PAGE_W - MARGIN
-    assert by1 == PAGE_H - MARGIN
+    # The lettering sits inside the band.
+    gx0, gy0, gx1, gy1 = _bbox(boxed[:-1])
+    assert gy0 > by0 and gy1 < by1
+
+
+def test_border_band_spans_the_padded_slot_only():
+    # Pads inset the band with the text: the band is the title block, not a
+    # second page frame.
+    lines, _ = labels.render_label(
+        "AB", height_mm=5.0, align="right",
+        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+        border=True, border_radius_mm=0.0,
+        pad_left_mm=20.0, pad_right_mm=10.0,
+    )
+    band = lines[-1]
+    assert abs(band[0][0] - (MARGIN + 20.0)) < 1e-6
+    assert abs(band[1][0] - (PAGE_W - MARGIN - 10.0)) < 1e-6
 
 
 def test_futural_draws_lowercase_simplex_warns():
@@ -156,54 +170,49 @@ def test_pad_right_insets_right_aligned_text():
     assert abs(x1 - (PAGE_W - MARGIN - 4.0)) < 1e-6
 
 
-def test_fill_spans_padded_slot_and_frame_stays_full_width():
+def test_fill_spans_padded_slot_and_band_spans_the_same_slot():
     lines, _ = labels.render_label(
         "AB", height_mm=5.0, align="fill",
         page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
         border=True, border_radius_mm=0.0,
         pad_left_mm=5.0, pad_right_mm=7.0,
     )
-    divider, frame = lines[-2], lines[-1]
-    # Frame/divider still span the full inner width.
-    assert abs(frame[0][0] - MARGIN) < 1e-6
-    assert abs(frame[1][0] - (PAGE_W - MARGIN)) < 1e-6
-    assert abs(divider[0][0] - MARGIN) < 1e-6
-    assert abs(divider[1][0] - (PAGE_W - MARGIN)) < 1e-6
-    # But the text itself stays inside the padded slot.
-    text_lines = lines[:-2]
+    band = lines[-1]
+    # The band is the title block around the lettering: the padded slot.
+    assert abs(band[0][0] - (MARGIN + 5.0)) < 1e-6
+    assert abs(band[1][0] - (PAGE_W - MARGIN - 7.0)) < 1e-6
+    # And the text itself stays inside the padded slot.
+    text_lines = lines[:-1]
     x0, _, x1, _ = _bbox(text_lines)
     assert x0 >= MARGIN + 5.0 - 1e-6
     assert x1 <= PAGE_W - MARGIN - 7.0 + 1e-6
 
 
-def test_rounded_frame_defaults_and_clamps():
-    _, _ = labels.render_label(
-        "AB", height_mm=5.0, align="right",
-        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
-        border=True, border_radius_mm=0.0,
-    )
+def test_rounded_band_defaults_and_clamps():
     boxed, _ = labels.render_label(
         "AB", height_mm=5.0, align="right",
         page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
         border=True,  # default radius 2.0
     )
-    frame = boxed[-1]
-    assert len(frame) == 2 + 4 * 8 + 1  # straights + arc chords + close
-    assert frame[0] == frame[-1]
-    assert abs(frame[0][0] - (MARGIN + 2.0)) < 1e-6
-    assert abs(frame[0][1] - MARGIN) < 1e-6
-    for x, y in frame:
+    band = boxed[-1]
+    assert len(band) == 2 + 4 * 8 + 1  # straights + arc chords + close
+    assert band[0] == band[-1]
+    assert abs(band[0][0] - (MARGIN + 2.0)) < 1e-6
+    for x, y in band:
         assert MARGIN - 1e-6 <= x <= PAGE_W - MARGIN + 1e-6
         assert MARGIN - 1e-6 <= y <= PAGE_H - MARGIN + 1e-6
-    # Absurd radius clamps to half the frame's smaller side, never inverts.
+    # A bottom strip, not the whole-page frame.
+    ys = [y for _, y in band]
+    assert max(ys) - min(ys) < 30.0
+    # Absurd radius clamps to half the band's smaller side, never inverts.
     huge, _ = labels.render_label(
         "AB", height_mm=5.0, align="right",
         page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
         border=True, border_radius_mm=500.0,
     )
-    hframe = huge[-1]
-    assert hframe[0] == hframe[-1]
-    for x, y in hframe:
+    hband = huge[-1]
+    assert hband[0] == hband[-1]
+    for x, y in hband:
         assert MARGIN - 1e-6 <= x <= PAGE_W - MARGIN + 1e-6
         assert MARGIN - 1e-6 <= y <= PAGE_H - MARGIN + 1e-6
 
@@ -264,7 +273,8 @@ def test_label_border_adds_stroke_over_http(http_client):
         http_client, image_id, _labeled(default_params("hatch"), border=True)
     ).json()
     assert boxed["svg_url"] != open_box["svg_url"]
-    assert boxed["stats"]["strokes"] == open_box["stats"]["strokes"] + 2
+    # The band is one stroke (the old strip was a frame + a divider).
+    assert boxed["stats"]["strokes"] == open_box["stats"]["strokes"] + 1
 
 
 def test_label_fonts_differ_over_http(http_client):
@@ -319,17 +329,18 @@ def test_outline_faces_draw_more_ink_than_simplex():
         assert _points(out) > _points(sim), (font, _points(out), _points(sim))
 
 
-def test_outline_reserve_matches_divider():
+def test_outline_reserve_matches_band_top():
     lines, _ = labels.render_label(
         "Ag", height_mm=5.0, align="right",
         page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
         font="nunito", border=True, border_radius_mm=0.0,
     )
-    divider = lines[-2]
+    band = lines[-1]
     reserve = labels.label_reserve_mm(
         "Ag", height_mm=5.0, font="nunito", border=True)
     assert reserve > 0.0
-    assert abs(divider[0][1] - (PAGE_H - MARGIN - reserve)) < 1e-6
+    band_top = min(y for _, y in band)
+    assert abs(band_top - (PAGE_H - MARGIN - reserve)) < 1e-6
 
 
 def test_label_padding_differ_over_http(http_client):
@@ -365,9 +376,9 @@ def test_label_border_radius_differ_over_http(http_client):
     assert len(urls) == 2
 
 
-def test_label_reserve_matches_divider():
-    # Image area bottom (page_h - margin - reserve) must equal the divider so
-    # artwork bottoms out exactly on the strip separator.
+def test_label_reserve_matches_band_top():
+    # Image area bottom (page_h - margin - reserve) must equal the top edge
+    # of the title-block band, so artwork bottoms out exactly on the band.
     for border in (False, True):
         reserve = labels.label_reserve_mm(
             "AB", height_mm=5.0, font="futural", border=border,
@@ -379,8 +390,8 @@ def test_label_reserve_matches_divider():
             border=border, border_radius_mm=0.0, font="futural",
         )
         if border:
-            divider = lines[-2]
-            assert abs(divider[0][1] - (PAGE_H - MARGIN - reserve)) < 1e-6
+            band_top = min(y for _, y in lines[-1])
+            assert abs(band_top - (PAGE_H - MARGIN - reserve)) < 1e-6
         else:
             _, y_text_top, _, _ = _bbox(lines)
             assert abs(y_text_top - (PAGE_H - MARGIN - reserve)) < 1e-6
@@ -422,7 +433,7 @@ def test_panorama_with_label_converts_over_http(http_client):
     assert svg.status_code == 200 and "<path" in svg.text
 
 
-def test_solid_panorama_stays_above_divider_over_http(http_client):
+def test_solid_panorama_stays_above_the_band_over_http(http_client):
     import io
     import re
 
@@ -438,10 +449,12 @@ def test_solid_panorama_stays_above_divider_over_http(http_client):
              "pad_left_mm": 0.0, "pad_right_mm": 0.0, "border_radius_mm": 0.0}
     params = default_params("hatch")
     params["label"] = label
+    params["page"] = {"size": "A4", "orientation": "portrait", "margin_mm": 10.0,
+                      "frame": True, "frame_radius_mm": 0.0}
     body = http_client.post(
         "/v1/convert", json={"image_id": image_id, "params": params}).json()
     svg = http_client.get(body["svg_url"]).text
-    divider_y = 297.0 - 10.0 - labels.label_reserve_mm(
+    band_top = 297.0 - 10.0 - labels.label_reserve_mm(
         "SCALE 1:50", height_mm=5.0, font="futural", border=True)
     paths = re.findall(r"<path d=\"([^\"]+)\"/>", svg)
     assert paths
@@ -449,9 +462,9 @@ def test_solid_panorama_stays_above_divider_over_http(http_client):
     for d in paths:
         ys = [float(v) for v in re.findall(r"[ML]\s+(-?[\d.]+)\s+(-?[\d.]+)", d)
               for v in [v[1]]]
-        # Spans across the divider: reaches into the image zone above AND the
-        # strip below. Label text lives wholly below; artwork wholly above.
-        if min(ys) < divider_y - 0.5 and max(ys) > divider_y + 0.5:
+        # Spans across the band top: reaches into the image zone above AND the
+        # band below. Label text lives wholly below; artwork wholly above.
+        if min(ys) < band_top - 0.5 and max(ys) > band_top + 0.5:
             spanning += 1
-    # Only the page frame spans the divider; nothing overflows the strip.
+    # Only the page frame spans the band top; nothing overflows the strip.
     assert spanning == 1

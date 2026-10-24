@@ -1041,7 +1041,32 @@ faces distinct over HTTP. Full suite at landing: **115 passed**.
 
 ---
 
-## PART O — Cross-hatch opt-out (2026-10-22, pen-pixel-shop #1095)
+## PART O — Page frame and title-block band are independent (2026-10-21)
+
+Behaviour change, no schema change. `params.label.border` (the title-block
+frame) used to draw the **whole-page margin rect** plus a full-width divider
+above the text, and `page.frame` was then skipped whenever the label border
+was on ("never double-ink the same rect"). The two controls therefore fought
+each other: turning the title block on silently removed the page frame.
+
+Now the two are separate page-furniture elements:
+
+- `page.frame` draws the whole-page margin frame (unchanged geometry:
+  `page_frame_rect()`), whenever it is on.
+- `label.border` draws a **title-block band**: one closed rounded rect
+  (radius `label.border_radius_mm`) around the lettering, spanning the padded
+  text slot (`text_left`...`text_right`) from the top of the title strip down
+  to the bottom margin. The full-width divider is gone - the band's top edge
+  takes its place, so the artwork reservation (`label_reserve_mm`) is
+  unchanged.
+
+The band bottom edge is the bottom margin, so the band is a bottom strip, not
+a second page frame; the shop preview (`src/lib/galleryCompose.ts`) draws the
+same two elements with the same presence rule (pen-pixel-shop issue #1089).
+Tests: label band geometry (span, radius clamp, reserve/band-top agreement,
+padded slot) + the frame/band independence over HTTP. Full suite at landing:
+**651 passed, 1 skipped** (plus one OCR test that needs a local tesseract).
+## PART P — Cross-hatch opt-out (2026-10-22, pen-pixel-shop #1095)
 
 `params.cross_hatch` (bool, default **true**) turns the hatch generator's
 +90° cross pass off. The pass was unconditional: `HatchMethod.generate` ran

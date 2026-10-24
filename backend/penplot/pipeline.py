@@ -298,7 +298,7 @@ def run_convert(
                 if isinstance(exc, _CC):
                     raise
     # Title strip first: reserve the label zone from the image area so
-    # artwork bottoms out on the divider instead of sliding under it.
+    # artwork bottoms out on the title-block band instead of sliding under it.
     # 0 when the label is off/blank/fully-unsupported (render no-ops).
     reserve_bottom_mm = 0.0
     if params.label.enabled and params.label.text.strip():
@@ -309,7 +309,7 @@ def run_convert(
             border=params.label.border,
         )
         if reserve_bottom_mm > 0.0:
-            # +1 mm so image strokes can't linemerge into divider/frame.
+            # +1 mm so image strokes can't linemerge into the band/frame.
             reserve_bottom_mm += labels.LABEL_ARTWORK_GAP_MM
     extra_px: list = []   # OCR text + detected circles (drawing mode), working px
     drawing_mode = (not is_vector) and drawing.is_drawing_mode(params)
@@ -476,10 +476,11 @@ def run_convert(
             _timed("label", image_id, method_label, t0)
         else:
             lab_lines = []
-        # Whole-page margin frame (independent of the label). Skipped when the
-        # label border already draws the same rect — never double-ink it.
+        # Whole-page margin frame — a page-furniture element of its own,
+        # independent of the title-block band (the label never draws the
+        # margin rect), so a sheet can carry the frame, the band or both.
         frame_lines: list = []
-        if params.page.frame and not (lab_lines and params.label.border):
+        if params.page.frame:
             frame_lines = [labels.page_frame_rect(
                 page_w, page_h,
                 params.page.margin_mm, params.page.frame_radius_mm,
@@ -528,7 +529,7 @@ def run_convert(
                 laid = knock_out(laid, ctx_keepout)
         t0 = time.perf_counter()
         # Merge domains separately: a joint linemerge would fuse image strokes
-        # into divider/frame across the strip gap at high tolerances, dragging
+        # into the band/frame across the strip gap at high tolerances, dragging
         # artwork out of the image area (or the frame into it).
         q = settings.quantization_mm
         tol = params.linemerge_tolerance_mm
