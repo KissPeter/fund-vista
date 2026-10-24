@@ -20,6 +20,7 @@ day-lock is the follow-up, not this phase.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import gzip
 import io
@@ -62,26 +63,85 @@ def _fnum(v: object) -> float | None:
         return None
 
 
+async def _poll_progress(job_id: str, bridge: "_ProgressBridge", stop: threading.Event) -> None:
+    """Copy the download thread's counters into the job document.
+
+    The poll interval is 1 s: the document write is a Redis round trip, and
+    the counters change far faster than a poller can read them.
+    """
+    while not stop.is_set():
+        await asyncio.sleep(1.0)
+        event = bridge.snapshot()
+        if event is None:
+            continue
+        await _store.set_progress(job_id, event["stage"], event["done"], event["total"])
+
+
+class _ProgressBridge:
+    """Thread-safe bridge between the download thread and the job document.
+
+    The archive pass runs in a worker thread (blocking httpx), while the
+    job document is written by the event loop. The thread publishes the
+    latest ``{"stage", "done", "total}`` event; the loop polls it and
+    writes it to the job doc, so a 4 GB pass is observable in the UI.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._event: dict = {}
+
+    def report(self, event: dict) -> None:
+        with self._lock:
+            self._event = {
+                "stage": str(event.get("stage") or ""),
+                "done": int(event.get("done") or 0),
+                "total": int(event.get("total") or 0),
+            }
+
+    def snapshot(self) -> dict | None:
+        with self._lock:
+            return dict(self._event) if self._event else None
+
+
 def _download_and_extract(
     day: dt.date,
     specs: list[dict],
     cancelled: Callable[[], bool],
-    on_progress: Callable[[int], None] | None = None,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict[str, list[dict]]:
-    """Blocking archive pass (runs in a worker thread, sync httpx like the POC)."""
+    """Blocking archive pass (runs in a worker thread, sync httpx like the POC).
+
+    The download is parallel when ``TRAFFIC_INGEST_DOWNLOAD_WORKERS`` > 1:
+    the tar parts are fetched concurrently and consumed in order, so the
+    network stops being the last serial stage of the pass. ``on_progress``
+    receives ``{"stage", "done", "total"}`` events from the worker thread
+    (download bytes, then parsed members).
+    """
     timeout = httpx.Timeout(
         _traffic_settings.ingest_timeout_s,
         read=_traffic_settings.ingest_read_timeout_s,
     )
     with tls.client(timeout=timeout) as client:
-        urls = _ingest.asset_urls(day, client)
-        stream = io.BufferedReader(
-            _ingest.ChunkReader(_ingest._chunks(urls, client)), 1 << 20
-        )
+        assets = _ingest.asset_assets(day, client)
+        workers = _traffic_settings.ingest_download_workers
+        if workers and workers > 1:
+            chunks = _ingest._parallel_chunks(
+                assets, client, workers,
+                queue_size=_traffic_settings.ingest_download_queue,
+                on_progress=on_progress, cancelled=cancelled,
+            )
+        else:
+            chunks = _ingest._chunks(
+                [a["url"] for a in assets], client,
+                on_progress=on_progress, cancelled=cancelled,
+                total=sum(a["size"] for a in assets),
+            )
+        stream = io.BufferedReader(_ingest.ChunkReader(chunks), 1 << 20)
         return _ingest.extract_multi(
             stream, specs, cancelled=cancelled,
             workers=_traffic_settings.ingest_workers,
             batch_members=_traffic_settings.ingest_batch_members,
+            on_progress=on_progress,
         )
 
 
@@ -169,9 +229,11 @@ async def _exec_traffic_ingest(
     if specs:
         _raise_if_cancelled(stop, ENDPOINT, "download")
         await _store.set_progress(job_id, "download")
+        bridge = _ProgressBridge()
+        poller = asyncio.create_task(_poll_progress(job_id, bridge, stop))
         try:
             per_airport = await asyncio.to_thread(
-                _download_and_extract, day, specs, stop.is_set
+                _download_and_extract, day, specs, stop.is_set, bridge.report
             )
         except RuntimeError as exc:
             if str(exc) == "cancelled" or stop.is_set():
@@ -183,6 +245,10 @@ async def _exec_traffic_ingest(
             raise _JobError(502, "traffic_source_unavailable", f"Archive download failed: {exc}")
         except httpx.HTTPError as exc:
             raise _JobError(502, "traffic_source_unavailable", f"Archive download failed: {exc}")
+        finally:
+            poller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await poller
         _raise_if_cancelled(stop, ENDPOINT, "classify")
     else:
         per_airport = {}

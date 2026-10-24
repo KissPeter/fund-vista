@@ -9,6 +9,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 |----|------|-------|--------|--------------|
 | CR-001 | change request | Split citymap out of `/penplot` into `/citymap` | done | 2026-09-13 |
 | CR-002 | change request | Convert pipeline performance (P1–P5: result cache, fast preview, optimize rewrites, geometry caches) | done | 2026-09-23 |
+| CR-007 | change request | Parallel archive download + job progress counters + parent CPU profile (issue #66 follow-ups) | done | 2026-10-21 |
 | F-001 | feature | Airport ground-diagram blueprint generator (`/airports`) | done | 2026-09-13 |
 | F-002 | feature | Dropped aeroway elements (stands/stopways) + surrounding context | done | 2026-09-14 |
 | F-003 | feature | Freeform + IATA airport search | done | 2026-09-14 |
@@ -24,6 +25,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
+Doc: `docs/CR-007-parallel-archive-download-and-progress.md`.
 Doc: `docs/CR-003-mac-cd-and-parallel-traffic-ingest.md`.
 Doc: `docs/CR-004-permanent-data-storage.md`.
 Doc: `docs/CR-008-shop-licence-inventory-coupling.md`.

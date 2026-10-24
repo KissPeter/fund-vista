@@ -2,7 +2,7 @@
 
 - Status: done
 - Created: 2026-10-20
-- Last updated: 2026-10-20
+- Last updated: 2026-10-21
 - Type: change request
 - Update (2026-10-21, CR-005): the NAS is decommissioned; the deploy script
   was renamed `ops/deploy-mac.sh` and the NAS-only volume/quotas dropped.
@@ -95,8 +95,12 @@ Two problems, both visible only after the NAS → Mac migration:
 ## Follow-ups
 
 - Parallelise the *download* of the tar parts (the remaining serial
-  stage — the network now bounds the pass).
+  stage — the network now bounds the pass) → **done**, see
+  `docs/CR-007-parallel-archive-download-and-progress.md`.
 - Per-batch progress counters in the job payload (the UI shows only
-  `stage=download`).
+  `stage=download`) → **done** (the job document carries the counters; the
+  shop-side UI does not render them yet — the UI lives in pen-pixel-shop).
 - `py-spy` profile of the parent process to see how much of the pass the
-  parent still owns (tar read + member shipping).
+  parent still owns (tar read + member shipping) → **done**: the parent
+  owns ~20 % of the CPU at 4 workers, and its cost is the tar walk
+  (40 % checksum verification), not the shipping of member bytes.
