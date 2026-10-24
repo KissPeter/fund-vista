@@ -43,7 +43,8 @@ Only ever runs for `is_vector=false` inputs; vector inputs skip all of it
 - Methods (`METHOD_REGISTRY`; picks via `methods`, legacy `method`):
   - `contour` — edges of ink regions (outline drawings).
   - `centerline` — skeleton (thin lines for signs/logos).
-  - `hatch` — pitch-stroked shading (`hatch_pitch_mm`, `hatch_angle_deg`).
+  - `hatch` — pitch-stroked shading (`hatch_pitch_mm`, `hatch_angle_deg`,
+    `cross_hatch`: the +90° cross pass over the darkest areas, on by default).
   - `flow` — orientational hatching.
   Each is a generator over the *same* `(mask, gray)`; outputs concatenate in
   the order listed (e.g. shading first, outlines last).
@@ -171,9 +172,12 @@ The signature that decides cache identity is **not** the full request — it is
 the `effective_params_dump(params, is_vector)`:
 - Strip **raster-only** fields on the vector path (`methods`, `threshold`,
   `blur_radius`, `contrast`, `brightness`, `remove_background`,
-  `strip_hatch_px`, `hatch_pitch_mm`, `hatch_angle_deg`,
+  `strip_hatch_px`, `hatch_pitch_mm`, `hatch_angle_deg`, `cross_hatch`,
   `contour_simplify`, `centerline_prune_px`): changing any of them in the UI
   on an SVG does *not* invalidate the vector result.
+- `cross_hatch` at its default (true) is stripped on every path too — the
+  cross pass was unconditional before the flag existed, so the pre-flag cache
+  entries stay valid; only the opt-out (false) gets its own entry.
 - In fast mode, `linesort`/`reloop_tolerance_mm` are stripped identically
   (both values yield the same fast SVG).
 - `full_quality` is **kept** — preview vs final are different results.
