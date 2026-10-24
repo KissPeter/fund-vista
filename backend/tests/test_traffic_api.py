@@ -543,10 +543,13 @@ def _seed_l1_shifted(tmp_key_dir, day_iso: str) -> dict:
     return data
 
 
-def _stub_basemap(monkeypatch, calls: list | None = None, failed: list | None = None):
-    async def _fake(view, lat, lon):
+def _stub_basemap(monkeypatch, calls: list | None = None, failed: list | None = None,
+                  layer_calls: list | None = None):
+    async def _fake(view, lat, lon, layers=None):
         if calls is not None:
             calls.append(tuple(view))
+        if layer_calls is not None:
+            layer_calls.append(tuple(layers or ()))
         if failed:
             return ({k: [] for k in ("motorways", "waterways", "water", "airfield")}, list(failed))
         s, n, w, e = view
@@ -600,7 +603,10 @@ def test_render_filter_and_window_slicing(live, monkeypatch, tmp_path):
     resp = live.post("/v1/traffic/render", json=_render_body(
         day, arrivals=False, departures=False, holding=False, go_around=True))
     assert resp.status_code == 200, resp.text
-    assert resp.json()["counts"] == {"arrivals": 0, "departures": 0, "holding": 0, "go_around": 0}
+    # Issue #1080: the counts are the POTENTIAL per-layer counts (counted
+    # before the layer enable/disable filter), so switching a layer off
+    # never changes the number its chip shows.
+    assert resp.json()["counts"] == {"arrivals": 1, "departures": 1, "holding": 1, "go_around": 0}
     assert resp.json()["movements"] == 4
     # window 06:00–07:00 keeps the 06:00 arrival; the 07:00 departure is out ([from, to))
     resp = live.post("/v1/traffic/render", json=_render_body(day, t_from="06:00", t_to="07:00"))
@@ -608,6 +614,62 @@ def test_render_filter_and_window_slicing(live, monkeypatch, tmp_path):
     assert resp.json()["counts"]["arrivals"] == 1
     assert resp.json()["counts"]["departures"] == 0
     assert resp.json()["movements"] == 1
+
+
+def test_render_map_and_airport_layers(live, monkeypatch, tmp_path):
+    """Issue #1080: the Map / Airport switches drop their groups (and the
+    Map groups are never fetched when the layer is off)."""
+    from urllib.parse import urlsplit
+
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    layer_calls: list = []
+    _stub_basemap(monkeypatch, layer_calls=layer_calls)
+
+    # Map off → the basemap groups are not fetched and not drawn.
+    resp = live.post("/v1/traffic/render", json=_render_body(day, map=False))
+    assert resp.status_code == 200, resp.text
+    assert layer_calls[-1] == ("airfield",)
+    art = live.get(urlsplit(resp.json()["svg_url"]).path).text
+    assert 'id="traffic-motorways"' not in art
+    assert 'id="traffic-waterways"' not in art
+    assert 'id="traffic-water"' not in art
+    assert 'id="traffic-airfield"' in art
+    assert 'id="traffic-arrivals"' in art
+
+    # Airport off → the airfield group and the marker circle are gone.
+    resp = live.post("/v1/traffic/render", json=_render_body(day, airport=False))
+    assert resp.status_code == 200, resp.text
+    assert layer_calls[-1] == ("motorways", "waterways", "water")
+    art = live.get(urlsplit(resp.json()["svg_url"]).path).text
+    assert 'id="traffic-airfield"' not in art
+    assert "<circle" not in art  # the marker circle belongs to the Airport layer
+    assert 'id="traffic-motorways"' in art
+
+    # Both off → no basemap query at all (and the counts stay the same).
+    resp = live.post("/v1/traffic/render", json=_render_body(day, map=False, airport=False))
+    assert resp.status_code == 200, resp.text
+    assert layer_calls[-1] == ()
+    art = live.get(urlsplit(resp.json()["svg_url"]).path).text
+    assert 'id="traffic-motorways"' not in art and 'id="traffic-airfield"' not in art
+    assert resp.json()["counts"] == {"arrivals": 1, "departures": 1, "holding": 1, "go_around": 0}
+
+
+def test_render_map_and_airport_are_cached_separately(live, monkeypatch, tmp_path):
+    """The cache fingerprint must carry the Map / Airport switches."""
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    base_calls: list = []
+    _stub_basemap(monkeypatch, base_calls)
+    first = live.post("/v1/traffic/render", json=_render_body(day, map=False)).json()
+    assert first["cache_hit"] is False
+    again = live.post("/v1/traffic/render", json=_render_body(day, map=False)).json()
+    assert again["cache_hit"] is True  # the same switches → the same key
+    other = live.post("/v1/traffic/render", json=_render_body(day, map=True)).json()
+    assert other["cache_hit"] is False  # Map on → another key, never the Map-off art
+    assert len(base_calls) == 2
 
 
 def test_render_view_rules(live, monkeypatch, tmp_path):

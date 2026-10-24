@@ -36,7 +36,7 @@ from backend.traffic.basemap import load_basemap
 from backend.traffic.classify import classify_day
 from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
 from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
-from backend.traffic.render import render_svg
+from backend.traffic.render import AIRPORT_LAYERS, MAP_LAYERS, render_svg
 from backend.traffic.render_cache import (
     _load_cached_render,
     _load_result_svg,
@@ -194,9 +194,16 @@ async def _render_document(
             pass
     window = [m for m in moves if t_from_ts <= m["t"] < t_to_ts]
 
+    # The Map / Airport layer switches (issue #1080): an unticked layer is
+    # never fetched — the Overpass query and the L3 cache entry would be
+    # wasted work for a group that is not drawn.
+    wanted_basemap = tuple(
+        layer for layer in MAP_LAYERS + AIRPORT_LAYERS
+        if (body.map and layer in MAP_LAYERS) or (body.airport and layer in AIRPORT_LAYERS)
+    )
     try:
         base, failed = await race_cancel(
-            request, load_basemap(view, lat, lon),
+            request, load_basemap(view, lat, lon, layers=wanted_basemap),
             endpoint=endpoint, stage="overpass", started_mono=started_mono,
         )
     except HTTPException:
@@ -213,7 +220,8 @@ async def _render_document(
         elev_ft = 0.0
     svg_text, counts = render_svg(window, base, view, flt,
                                   {"lat": lat, "lon": lon, "elev_ft": elev_ft},
-                                  width=float(body.width))
+                                  width=float(body.width),
+                                  include_map=body.map, include_airport=body.airport)
     stats = movement_stats(window)
     if failed:
         warnings.append("basemap_unavailable")
