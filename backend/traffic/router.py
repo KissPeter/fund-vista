@@ -14,12 +14,12 @@ import datetime as dt
 import gzip
 import json
 import logging
-import os
 import time
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from backend.airports.ourairports import AirportNotFoundError, resolve_airport
 from backend.cancel import check_cancelled, race_cancel
@@ -34,9 +34,10 @@ from backend.traffic import cache as _cache
 from backend.traffic import store as _store
 from backend.traffic.basemap import load_basemap
 from backend.traffic.classify import classify_day
+from backend.traffic.config import settings as traffic_settings
 from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
 from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
-from backend.traffic.render import render_svg
+from backend.traffic.render import AIRPORT_LAYERS, MAP_LAYERS, render_svg
 from backend.traffic.render_cache import (
     _load_cached_render,
     _load_result_svg,
@@ -46,6 +47,8 @@ from backend.traffic.render_cache import (
 )
 from backend.traffic.schemas import (
     ATTRIBUTION,
+    DayQuery,
+    IcaoQuery,
     ImportResponse,
     RenderRequest,
     RenderResponse,
@@ -58,18 +61,35 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/traffic", tags=["traffic-v1"])
 
 
+def _first_error(exc: ValidationError) -> str:
+    """The first pydantic error message, without the "Value error," prefix."""
+    try:
+        errs = exc.errors()
+    except (AttributeError, TypeError, ValueError):  # pragma: no cover - defensive
+        errs = []
+    if not errs:
+        return "Invalid parameters."
+    msg = str(errs[0].get("msg", "")).strip()
+    if msg.startswith("Value error,"):
+        msg = msg[len("Value error,"):].strip()
+    return msg or "Invalid parameters."
+
+
 @router.get("/availability", dependencies=[Depends(require_rate_limit)])
 async def availability(icao: str = "", date: str = ""):
     """Cheap day check: ready (cached) | available | unavailable | out_of_range."""
-    want = (icao or "").strip().upper()
-    if not want or len(want) > 8:
-        return error_response(422, "invalid_params", "icao must be 1-8 characters.")
+    try:
+        icao_q = IcaoQuery(icao=icao)
+    except ValidationError as exc:
+        return error_response(422, "invalid_params", _first_error(exc))
+    want = icao_q.icao
     if not is_hungarian_icao(want):
         return error_response(422, "unsupported_airport", _HU_MESSAGE)
     try:
-        day = dt.date.fromisoformat(date)
-    except ValueError:
-        return error_response(422, "invalid_params", "date must be YYYY-MM-DD.")
+        day_q = DayQuery(date=date)
+    except ValidationError as exc:
+        return error_response(422, "invalid_params", _first_error(exc))
+    day = dt.date.fromisoformat(day_q.date)
     try:
         airport_row, _hit = await resolve_airport(want)
     except AirportNotFoundError:
@@ -92,7 +112,7 @@ async def availability(icao: str = "", date: str = ""):
         if size is not None:
             body["bytes"] = size
         return body
-    timeout = float(os.environ.get("TRAFFIC_GITHUB_TIMEOUT_S", "20"))
+    timeout = traffic_settings.github_timeout_s
     try:
         async with tls.async_client(timeout=httpx.Timeout(timeout)) as client:
             return await _avail.asource_status(day, client)
@@ -194,9 +214,16 @@ async def _render_document(
             pass
     window = [m for m in moves if t_from_ts <= m["t"] < t_to_ts]
 
+    # The Map / Airport layer switches (issue #1080): an unticked layer is
+    # never fetched — the Overpass query and the L3 cache entry would be
+    # wasted work for a group that is not drawn.
+    wanted_basemap = tuple(
+        layer for layer in MAP_LAYERS + AIRPORT_LAYERS
+        if (body.map and layer in MAP_LAYERS) or (body.airport and layer in AIRPORT_LAYERS)
+    )
     try:
         base, failed = await race_cancel(
-            request, load_basemap(view, lat, lon),
+            request, load_basemap(view, lat, lon, layers=wanted_basemap),
             endpoint=endpoint, stage="overpass", started_mono=started_mono,
         )
     except HTTPException:
@@ -213,7 +240,8 @@ async def _render_document(
         elev_ft = 0.0
     svg_text, counts = render_svg(window, base, view, flt,
                                   {"lat": lat, "lon": lon, "elev_ft": elev_ft},
-                                  width=float(body.width))
+                                  width=float(body.width),
+                                  include_map=body.map, include_airport=body.airport)
     stats = movement_stats(window)
     if failed:
         warnings.append("basemap_unavailable")

@@ -1,9 +1,23 @@
 import { useEffect, useState } from "react";
 import { investmentApi, type Fund } from "@/services/investmentApi";
 import { useToast } from "@/hooks/use-toast";
+import { readJsonCache, writeJsonCache } from "@/services/jsonCache";
 import type { YieldsApi } from "@/hooks/useYields";
 
 export type Provider = "KH" | "ERSTE";
+
+/** Shape of the cached fund list: the funds plus the write time. */
+interface FundCacheEntry {
+  data: Fund[];
+  timestamp: number;
+}
+
+const isFundCacheEntry = (value: unknown): value is FundCacheEntry =>
+  typeof value === "object" &&
+  value !== null &&
+  Array.isArray((value as FundCacheEntry).data) &&
+  typeof (value as FundCacheEntry).timestamp === "number" &&
+  Number.isFinite((value as FundCacheEntry).timestamp);
 
 interface FundsDeps {
   loadYieldData: YieldsApi["loadYieldData"];
@@ -32,6 +46,25 @@ export function useFunds(provider: Provider, deps: FundsDeps) {
 
   const { loadYieldData, applyRemoteYields, resetYields, fundYields, resetDetail } = deps;
 
+  /**
+   * Start a yield load without letting its rejection escape (#96).
+   *
+   * `loadYieldData` rejects when something inside the load throws (a full
+   * localStorage, a failing API call). An unhandled rejection at the call
+   * site used to leave the dashboard with a stuck spinner and a console
+   * full of errors, so the failure is caught and shown as a toast here.
+   */
+  const startYieldLoad = (data: Fund[], range: number): void => {
+    loadYieldData(data, data.length, range).catch((error) => {
+      console.error('Failed to load yields:', error);
+      toast({
+        title: "Error",
+        description: "Failed to load yields.",
+        variant: "destructive",
+      });
+    });
+  };
+
   const loadFunds = async (range: number = selectedRange): Promise<void> => {
     try {
       setLoading(true);
@@ -50,17 +83,18 @@ export function useFunds(provider: Provider, deps: FundsDeps) {
 
       // Check cache first
       const cacheKey = 'investment_funds_cache';
-      const cached = localStorage.getItem(cacheKey);
       const now = Date.now();
 
+      // A corrupt cache entry is a cache miss, not a throw (#96).
+      const cached = readJsonCache<FundCacheEntry>(cacheKey, isFundCacheEntry);
+
       if (cached) {
-        const { data, timestamp } = JSON.parse(cached);
         const oneDay = 24 * 60 * 60 * 1000;
 
-        if (now - timestamp < oneDay) {
-          setFunds(data);
-          setFilteredFunds(data);
-          loadYieldData(data, data.length, range);
+        if (now - cached.timestamp < oneDay) {
+          setFunds(cached.data);
+          setFilteredFunds(cached.data);
+          startYieldLoad(cached.data, range);
           setLoading(false);
           return;
         }
@@ -73,15 +107,15 @@ export function useFunds(provider: Provider, deps: FundsDeps) {
         throw new Error("KH fund list is temporarily empty (likely throttled)");
       }
 
-      // Cache the data
-      localStorage.setItem(cacheKey, JSON.stringify({
+      // Cache the data (best effort: a full quota must not fail the load)
+      writeJsonCache(cacheKey, {
         data,
         timestamp: now
-      }));
+      });
 
       setFunds(data);
       setFilteredFunds(data);
-      loadYieldData(data, data.length, range);
+      startYieldLoad(data, range);
     } catch (error) {
       if (provider === "ERSTE") {
         toast({
@@ -91,19 +125,17 @@ export function useFunds(provider: Provider, deps: FundsDeps) {
         });
         return;
       }
-      const fallbackCached = localStorage.getItem('investment_funds_cache');
-      if (fallbackCached) {
-        const { data } = JSON.parse(fallbackCached);
-        if (Array.isArray(data) && data.length > 0) {
-          setFunds(data);
-          setFilteredFunds(data);
-          loadYieldData(data, data.length, range);
-          toast({
-            title: "Using cached funds",
-            description: "Live source is rate-limited right now.",
-          });
-          return;
-        }
+      // The fallback cache read is tolerant too: a corrupt entry is a miss (#96).
+      const fallbackCached = readJsonCache<FundCacheEntry>('investment_funds_cache', isFundCacheEntry);
+      if (fallbackCached && Array.isArray(fallbackCached.data) && fallbackCached.data.length > 0) {
+        setFunds(fallbackCached.data);
+        setFilteredFunds(fallbackCached.data);
+        startYieldLoad(fallbackCached.data, range);
+        toast({
+          title: "Using cached funds",
+          description: "Live source is rate-limited right now.",
+        });
+        return;
       }
 
       toast({

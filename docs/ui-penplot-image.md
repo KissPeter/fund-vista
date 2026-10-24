@@ -49,6 +49,7 @@ warnings, vpype recipe, download link).
 | `remove_background` checkbox | `remove_background` | Flatten uneven paper background (raster only). |
 | `strip_hatch_px` 0–20 | `strip_hatch_px` | Morphological opening on ink mask: erases thin hatch texture, keeps bold strokes. 0 = off. |
 | `hatch_pitch_mm` 0.2–5, `hatch_angle_deg` 0–175 | `hatch_pitch_mm`, `hatch_angle_deg` | Hatch spacing/direction (+90° cross pass in dark areas). Ignored by contour/centerline/flow. |
+| `cross_hatch` checkbox | `cross_hatch` | Hatch only: the +90° cross pass over the darkest areas. Off = the hatching runs in the `hatch_angle_deg` direction only. Default on (the pre-flag behaviour). |
 | `contour_simplify` 0–20 | `contour_simplify` | approxPolyDP epsilon (px) for contour/centerline branches. |
 | `centerline_prune_px` 0–50 | `centerline_prune_px` | Drop skeleton spur branches shorter than N px. Centerline only. |
 | `curve_smooth` 0–3 | `curve_smooth` | Chaikin corner-cutting passes in mm space. |

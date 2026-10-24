@@ -23,6 +23,8 @@ class HatchMethod:
     For each hatch line offset by ``hatch_pitch_px`` along the line normal, the
     intersections with dark runs are emitted as segments. Very dark regions
     get a second cross pass at +90° for tone depth — classic pen-plot shading.
+    The cross pass is opt-out (``ctx.cross_hatch``): with it off the hatching
+    runs in the ``hatch_angle_deg`` direction only.
     """
 
     name = "hatch"
@@ -36,10 +38,12 @@ class HatchMethod:
         cross_angle = angle + math.radians(90.0)
         main = self._hatch_at_angle(mask, w, h, pitch, angle)
         # Cross-hatch only the darkest quartile for depth; cheap and effective.
-        dark = gray < max(0, ctx.threshold - 64)
+        # Opt-out (cross_hatch=false): single-direction hatching, no +90° pass.
         cross: list[Polyline] = []
-        if bool(np.any(dark)):
-            cross = self._hatch_at_angle(dark, w, h, pitch * 2.0, cross_angle)
+        if ctx.cross_hatch:
+            dark = gray < max(0, ctx.threshold - 64)
+            if bool(np.any(dark)):
+                cross = self._hatch_at_angle(dark, w, h, pitch * 2.0, cross_angle)
         log.debug("hatch: %d + %d cross segments", len(main), len(cross))
         return main + cross
 

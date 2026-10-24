@@ -91,6 +91,7 @@ _VECTOR_TONE_PARAMS = frozenset({
     "strip_hatch_px",
     "hatch_pitch_mm",
     "hatch_angle_deg",
+    "cross_hatch",
     "contour_simplify",
     "centerline_prune_px",
 })
@@ -137,7 +138,12 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
     if not data.get("context_table", {}).get("enabled"):
         data.pop("context_table", None)
     for field, default in (("thin_lines", False), ("circles", False), ("solids", False),
-                           ("trace_upscale", 1), ("strip_frame", False)):
+                           ("trace_upscale", 1), ("strip_frame", False),
+                           ("cross_hatch", True)):
+        # cross_hatch=true is the pre-existing behaviour (the +90° pass was
+        # unconditional), so the default keeps its key out: the cache entries
+        # and stored result filenames from before the flag existed stay
+        # valid. Only the opt-out (false) gets its own entry.
         if data.get(field) == default:
             data.pop(field, None)
     if is_vector:
@@ -233,6 +239,7 @@ def _generate_from_mask(
         hatch_pitch_mm=params.hatch_pitch_mm,
         contour_simplify=params.contour_simplify * up,
         hatch_angle_deg=params.hatch_angle_deg,
+        cross_hatch=params.cross_hatch,
         hatch_pitch_px=pitch_px_clamped * up,
         centerline_prune_px=params.centerline_prune_px * up,
     )

@@ -38,6 +38,13 @@ class TrafficSettings(BaseSettings):
     # Members per pool task. Bigger batches amortise the IPC of shipping
     # member bytes to the workers; smaller ones keep the pipeline flowing.
     ingest_batch_members: int = 200
+    # Parallel archive download. 0/1 = serial (one part at a time, the
+    # original behaviour); >1 = the tar parts are fetched concurrently and
+    # consumed in order. The download was the last serial stage of the pass.
+    ingest_download_workers: int = 0
+    # Buffered 1 MB chunks per part while downloading in parallel. Memory
+    # ceiling is roughly parts * this * 1 MB.
+    ingest_download_queue: int = 4
     # L2 movements (rebuildable from L1) and L3/L4 TTLs live in cache.py;
     # the hour counts below are the only knobs.
     movements_ttl_hours: int = 24 * 30

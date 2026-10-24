@@ -3,7 +3,8 @@
 Pure module: no app import, no network (test-design skill). Computed over
 the in-window movements *before* pen filtering, so the numbers are stable
 while the user flips toggles — the per-layer ``counts`` from the render
-already tell the filtered story.
+tell the *potential* story (issue #1080: counted before the layer filter),
+not the filtered one.
 """
 
 from __future__ import annotations

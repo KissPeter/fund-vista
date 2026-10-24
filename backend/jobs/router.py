@@ -149,8 +149,15 @@ async def create_job(body: JobCreateRequest, request: Request, response: Respons
 @router.get("/{job_id}", response_model=JobStatusResponse,
             dependencies=[Depends(require_rate_limit)])
 async def get_job(job_id: str):
-    """Poll a job. Unknown/expired id → 404 job_not_found."""
-    doc = await _store.get_job(job_id)
+    """Poll a job. Unknown/expired id → 404 job_not_found.
+
+    A poll also reaps an orphaned job: the runner task lives in one
+    worker's memory, so a worker/container restart leaves the doc
+    non-terminal until its TTL expires and the client would see a 404
+    instead of a failed job (#1061). The reap turns it into a terminal
+    ``failed {error:{code:"orphaned"}}`` the client can show.
+    """
+    doc = await _store.reap_orphaned(job_id)
     if doc is None:
         return error_response(404, "job_not_found", f"Unknown or expired job '{job_id}'.")
     status = doc.get("status", "queued")

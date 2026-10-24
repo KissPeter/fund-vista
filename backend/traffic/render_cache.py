@@ -26,6 +26,9 @@ def _filter_fingerprint(body) -> str:
     return "|".join([
         f"arr={int(body.arrivals)}", f"dep={int(body.departures)}",
         f"hold={int(body.holding)}", f"ga={int(body.go_around)}",
+        # The Map / Airport layer switches (issue #1080) belong here too:
+        # without them a Map-off render could be served for a Map-on one.
+        f"map={int(body.map)}", f"ap={int(body.airport)}",
         "types=" + ",".join(sorted(body.types)),
         "airlines=" + ",".join(sorted(a.upper() for a in body.airlines)),
         "cs=" + body.callsign.upper(),

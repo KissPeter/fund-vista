@@ -144,6 +144,19 @@ docker start fundvista
   exports new files from the store into the repo checkout and pushes to
   `origin/main`. Idempotent (cache_hit days commit nothing); push failures
   retry on the next run.
+- The ingest knobs live in the Mac's `.env` (gitignored, the deploy's
+  `--env-file`): `TRAFFIC_INGEST_WORKERS` (archive parse in a process
+  pool) and `TRAFFIC_INGEST_DOWNLOAD_WORKERS` (the tar parts fetched
+  concurrently, `0` = serial). The archive is split into 2–3 parts, so
+  `TRAFFIC_INGEST_DOWNLOAD_WORKERS=3` is the useful value; the parse
+  workers and the download workers share the container's CPU quota, so
+  raise them together (the container has 5 CPUs). See
+  `docs/CR-007-parallel-archive-download-and-progress.md` for the
+  measured split between the parent and the pool.
+- The job document now carries real counters
+  (`progress: {stage: "download"|"parse", done, total}`) — the 4 GB pass
+  is observable via `GET /v1/jobs/{id}`. The shop-side UI does not render
+  them yet (the UI lives in pen-pixel-shop).
 
 ---
 

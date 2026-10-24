@@ -1,4 +1,5 @@
 import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -226,9 +227,16 @@ async def health() -> Dict[str, str]:
             "outbound_tls": f"unreadable:{tls_status['certifi_path']}"}
 
 
+async def _delete_cache_entry(client: "Redis", cache_key: str) -> None:
+    """Drop a poisoned cache entry; never let the cleanup itself fail a request."""
+    try:
+        await client.delete(cache_key)
+    except RedisError as exc:
+        print(f"Redis cache delete failed for {cache_key}: {exc}")
+
+
 @app.api_route("/{prefix}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy(prefix: str, path: str, request: Request) -> Response:
-    global redis_client
     upstream = UPSTREAMS.get(prefix)
     if upstream is None:
         raise HTTPException(status_code=404, detail="Unknown upstream prefix")
@@ -242,17 +250,27 @@ async def proxy(prefix: str, path: str, request: Request) -> Response:
     if redis_client and method in CACHEABLE_METHODS:
         try:
             cached = await redis_client.get(cache_key)
-            if cached:
+        except RedisError as exc:
+            # A transient Redis failure is a cache miss, not a reason to
+            # disable caching for the rest of the process lifetime.
+            print(f"Redis cache read failed for {cache_key}: {exc}")
+            cached = None
+        if cached:
+            try:
                 payload = json.loads(cached)
-                content = base64.b64decode(payload["body"])
-                return Response(
+                content = base64.b64decode(payload["body"], validate=True)
+                response = Response(
                     content=content,
                     status_code=payload["status"],
                     headers={**payload["headers"], "x-cache": "HIT"},
                 )
-        except RedisError as exc:
-            print(f"Redis cache read failed for {cache_key}: {exc}")
-            redis_client = None
+            except (ValueError, binascii.Error, KeyError, TypeError) as exc:
+                # A poisoned entry must not turn every request for this key
+                # into a 500: drop it and fall through to the upstream fetch.
+                print(f"Corrupt cache entry for {cache_key}: {exc}")
+                await _delete_cache_entry(redis_client, cache_key)
+            else:
+                return response
 
     forward_headers = {
         key: value

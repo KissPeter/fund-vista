@@ -9,24 +9,30 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 |----|------|-------|--------|--------------|
 | CR-001 | change request | Split citymap out of `/penplot` into `/citymap` | done | 2026-09-13 |
 | CR-002 | change request | Convert pipeline performance (P1–P5: result cache, fast preview, optimize rewrites, geometry caches) | done | 2026-09-23 |
+| CR-007 | change request | Parallel archive download + job progress counters + parent CPU profile (issue #66 follow-ups) | done | 2026-10-21 |
 | F-001 | feature | Airport ground-diagram blueprint generator (`/airports`) | done | 2026-09-13 |
 | F-002 | feature | Dropped aeroway elements (stands/stopways) + surrounding context | done | 2026-09-14 |
 | F-003 | feature | Freeform + IATA airport search | done | 2026-09-14 |
 | F-004 | feature | Airport layer toggles (tick any) | in progress | 2026-09-14 |
 | F-005 | feature | Technical-drawing convert: OCR labels → single-stroke font, exact circles, thin lines (`/penplot` opt-in) | in progress | 2026-10-07 |
 | B-001 | bug | Outbound HTTPS dies on an unreadable certifi CA bundle (NAS image layer corruption) — guarded client construction + fallback + /healthz surfacing | done | 2026-10-20 |
+| B-002 | bug | Local suite showed a false red without the `tesseract-ocr` system binary (issue #80) — the OCR read degrades with a warning instead of `KeyError: None`, and the OCR tests are host-independent | done | 2026-10-22 |
 | CR-003 | change request | Mac CD (push webhook → deploy) + parallel multi-airport traffic ingest | done | 2026-10-20 |
 | CR-004 | change request | fund-vista `/data` on permanent host storage (Mac) instead of a container-engine volume | done | 2026-10-21 |
 | CR-008 | change request | A `backend/uv.lock` change needs a shop-side licence-inventory regeneration (licence docs §D + PR template) | done | 2026-10-22 |
 | CR-005 | change request | The Mac is the only backend — drop the NAS (script, runbooks, skill, comments) | done | 2026-10-21 |
+| CR-006 | change request | Pydantic-owned input validation + tiny ops tools instead of inline python (issue #64) | done | 2026-10-21 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
+Doc: `docs/CR-007-parallel-archive-download-and-progress.md`.
 Doc: `docs/CR-003-mac-cd-and-parallel-traffic-ingest.md`.
 Doc: `docs/CR-004-permanent-data-storage.md`.
 Doc: `docs/CR-008-shop-licence-inventory-coupling.md`.
 Doc: `docs/CR-005-mac-only-deployment.md`.
+Doc: `docs/CR-006-pydantic-validation-and-ops-tools.md`.
 Doc: `docs/B-001-tls-ca-fallback.md`.
+Doc: `docs/B-002-ocr-backend-missing-local-suite.md`.
 Doc: `docs/F-001-airport-diagrams.md`.
 Doc: `docs/F-005-technical-drawing.md`, CLI manual `docs/img2plot-cli.md`, SVG ownership metadata `docs/svg-metadata.md`.
 
@@ -46,4 +52,5 @@ Doc: `docs/F-005-technical-drawing.md`, CLI manual `docs/img2plot-cli.md`, SVG o
 - `docs/ui-airports.md` — `/airports` Jinja page: controls, JS, backend.
 - `docs/REF-001-router-pipeline-refactor.md` — refactor plan (PLAN): router/pipeline extraction with the fix-once rule (domains stay separate, shared machinery + shared tests).
 - `docs/REF-002-large-file-refactor-plan.md` — refactor plan (PLAN, issue #45): >500-line inventory with 21-day churn ranking, per-file findings + lint notes, sequenced phases 1–5 (routers → jobs runner → penplot helpers → dashboard).
+- `docs/REF-003-pr-landing-order.md` — landing order of the open agent PRs + the `docs/index.md` anchor rule (one anchor per branch, one canonical fix per problem, issue #86).
 - `docs/python-service-shop-changes.md` — pen-pixel work-order §§1–8 implementation record.

@@ -9,7 +9,9 @@ copy plus flipping ``TRAFFIC_STORE``.
 
 Writes are atomic (temp file + rename); the ingest job writes L1 only after
 the whole stream succeeded, so a cancelled/failed job never leaves a half
-dataset. Budget: ~2 MB per airport-day.
+dataset. The temp file name is unique per write (pid + uuid), so two
+concurrent ingests of the same day cannot interleave bytes and publish a
+corrupt slice. Budget: ~2 MB per airport-day.
 
 Slice encoding: gzip JSON (stdlib only). Evaluated 2026-10-11 and rejected:
 MessagePack (~-20 % size for a new runtime dep — not worth it at ~2 MB
@@ -25,6 +27,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from uuid import uuid4
 
 
 def _store_root() -> Path:
@@ -87,9 +90,18 @@ class FileSliceStore(SliceStore):
     def put(self, key: str, data: bytes) -> None:
         p = self._path(key)
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".tmp")
-        tmp.write_bytes(data)
-        os.replace(tmp, p)
+        # Unique temp name: two concurrent ingests of the same day write the
+        # same key, and a shared ``<name>.tmp`` would interleave their bytes
+        # and publish a truncated gzip slice. Exclusive create ("xb") keeps a
+        # name collision from clobbering another writer's temp file.
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{uuid4().hex}.tmp")
+        try:
+            with open(tmp, "xb") as fh:
+                fh.write(data)
+            os.replace(tmp, p)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def default_store() -> SliceStore:

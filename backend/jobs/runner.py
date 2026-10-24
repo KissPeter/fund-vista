@@ -15,6 +15,12 @@ per type (``MAX_RUNTIME_S``, 300 s matching nginx 310 s for the awaited
 paths; ``MAX_RUNTIME_INGEST_S`` for the detached traffic ingest); on
 timeout the task is killed, the download thread sees the stop event, and
 the job fails with ``{error:{code:"timeout"}}``.
+
+Because the task, the poller and the watchdog live in this worker's memory
+only, a worker or container restart loses them and the job doc would stay
+``running`` until its TTL expires (#1061). The runner therefore refreshes
+the job's liveness key (``job:live:{id}``) every ``HEARTBEAT_S``; when the
+refreshes stop, the store reaps the job as ``failed {code:"orphaned"}``.
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ from backend.jobs._exec_airports import _exec_airport_import, _exec_airport_rend
 from backend.jobs._exec_citymap import _exec_citymap_import, _exec_citymap_render
 from backend.jobs._exec_convert import _exec_convert
 from backend.jobs._exec_traffic import _exec_traffic_ingest
-from backend.jobs.schemas import MAX_RUNTIME_INGEST_S, MAX_RUNTIME_S
+from backend.jobs.schemas import HEARTBEAT_S, MAX_RUNTIME_INGEST_S, MAX_RUNTIME_S
 from backend.penplot.errors import PenPlotError
 
 log = logging.getLogger(__name__)
@@ -115,6 +121,28 @@ async def _cancel_poller(job_id: str, stop: threading.Event) -> None:
         pass
 
 
+async def _heartbeat_loop(job_id: str) -> None:
+    """Keep the job's liveness key fresh while the task runs (#1061).
+
+    The task, the cancel poller and the runtime watchdog live in this
+    worker's memory only: a worker or container restart loses all three and
+    the job doc would stay ``running`` until its TTL expires. The liveness
+    key expires when the refreshes stop, which is what lets the store tell
+    an orphan from a live job.
+    """
+    try:
+        while True:
+            try:
+                await _store.heartbeat(job_id)
+            except Exception as exc:  # noqa: BLE001 — a heartbeat must never kill the job
+                # Keep the loop alive: a dead heartbeat would make the store
+                # reap a running job (a live job must never look orphaned).
+                log.warning("jobs.heartbeat failed id=%s: %r", job_id[:12], exc)
+            await asyncio.sleep(HEARTBEAT_S)
+    except asyncio.CancelledError:
+        pass
+
+
 async def _execute(
     job_type: str, payload: dict, job_id: str, stop: threading.Event
 ) -> dict:
@@ -166,6 +194,7 @@ async def _run_job(job_id: str, stop: threading.Event) -> None:
         _stops.pop(job_id, None)
         return
     poller = asyncio.create_task(_cancel_poller(job_id, stop))
+    heartbeat = asyncio.create_task(_heartbeat_loop(job_id))
     try:
         try:
             runtime_s = (
@@ -215,6 +244,13 @@ async def _run_job(job_id: str, stop: threading.Event) -> None:
         )
     finally:
         poller.cancel()
+        heartbeat.cancel()
+        # The job is terminal (or the worker is going down): the liveness key
+        # has no reader left.
+        try:
+            await _store.clear_heartbeat(job_id)
+        except Exception as exc:  # noqa: BLE001 — cleanup must not mask the result
+            log.warning("jobs.heartbeat clear failed id=%s: %r", job_id[:12], exc)
         _stops.pop(job_id, None)
 
 
