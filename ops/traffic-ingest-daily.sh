@@ -59,45 +59,40 @@ days() {
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 
+# One field of a JSON document on stdin -> stdout. A tiny python function
+# (backend/tools/json_field.py), not an inline script (issue #64).
+json_field() { PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}" python3 -m backend.tools.json_field "$1"; }
+
 post_job() { # date -> prints job_id, or ERR:<code> when the app refused it
   icaos_json=$(printf '"%s",' $ICAOS | sed 's/,$//')
-  curl -s -m 30 -X POST "$API/v1/jobs" -H 'content-type: application/json' \
-    -d "{\"type\":\"traffic_ingest\",\"request\":{\"icaos\":[$icaos_json],\"date\":\"$1\"},\"cancel_previous\":false}" |
-    python3 -c 'import json,sys
-try:
-    d = json.load(sys.stdin)
-except ValueError:
-    print("ERR:no_response")
-    sys.exit(0)
-if d.get("job_id"):
-    print(d["job_id"])
-else:
-    print("ERR:" + ((d.get("error") or {}).get("code", "unknown")))'
+  resp=$(curl -s -m 30 -X POST "$API/v1/jobs" -H 'content-type: application/json' \
+    -d "{\"type\":\"traffic_ingest\",\"request\":{\"icaos\":[$icaos_json],\"date\":\"$1\"},\"cancel_previous\":false}")
+  job_id=$(printf '%s' "$resp" | json_field job_id) || job_id=""
+  if [ -n "$job_id" ]; then
+    printf '%s\n' "$job_id"
+    return 0
+  fi
+  code=$(printf '%s' "$resp" | json_field error.code) || code=""
+  printf 'ERR:%s\n' "${code:-no_response}"
 }
 
 post_job_one() { # icao date -> prints job_id (legacy single-airport shape)
-  curl -s -m 30 -X POST "$API/v1/jobs" -H 'content-type: application/json' \
-    -d "{\"type\":\"traffic_ingest\",\"request\":{\"icao\":\"$1\",\"date\":\"$2\"},\"cancel_previous\":false}" |
-    python3 -c 'import json,sys
-try:
-    d = json.load(sys.stdin)
-except ValueError:
-    sys.exit(0)
-print(d.get("job_id", ""))'
+  resp=$(curl -s -m 30 -X POST "$API/v1/jobs" -H 'content-type: application/json' \
+    -d "{\"type\":\"traffic_ingest\",\"request\":{\"icao\":\"$1\",\"date\":\"$2\"},\"cancel_previous\":false}")
+  job_id=$(printf '%s' "$resp" | json_field job_id) || job_id=""
+  printf '%s\n' "$job_id"
 }
 
 wait_job() { # job_id -> 0 done, 1 failed/cancelled (code in $JOB_ERROR), 2 timeout (6 h)
   JOB_ERROR=""
   i=0
   while [ "$i" -lt 360 ]; do
-    st="$(curl -s -m 30 "$API/v1/jobs/$1" |
-      python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+    st=$(curl -s -m 30 "$API/v1/jobs/$1" | json_field status) || st=""
     case "$st" in
       done) log "job $1 done"; return 0 ;;
       failed | cancelled)
         log "job $1 $st"
-        JOB_ERROR="$(curl -s -m 30 "$API/v1/jobs/$1" |
-          python3 -c 'import json,sys; print((json.load(sys.stdin).get("error") or {}).get("code",""))')"
+        JOB_ERROR=$(curl -s -m 30 "$API/v1/jobs/$1" | json_field error.code) || JOB_ERROR=""
         return 1
         ;;
     esac

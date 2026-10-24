@@ -97,6 +97,46 @@ class TrafficIngestRequest(BaseModel):
         return self
 
 
+class IcaoQuery(BaseModel):
+    """ICAO query parameter (``GET /v1/traffic/availability``).
+
+    Pydantic owns the format rule: 1-8 characters, upper-cased. The
+    Hungary-only rule stays a router decision — it has its own error code
+    (``unsupported_airport``), not ``invalid_params``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    icao: str
+
+    @field_validator("icao")
+    @classmethod
+    def _check_icao(cls, v: str) -> str:
+        v = (v or "").strip().upper()
+        if not v or len(v) > 8:
+            raise ValueError("icao must be 1-8 characters.")
+        return v
+
+
+class DayQuery(BaseModel):
+    """Day query parameter — ISO ``YYYY-MM-DD`` (the archive's UTC day)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    date: str
+
+    @field_validator("date")
+    @classmethod
+    def _check_date(cls, v: str) -> str:
+        # No strip: the day is an exact ISO date on the wire, a padded value
+        # is a client bug (422), not something to guess around.
+        try:
+            dt.date.fromisoformat(v)
+        except ValueError:
+            raise ValueError("date must be YYYY-MM-DD.") from None
+        return v
+
+
 def movements_key(icao: str, day_iso: str) -> str:
     """L2 cache-kind parts (key built by :mod:`backend.traffic.cache`)."""
     return f"{icao.upper()}:{day_iso}:{CLASSIFIER_VERSION}"

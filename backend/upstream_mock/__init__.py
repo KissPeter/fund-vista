@@ -22,18 +22,20 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from urllib.parse import parse_qs
 
 import httpx
 
 from backend.upstream_mock import data
+from backend.upstream_mock.config import UpstreamMockSettings
 
 log = logging.getLogger(__name__)
 
-ENV_VAR = "FUNDVISTA_UPSTREAM_MODE"
 MOCK = "mock"
+# Kept for the error message only — the value itself is read through the
+# typed settings (backend/upstream_mock/config.py), not os.environ.
+ENV_VAR = "FUNDVISTA_UPSTREAM_MODE"
 
 _installed = False
 _ORIGINAL_INITS: dict[type, object] = {}
@@ -44,7 +46,10 @@ class UpstreamNotMocked(RuntimeError):
 
 
 def enabled() -> bool:
-    return os.environ.get(ENV_VAR, "").strip().lower() == MOCK
+    # Read the environment on every call (the settings object reads it at
+    # construction): the mode is a process-wide switch, but the switch must
+    # still follow the environment — not a snapshot taken at import time.
+    return UpstreamMockSettings().upstream_mode.strip().lower() == MOCK
 
 
 _BBOX_RE = re.compile(r"\(\s*(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\s*\)")

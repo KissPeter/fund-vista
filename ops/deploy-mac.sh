@@ -150,10 +150,12 @@ smoke() {
       *) log "smoke: $name status=$st — waiting"; sleep 5; waited=$((waited + 5)); continue;;
     esac
     # /healthz: workers accept traffic. /v1/health: store writable + disk ok.
-    if docker run --rm --network "$NET" "$img" python -c \
-        "import sys,urllib.request; urllib.request.urlopen('http://$name:$PORT/healthz', timeout=8).read()" 2>/dev/null; then
-      body=$(docker run --rm --network "$NET" "$img" python -c \
-        "import urllib.request; print(urllib.request.urlopen('http://$name:$PORT/v1/health', timeout=8).read().decode())" 2>/dev/null || true)
+    # A tiny python function (backend/tools/http_get.py), not an inline
+    # script inside the docker command string (issue #64).
+    if docker run --rm --network "$NET" "$img" python -m backend.tools.http_get \
+        "http://$name:$PORT/healthz" 2>/dev/null; then
+      body=$(docker run --rm --network "$NET" "$img" python -m backend.tools.http_get \
+        "http://$name:$PORT/v1/health" 2>/dev/null || true)
       case "$body" in
         *'"status":"ok"'*|*'"status": "ok"'*)
           log "smoke: $name OK ($body)"; return 0;;
@@ -188,7 +190,7 @@ migrate_data() {
   # pipe and plain tarfile.open() dies with "Illegal seek" (seen live).
   if docker cp "$CONTAINER:/data/." - 2>/dev/null \
     | docker run --rm -i -v "$DATA_DIR:/to" "$img" \
-      python -c "import sys,tarfile; tarfile.open(fileobj=sys.stdin.buffer,mode='r|').extractall('/to')" 2>/dev/null; then
+      python -m backend.tools.untar_stream /to 2>/dev/null; then
     log "data: migration done"
   else
     log "data: migration FAILED (non-fatal, continuing with empty data dir)"
