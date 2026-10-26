@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Disk-space guard for the Mac (issue #111).
+
+  Install once (KeepLocal so a deploy does not clobber a file launchd runs):
+
+    cp ops/mac-disk-guard.sh ~/bin/mac-disk-guard.sh
+    mkdir -p ~/Library/LaunchAgents
+    sed "s|HOME_DIR|$HOME|g" ops/mac-disk-guard.plist \
+      > ~/Library/LaunchAgents/hu.linuxadm.disk-guard.plist
+    launchctl bootstrap gui/$(id -u) \
+      ~/Library/LaunchAgents/hu.linuxadm.disk-guard.plist
+-->
+<dict>
+  <key>Label</key>
+  <string>hu.linuxadm.disk-guard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>HOME_DIR/bin/mac-disk-guard.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>6</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>18</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+  </array>
+  <key>StandardOutPath</key>
+  <string>HOME_DIR/Library/Logs/disk-guard.log</string>
+  <key>StandardErrorPath</key>
+  <string>HOME_DIR/Library/Logs/disk-guard.log</string>
+</dict>
+</plist>

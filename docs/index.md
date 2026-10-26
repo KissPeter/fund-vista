@@ -22,6 +22,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 | CR-008 | change request | A `backend/uv.lock` change needs a shop-side licence-inventory regeneration (licence docs §D + PR template) | done | 2026-10-22 |
 | CR-005 | change request | The Mac is the only backend — drop the NAS (script, runbooks, skill, comments) | done | 2026-10-21 |
 | CR-006 | change request | Pydantic-owned input validation + tiny ops tools instead of inline python (issue #64) | done | 2026-10-21 |
+| CR-009 | change request | Mac disk-space guard + read-only-docker recovery runbook (issue #111) | done | 2026-10-26 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
@@ -31,6 +32,7 @@ Doc: `docs/CR-004-permanent-data-storage.md`.
 Doc: `docs/CR-008-shop-licence-inventory-coupling.md`.
 Doc: `docs/CR-005-mac-only-deployment.md`.
 Doc: `docs/CR-006-pydantic-validation-and-ops-tools.md`.
+Doc: `docs/CR-009-mac-disk-guard.md` (disk guard + read-only-docker runbook).
 Doc: `docs/B-001-tls-ca-fallback.md`.
 Doc: `docs/B-002-ocr-backend-missing-local-suite.md`.
 Doc: `docs/F-001-airport-diagrams.md`.
