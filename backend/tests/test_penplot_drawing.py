@@ -21,9 +21,12 @@ from backend.penplot.config import Settings
 from backend.penplot.pipeline import effective_params_dump, params_hash, run_convert
 from backend.penplot.schemas import ConvertParams
 
-# Stable since before the drawing options existed; if this changes, every
-# stored result/cached convert was silently invalidated.
-LEGACY_DEFAULT_HASH = "36fc02273dcf"
+# Hash of the default ConvertParams dump. Changed 2026-10-27 on purpose:
+# pen draw/travel feedrates became machine constants and left the API
+# (SPEC_V1.md PART Q), so the default dump shrank. Every stored result /
+# cached convert from before was invalidated by design — their plot-time
+# stats were computed with the wrong speeds and needed a re-convert anyway.
+LEGACY_DEFAULT_HASH = "b25eafd85c33"
 
 
 def _drawing_png() -> bytes:

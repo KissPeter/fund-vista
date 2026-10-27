@@ -91,7 +91,7 @@ params = ConvertParams(
     label={"enabled": bool(label), "text": label, "align": "right",
            "height_mm": 5, "font": "futural", "border": True,
            "border_radius_mm": 2, "pad_left_mm": 0, "pad_right_mm": 0},
-    pen={"draw_speed_mm_s": 40, "travel_speed_mm_s": 100, "pen_lift_s": 0.3},
+    pen={"pen_lift_s": 0.3},
     line_color="black", background="none",
 )
 pr = cProfile.Profile(); pr.enable()
