@@ -37,7 +37,7 @@ from backend.traffic.classify import classify_day
 from backend.traffic.config import settings as traffic_settings
 from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
 from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
-from backend.traffic.render import AIRPORT_LAYERS, MAP_LAYERS, expand_view_to_aspect, render_svg
+from backend.traffic.render import AIRPORT_LAYERS, HIGHWAY_LAYERS, MAP_LAYERS, expand_view_to_aspect, render_svg
 from backend.traffic.render_cache import (
     _load_cached_render,
     _load_result_svg,
@@ -225,8 +225,10 @@ async def render_document(
     # never fetched — the Overpass query and the L3 cache entry would be
     # wasted work for a group that is not drawn.
     wanted_basemap = tuple(
-        layer for layer in MAP_LAYERS + AIRPORT_LAYERS
-        if (body.map and layer in MAP_LAYERS) or (body.airport and layer in AIRPORT_LAYERS)
+        layer for layer in LAYERS
+        if (body.map and layer in MAP_LAYERS)
+        or (body.highways and layer in HIGHWAY_LAYERS)
+        or (body.airport and layer in AIRPORT_LAYERS)
     )
     # The basemap is fetched for the whole loaded day bbox, not the picked
     # view: the L3 key is per view, so every new "View extent" would miss and
@@ -255,6 +257,7 @@ async def render_document(
                                   {"lat": lat, "lon": lon, "elev_ft": elev_ft},
                                   width=float(body.width),
                                   include_map=body.map, include_airport=body.airport,
+                                  include_highways=body.highways,
                                   viewport_aspect=body.viewport_aspect,
                                   min_path_len_m=body.min_path_len_m)
     stats = movement_stats(window)

@@ -176,7 +176,8 @@ class RenderRequest(BaseModel):
     departures: bool = True
     holding: bool = True
     go_around: bool = True
-    map: bool = True  # issue #1080: the basemap groups (country/motorways/waterways/water)
+    map: bool = True  # issue #1080: the basemap groups (country/waterways/big lakes)
+    highways: bool = True  # the Highways group (motorway + trunk), its own switch
     airport: bool = True  # issue #1080: the airfield group + the airport marker circle
     types: list[str] = Field(default_factory=list)
     airlines: list[str] = Field(default_factory=list)

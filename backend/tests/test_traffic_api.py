@@ -673,12 +673,12 @@ def test_render_map_and_airport_layers(live, monkeypatch, tmp_path):
     layer_calls: list = []
     _stub_basemap(monkeypatch, layer_calls=layer_calls)
 
-    # Map off → the basemap groups are not fetched and not drawn.
+    # Map off → country/waterway/lake groups are not fetched; Highways + airfield are.
     resp = live.post("/v1/traffic/render", json=_render_body(day, map=False))
     assert resp.status_code == 200, resp.text
-    assert layer_calls[-1] == ("airfield",)
+    assert layer_calls[-1] == ("motorways", "airfield")
     art = live.get(urlsplit(resp.json()["svg_url"]).path).text
-    assert 'id="traffic-motorways"' not in art
+    assert 'id="traffic-motorways"' in art
     assert 'id="traffic-waterways"' not in art
     assert 'id="traffic-water"' not in art
     assert 'id="traffic-airfield"' in art
@@ -694,8 +694,16 @@ def test_render_map_and_airport_layers(live, monkeypatch, tmp_path):
     assert "<circle" not in art  # the marker circle belongs to the Airport layer
     assert 'id="traffic-motorways"' in art
 
-    # Both off → no basemap query at all (and the counts stay the same).
-    resp = live.post("/v1/traffic/render", json=_render_body(day, map=False, airport=False))
+    # Highways off → the motorway group is not fetched and not drawn.
+    resp = live.post("/v1/traffic/render", json=_render_body(day, highways=False))
+    assert resp.status_code == 200, resp.text
+    assert layer_calls[-1] == ("country", "waterways", "water", "airfield")
+    art = live.get(urlsplit(resp.json()["svg_url"]).path).text
+    assert 'id="traffic-motorways"' not in art
+
+    # All off → no basemap query at all (and the counts stay the same).
+    resp = live.post("/v1/traffic/render",
+                     json=_render_body(day, map=False, airport=False, highways=False))
     assert resp.status_code == 200, resp.text
     assert layer_calls[-1] == ()
     art = live.get(urlsplit(resp.json()["svg_url"]).path).text
