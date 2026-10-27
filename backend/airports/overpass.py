@@ -141,7 +141,9 @@ def split_aeroway(
             pts = [
                 (pt["lon"], pt["lat"])
                 for pt in el.get("geometry", []) or []
-                if pt.get("lon") is not None and pt.get("lat") is not None
+                if isinstance(pt, dict)
+                and pt.get("lon") is not None
+                and pt.get("lat") is not None
             ]
             if len(pts) >= 2:
                 geoms[cls].append(pts)
@@ -229,7 +231,9 @@ def split_context(
         pts = [
             (pt["lon"], pt["lat"])
             for pt in el.get("geometry", []) or []
-            if pt.get("lon") is not None and pt.get("lat") is not None
+            if isinstance(pt, dict)
+            and pt.get("lon") is not None
+            and pt.get("lat") is not None
         ]
         if len(pts) >= 2:
             geoms[cls].append(pts)
@@ -259,7 +263,9 @@ def extract_taxiway_refs(
         pts = [
             (pt["lon"], pt["lat"])
             for pt in el.get("geometry", []) or []
-            if pt.get("lon") is not None and pt.get("lat") is not None
+            if isinstance(pt, dict)
+            and pt.get("lon") is not None
+            and pt.get("lat") is not None
         ]
         if len(pts) >= 2:
             refs.append((ref, pts))
