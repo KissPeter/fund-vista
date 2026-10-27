@@ -228,9 +228,15 @@ async def render_document(
         layer for layer in MAP_LAYERS + AIRPORT_LAYERS
         if (body.map and layer in MAP_LAYERS) or (body.airport and layer in AIRPORT_LAYERS)
     )
+    # The basemap is fetched for the whole loaded day bbox, not the picked
+    # view: the L3 key is per view, so every new "View extent" would miss and
+    # re-run five Overpass queries (minutes). The day bbox is stable per day
+    # (one fetch, 30-day cache) and the renderer clips the polylines to the
+    # view, so the drawn SVG is unchanged.
+    basemap_bbox = (float(l1_bbox[0]), float(l1_bbox[1]), float(l1_bbox[2]), float(l1_bbox[3]))
     try:
         base, failed = await race_cancel(
-            request, load_basemap(view, lat, lon, layers=wanted_basemap),
+            request, load_basemap(basemap_bbox, lat, lon, layers=wanted_basemap),
             endpoint=endpoint, stage="overpass", started_mono=started_mono,
         )
     except HTTPException:
