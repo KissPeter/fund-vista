@@ -127,7 +127,7 @@ def _fnum(v: object) -> float | None:
         return None
 
 
-async def _render_document(
+async def render_document(
     body: RenderRequest, request: Request, endpoint: str, started_mono: float,
 ) -> dict | JSONResponse:
     """Shared validation → L1 → L2/L3 → render + L4 store for render/import.
@@ -262,7 +262,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     """
     endpoint = "/v1/traffic/render"
     started = time.monotonic()
-    info = await _render_document(body, request, endpoint, started)
+    info = await render_document(body, request, endpoint, started)
     if isinstance(info, JSONResponse):
         return info
     base = resolve_public_base(request)
@@ -288,7 +288,7 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
     """
     endpoint = "/v1/traffic/import"
     started = time.monotonic()
-    info = await _render_document(body, request, endpoint, started)
+    info = await render_document(body, request, endpoint, started)
     if isinstance(info, JSONResponse):
         return info
     try:
