@@ -527,3 +527,54 @@ def test_ink_split_refuses_a_design_mismatch(live, monkeypatch, tmp_path):
     })
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "design_mismatch"
+
+
+def test_ink_split_refuses_an_unplottable_pass(live, monkeypatch):
+    """A pass the import parser rejects (nothing convertible) → 422, never
+    a silent unplottable file for the plotter."""
+    from backend.fulfillment.ink_split import design_id_for
+
+    unplottable = "\n".join([
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">',
+        '<g id="traffic-motorways" fill="none" stroke="#000000">'
+        '<image href="data:image/png;base64,aaaa" x="0" y="0" width="4" height="4"/></g>',
+        "</svg>",
+    ]) + "\n"
+    doc = {"svg_text": unplottable, "warnings": [], "cache_hit": False, "icao": "LHBP"}
+
+    async def _fake_doc(body, request, endpoint, started_mono):
+        return dict(doc)
+
+    monkeypatch.setattr("backend.traffic.router.render_document", _fake_doc)
+    resp = live.post("/v1/fulfill/ink-split", json={
+        "design": _mint(design_id_for(unplottable)),
+        "kind": "traffic", "params": {"icao": "LHBP", "date": "2026-01-01"},
+        "inks": {"pen": "black"},
+    })
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "unplottable_pass"
+
+
+def test_ink_split_of_an_all_empty_draft_serves_no_files(live, monkeypatch):
+    """Every layer unticked + nothing drawn: the split is an honest empty
+    list (200), not an error — there is nothing to plot."""
+    from backend.fulfillment.ink_split import design_id_for
+
+    empty_layers = "\n".join([
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">',
+        '<g id="traffic-motorways" fill="none" stroke="#000000"></g>',
+        '<g id="traffic-arrivals" fill="none" stroke="#000000"> </g>',
+        "</svg>",
+    ]) + "\n"
+
+    async def _fake_doc(body, request, endpoint, started_mono):
+        return {"svg_text": empty_layers, "warnings": [], "cache_hit": False, "icao": "LHBP"}
+
+    monkeypatch.setattr("backend.traffic.router.render_document", _fake_doc)
+    resp = live.post("/v1/fulfill/ink-split", json={
+        "design": _mint(design_id_for(empty_layers)),
+        "kind": "traffic", "params": {"icao": "LHBP", "date": "2026-01-01"},
+        "inks": {"pen": "black"},
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["files"] == []
