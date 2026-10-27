@@ -23,12 +23,15 @@ outside the face set are skipped and reported once via
 ``label_unsupported_characters``.
 
 Border: when ``border`` is true (default) a blueprint title-block band is
-drawn: one closed rounded rect (corner radius ``border_radius_mm``, 0 is
-sharp) around the lettering, spanning the padded text slot from the top of
-the title strip down to the bottom margin. The band is page furniture of
-its own — the whole-page margin frame (``page_frame_rect()``) is drawn
-separately and independently, so a sheet can carry the frame, the band or
-both. One more pen-down stroke, same chain as the text.
+drawn: one closed rect around the lettering, spanning the full inner width
+from the top of the title strip down to the bottom margin. The top edge is
+the straight divider the band replaced — square corners landing exactly on
+the page-frame verticals — while the bottom corners follow the sheet corners
+(``border_radius_mm``, 0 is sharp). The pads inset the lettering inside the
+band, never the band itself. The band is page furniture of its own — the
+whole-page margin frame (``page_frame_rect()``) is drawn separately and
+independently, so a sheet can carry the frame, the band or both. One more
+pen-down stroke, same chain as the text.
 
 Outline faces (``excalifont``, ``comic-shanns``, ``nunito``) are TTF outlines
 traced to polylines — the pen draws every stem twice (once per outline side),
@@ -259,6 +262,30 @@ def _rounded_rect(    x0: float, y0: float, x1: float, y1: float, r: float
     return pts
 
 
+def _band_rect(
+    x0: float, y0: float, x1: float, y1: float, r: float
+) -> Polyline:
+    """Closed title-block band: a straight top edge with square corners (it
+    lands exactly on the page-frame verticals, where the old full-width
+    divider used to join them) and rounded bottom corners that follow the
+    sheet's rounded corners (r=0 is sharp)."""
+    r = max(0.0, min(r, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
+    if r <= 1e-9:
+        return [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
+    import math
+
+    pts: Polyline = [(x0, y0), (x1, y0)]
+    for cx, cy, a0 in (
+        (x1 - r, y1 - r, 0.0),
+        (x0 + r, y1 - r, 90.0),
+    ):
+        for i in range(1, CORNER_SEGMENTS + 1):
+            a = math.radians(a0 + 90.0 * i / CORNER_SEGMENTS)
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    pts.append(pts[0])
+    return pts
+
+
 def page_frame_rect(
     page_w: float, page_h: float, margin_mm: float, radius_mm: float
 ) -> Polyline:
@@ -311,8 +338,8 @@ def render_label(
     inner_left = margin_mm
     inner_right = page_w - margin_mm
     inner_w = max(inner_right - inner_left, 1e-9)
-    # Text insets from the margin verticals; the title-block band spans the
-    # padded slot. Oversized pads collapse to a tiny centered slot so an
+    # Text insets from the margin verticals; the band always spans the full
+    # inner width. Oversized pads collapse to a tiny centered slot so an
     # over-wide line scales down instead of inverting.
     text_left = inner_left + max(pad_left_mm, 0.0)
     text_right = inner_right - max(pad_right_mm, 0.0)
@@ -352,19 +379,23 @@ def render_label(
 
     if border:
         # Blueprint title-block band: lift the text off the sheet bottom, then
-        # close one band around the lettering (the padded text slot, from the
-        # top of the title strip down to the bottom margin). pad/gap come from
-        # _strip_metrics so label_reserve_mm (image-area reservation) always
-        # agrees. The whole-page margin frame is a separate element
-        # (page_frame_rect) — the band never draws the margin rect.
+        # close one band around the lettering, spanning the FULL inner width
+        # so its straight top edge lands square on the page-frame verticals
+        # (the pre-#1089 divider junction — no radius where it meets the
+        # frame). Only the bottom corners are rounded, following the sheet's
+        # rounded corners. The pads inset the lettering, never the band.
+        # pad/gap come from _strip_metrics so label_reserve_mm (image-area
+        # reservation) always agrees. The whole-page margin frame is a
+        # separate element (page_frame_rect) — the band never draws the
+        # margin rect.
         m = _strip_metrics(text, height_mm=height_mm, font=font)
         assert m is not None  # lines non-empty implies drawable glyphs
         _, pad, gap = m
         lines = [[(x, y - gap) for x, y in pl] for pl in lines]
         ys = [y for pl in lines for _, y in pl]
         band_top = max(min(ys) - pad, margin_mm)
-        band = _rounded_rect(
-            text_left, band_top, text_right, page_h - margin_mm,
+        band = _band_rect(
+            inner_left, band_top, inner_right, page_h - margin_mm,
             border_radius_mm,
         )
         lines.append(band)

@@ -104,18 +104,23 @@ def test_border_draws_title_block_band():
     assert gy0 > by0 and gy1 < by1
 
 
-def test_border_band_spans_the_padded_slot_only():
-    # Pads inset the band with the text: the band is the title block, not a
-    # second page frame.
+def test_border_band_spans_the_full_inner_width_pads_inset_text_only():
+    # Pads inset the lettering only: the band always spans the full inner
+    # width so its top edge lands square on the page-frame verticals (the
+    # shop regression: the band stopped short of the frame on the right and
+    # grew a radius where it should have met it).
     lines, _ = labels.render_label(
         "AB", height_mm=5.0, align="right",
         page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
         border=True, border_radius_mm=0.0,
         pad_left_mm=20.0, pad_right_mm=10.0,
     )
-    band = lines[-1]
-    assert abs(band[0][0] - (MARGIN + 20.0)) < 1e-6
-    assert abs(band[1][0] - (PAGE_W - MARGIN - 10.0)) < 1e-6
+    band, text = lines[-1], lines[:-1]
+    assert abs(band[0][0] - MARGIN) < 1e-6
+    assert abs(band[1][0] - (PAGE_W - MARGIN)) < 1e-6
+    tx0, _, tx1, _ = _bbox(text)
+    assert abs(tx1 - (PAGE_W - MARGIN - 10.0)) < 1e-6  # right-aligned
+    assert tx0 >= MARGIN + 20.0 - 1e-6
 
 
 def test_futural_draws_lowercase_simplex_warns():
@@ -170,7 +175,7 @@ def test_pad_right_insets_right_aligned_text():
     assert abs(x1 - (PAGE_W - MARGIN - 4.0)) < 1e-6
 
 
-def test_fill_spans_padded_slot_and_band_spans_the_same_slot():
+def test_fill_spans_padded_slot_and_band_spans_full_width():
     lines, _ = labels.render_label(
         "AB", height_mm=5.0, align="fill",
         page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
@@ -178,9 +183,9 @@ def test_fill_spans_padded_slot_and_band_spans_the_same_slot():
         pad_left_mm=5.0, pad_right_mm=7.0,
     )
     band = lines[-1]
-    # The band is the title block around the lettering: the padded slot.
-    assert abs(band[0][0] - (MARGIN + 5.0)) < 1e-6
-    assert abs(band[1][0] - (PAGE_W - MARGIN - 7.0)) < 1e-6
+    # The band spans the full inner width; only the lettering is inset.
+    assert abs(band[0][0] - MARGIN) < 1e-6
+    assert abs(band[1][0] - (PAGE_W - MARGIN)) < 1e-6
     # And the text itself stays inside the padded slot.
     text_lines = lines[:-1]
     x0, _, x1, _ = _bbox(text_lines)
@@ -195,9 +200,12 @@ def test_rounded_band_defaults_and_clamps():
         border=True,  # default radius 2.0
     )
     band = boxed[-1]
-    assert len(band) == 2 + 4 * 8 + 1  # straights + arc chords + close
+    # Straight top edge + two rounded bottom corners (8 chords each) + close.
+    assert len(band) == 2 + 2 * 8 + 1
     assert band[0] == band[-1]
-    assert abs(band[0][0] - (MARGIN + 2.0)) < 1e-6
+    # Square top corners exactly on the inner width.
+    assert abs(band[0][0] - MARGIN) < 1e-6
+    assert abs(band[1][0] - (PAGE_W - MARGIN)) < 1e-6
     for x, y in band:
         assert MARGIN - 1e-6 <= x <= PAGE_W - MARGIN + 1e-6
         assert MARGIN - 1e-6 <= y <= PAGE_H - MARGIN + 1e-6
@@ -215,6 +223,42 @@ def test_rounded_band_defaults_and_clamps():
     for x, y in hband:
         assert MARGIN - 1e-6 <= x <= PAGE_W - MARGIN + 1e-6
         assert MARGIN - 1e-6 <= y <= PAGE_H - MARGIN + 1e-6
+
+
+def test_band_top_edge_is_square_on_the_frame_verticals():
+    # Regression (shop report, 2026-10-27): the band grew rounded top corners
+    # where it should meet the page frame, and stopped short of the right
+    # vertical by the pad. The top edge must be one straight full-width
+    # segment meeting the frame verticals at right angles; only the bottom
+    # corners are rounded, and they coincide with the frame's own bottom
+    # corners so the band hugs the sheet instead of squaring it off.
+    boxed, _ = labels.render_label(
+        "AB", height_mm=5.0, align="right",
+        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+        border=True, border_radius_mm=2.0,
+        pad_left_mm=0.0, pad_right_mm=5.0,
+    )
+    band = boxed[-1]
+    band_top = band[0][1]
+    # Square top corners, full width (pad_right must NOT inset the band).
+    assert band[0] == (MARGIN, band_top)
+    assert band[1] == (PAGE_W - MARGIN, band_top)
+    # The rounded part is only at the bottom: arc chords hug the sheet
+    # corners (x inside the corner radius at the very bottom).
+    assert any(
+        MARGIN < x < MARGIN + 2.0 and y > PAGE_H - MARGIN - 2.0
+        for x, y in band
+    )
+    # The band's bottom corners coincide with the page frame's bottom
+    # corners (same centres/radii/chords), so the two never disagree.
+    frame = labels.page_frame_rect(PAGE_W, PAGE_H, MARGIN, 2.0)
+    frame_bottom = {
+        (round(x, 6), round(y, 6))
+        for x, y in frame if y >= PAGE_H - MARGIN - 2.0
+    }
+    for x, y in band:
+        if y >= PAGE_H - MARGIN - 2.0:
+            assert (round(x, 6), round(y, 6)) in frame_bottom
 
 
 def _convert(http_client, image_id: str, params: dict):

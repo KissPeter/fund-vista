@@ -1053,12 +1053,18 @@ Now the two are separate page-furniture elements:
 
 - `page.frame` draws the whole-page margin frame (unchanged geometry:
   `page_frame_rect()`), whenever it is on.
-- `label.border` draws a **title-block band**: one closed rounded rect
-  (radius `label.border_radius_mm`) around the lettering, spanning the padded
-  text slot (`text_left`...`text_right`) from the top of the title strip down
-  to the bottom margin. The full-width divider is gone - the band's top edge
-  takes its place, so the artwork reservation (`label_reserve_mm`) is
-  unchanged.
+- `label.border` draws a **title-block band**: one closed rect around the
+  lettering, spanning the **full inner width** (`margin_mm`...
+  `page_w - margin_mm`) from the top of the title strip down to the bottom
+  margin. Its top edge is the straight divider the band replaced — square
+  corners landing exactly on the page-frame verticals, no radius at the
+  junction; only the bottom corners are rounded (`label.border_radius_mm`),
+  coinciding with the page frame's bottom corners so the band hugs the
+  sheet's rounded corners. The pads inset the lettering inside the band,
+  never the band itself. The artwork reservation (`label_reserve_mm`) is
+  unchanged. (Regression fix, 2026-10-27: the band initially spanned the
+  padded text slot with all four corners rounded, so it stopped short of
+  the frame and grew a radius where it should have met it.)
 
 The band bottom edge is the bottom margin, so the band is a bottom strip, not
 a second page frame; the shop preview (`src/lib/galleryCompose.ts`) draws the
