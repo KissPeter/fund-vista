@@ -144,9 +144,9 @@ def test_map_and_airport_switches_drop_their_groups():
     svg, _ = R.render_svg(moves, base, _BBOX, flt, AP)
     assert 'id="traffic-motorways"' in svg and 'id="traffic-airfield"' in svg
     assert "<circle" in svg  # the airport marker circle
-    # Map off: the three basemap groups are gone, the airfield stays.
+    # Map off: the waterway/lake groups are gone; Highways and the airfield stay.
     svg, _ = R.render_svg(moves, base, _BBOX, flt, AP, include_map=False)
-    assert 'id="traffic-motorways"' not in svg
+    assert 'id="traffic-motorways"' in svg
     assert 'id="traffic-waterways"' not in svg
     assert 'id="traffic-water"' not in svg
     assert 'id="traffic-airfield"' in svg
@@ -156,8 +156,12 @@ def test_map_and_airport_switches_drop_their_groups():
     assert 'id="traffic-airfield"' not in svg
     assert "<circle" not in svg
     assert 'id="traffic-motorways"' in svg
-    # Both off: only the movement layers stay.
-    svg, _ = R.render_svg(moves, base, _BBOX, flt, AP, include_map=False, include_airport=False)
+    # Highways off: the motorway group is gone, Map + Airport stay.
+    svg, _ = R.render_svg(moves, base, _BBOX, flt, AP, include_highways=False)
+    assert 'id="traffic-motorways"' not in svg and 'id="traffic-airfield"' in svg
+    # All off: only the movement layers stay.
+    svg, _ = R.render_svg(moves, base, _BBOX, flt, AP, include_map=False, include_airport=False,
+                          include_highways=False)
     assert 'id="traffic-motorways"' not in svg and 'id="traffic-airfield"' not in svg
     assert 'id="traffic-arrivals"' in svg
 
@@ -337,3 +341,19 @@ def test_cache_fingerprint_covers_framing_knobs():
     fps = {_filter_fingerprint(x) for x in (a, b, c)}
     assert len(fps) == 3  # all three differ
     assert "minlen=0.0" in _filter_fingerprint(a) and "aspect=0.0000" in _filter_fingerprint(a)
+
+
+def test_highways_query_and_big_water_filter():
+    q = bm.motorway_query((1, 2, 3, 4))
+    assert "motorway|trunk" in q and "_link" not in q
+    assert '["name"]' in bm.waterway_query((1, 2, 3, 4))
+
+    def ring(w, e, s, n):
+        pts = [(w, s), (e, s), (e, n), (w, n), (w, s)]
+        return {"type": "way", "geometry": [{"lon": x, "lat": y} for x, y in pts]}
+
+    pond = ring(19.0, 19.001, 47.0, 47.001)  # ~0.01 km²
+    lake = ring(19.0, 19.03, 47.0, 47.02)    # ~4.5 km²
+    kept = bm.big_water([pond, lake])
+    assert kept == [lake]
+    assert 3.5 < bm.water_area_km2(lake) < 5.5

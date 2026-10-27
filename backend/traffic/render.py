@@ -59,11 +59,14 @@ from backend.traffic.geo import clip_polyline, rdp
 #: switch), the viewport-aspect framing and the min-path-length detail
 #: filter. Bumped so cached r4 SVGs (no border, bbox-ratio canvas,
 #: unfiltered stubs) expire.
-RENDER_VERSION = "r5"
+#: r6: Highways is its own layer switch (motorway + trunk) split off the
+#: Map layer, and the Map layer's water is limited to big lakes / named
+#: rivers.
+RENDER_VERSION = "r6"
 
 PENS = {  # layer id -> (label, stroke, width)   widths are in SVG user units of a 1000-wide canvas
     "country": ("Country border", "#000000", 0.8),
-    "motorways": ("Motorways", "#8a6d3b", 0.9),
+    "motorways": ("Highways", "#8a6d3b", 0.9),
     "waterways": ("Waterways", "#5aa0c8", 0.7),
     "water": ("Lakes", "#5aa0c8", 0.9),
     "airfield": ("Airfield", "#000000", 1.0),
@@ -78,11 +81,14 @@ PENS = {  # layer id -> (label, stroke, width)   widths are in SVG user units of
 }
 #: The basemap groups behind the "Map" layer (issue #1080). The country
 #: border is first — drawn (and plotted) under everything else.
-MAP_LAYERS = ("country", "motorways", "waterways", "water")
+MAP_LAYERS = ("country", "waterways", "water")
+#: The Highways layer (motorway + trunk), its own switch. Group id stays
+#: ``motorways`` (ink split / tint contract).
+HIGHWAY_LAYERS = ("motorways",)
 #: The airfield group behind the "Airport" layer (issue #1080) — the airport
 #: marker circle belongs to it.
 AIRPORT_LAYERS = ("airfield",)
-BASEMAP_LAYERS = MAP_LAYERS + AIRPORT_LAYERS
+BASEMAP_LAYERS = ("country", "motorways", "waterways", "water") + AIRPORT_LAYERS
 KIND_LAYERS = ("departures", "arrivals")
 CATEGORY_LAYERS = ("wide", "narrow", "regional", "other")
 HIGHLIGHT_LAYERS = ("holding", "go_around")
@@ -188,12 +194,13 @@ def expand_view_to_aspect(
 def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, float, float],
                flt: Filters, airport: dict | None = None, width: float = 1000.0,
                include_map: bool = True, include_airport: bool = True,
+               include_highways: bool = True,
                viewport_aspect: float | None = None, min_path_len_m: float = 0.0,
                ) -> tuple[str, dict]:
     """Render the traffic SVG + the per-layer **potential** counts.
 
-    ``include_map`` / ``include_airport`` are the Map / Airport layer
-    switches (issue #1080): an unticked layer drops its group from the SVG
+    ``include_map`` / ``include_airport`` / ``include_highways`` are the Map /
+    Airport / Highways layer switches (issue #1080): an unticked layer drops its group from the SVG
     (the group ids never change).
 
     ``viewport_aspect`` (r5) frames the canvas to the paper's shape —
@@ -224,6 +231,8 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
     layers: dict[str, list[str]] = {k: [] for k in ORDER}
     for k in BASEMAP_LAYERS:
         if k in MAP_LAYERS and not include_map:
+            continue
+        if k in HIGHWAY_LAYERS and not include_highways:
             continue
         if k in AIRPORT_LAYERS and not include_airport:
             continue
@@ -269,6 +278,8 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
            'viewBox="0 0 %.0f %.0f" width="%.0fmm" height="%.0fmm">' % (proj.width, proj.height, proj.width * 0.3, proj.height * 0.3)]
     for k in ORDER:
         if k in MAP_LAYERS and not include_map:
+            continue
+        if k in HIGHWAY_LAYERS and not include_highways:
             continue
         if k in AIRPORT_LAYERS and not include_airport:
             continue
