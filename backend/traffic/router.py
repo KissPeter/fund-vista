@@ -32,12 +32,12 @@ from backend.penplot.router import store as penplot_store
 from backend.traffic import availability as _avail
 from backend.traffic import cache as _cache
 from backend.traffic import store as _store
-from backend.traffic.basemap import load_basemap
+from backend.traffic.basemap import LAYERS, load_basemap
 from backend.traffic.classify import classify_day
 from backend.traffic.config import settings as traffic_settings
 from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
 from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
-from backend.traffic.render import AIRPORT_LAYERS, MAP_LAYERS, render_svg
+from backend.traffic.render import AIRPORT_LAYERS, MAP_LAYERS, expand_view_to_aspect, render_svg
 from backend.traffic.render_cache import (
     _load_cached_render,
     _load_result_svg,
@@ -182,6 +182,13 @@ async def render_document(
         view = (float(l1_bbox[0]), float(l1_bbox[1]), float(l1_bbox[2]), float(l1_bbox[3]))
     else:
         view = (body.view_south, body.view_north, body.view_west, body.view_east)  # type: ignore[misc]
+    if body.viewport_aspect is not None:
+        # Paper fill (r4): grow the view around its centre to the canvas
+        # ratio first, clamped to the day bbox — the ingest clipped the
+        # traces to it, so beyond it there is nothing to draw and the
+        # residual mismatch letterboxes in the SVG instead.
+        view = expand_view_to_aspect(view, body.viewport_aspect, tuple(float(x) for x in l1_bbox))  # type: ignore[arg-type]
+    if body.view_south is not None:
         if not (view[0] >= l1_bbox[0] and view[1] <= l1_bbox[1]
                 and view[2] >= l1_bbox[2] and view[3] <= l1_bbox[3]):
             return error_response(422, "invalid_params",
@@ -231,7 +238,7 @@ async def render_document(
     except Exception:
         # load_basemap already degrades per layer; this is belt-and-braces
         # for anything unexpected from the fetch layer.
-        base, failed = {k: [] for k in ("motorways", "waterways", "water", "airfield")}, ["all"]
+        base, failed = {k: [] for k in LAYERS}, ["all"]
     await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
     flt = body.filters(t_from_ts, t_to_ts)
     try:
@@ -241,7 +248,9 @@ async def render_document(
     svg_text, counts = render_svg(window, base, view, flt,
                                   {"lat": lat, "lon": lon, "elev_ft": elev_ft},
                                   width=float(body.width),
-                                  include_map=body.map, include_airport=body.airport)
+                                  include_map=body.map, include_airport=body.airport,
+                                  viewport_aspect=body.viewport_aspect,
+                                  min_path_len_m=body.min_path_len_m)
     stats = movement_stats(window)
     if failed:
         warnings.append("basemap_unavailable")

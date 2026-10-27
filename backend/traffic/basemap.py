@@ -1,4 +1,4 @@
-"""OSM basemap for the traffic map: motorways, waterways, lakes, airfield.
+"""OSM basemap for the traffic map: country border, motorways, waterways, lakes, airfield.
 
 Port of the ``tools/airport_traffic/basemap.py`` POC queries and geometry
 parsing; the POC disk cache is replaced by the Redis L3 layer
@@ -23,7 +23,7 @@ from backend.airports.overpass import (
 )
 from backend.traffic import cache as _cache
 
-LAYERS = ("motorways", "waterways", "water", "airfield")
+LAYERS = ("country", "motorways", "waterways", "water", "airfield")
 BBox = tuple[float, float, float, float]  # south, north, west, east
 
 #: Quantisation for the L3 key + query: neighbours within ~100 m share one
@@ -58,6 +58,23 @@ def waterway_query(b: BBox) -> str:
     return '[out:json][timeout:90];\nway["waterway"="river"](%s);\nout geom;' % _bb(b)
 
 
+#: The admin-boundary selectors of the country layer: Hungary's
+#: ``admin_level=2`` relation. Two tag paths in one union — the ISO code and
+#: the name — so the layer survives either tag being the one populated.
+#: Overpass de-duplicates the union, so a relation matched by both is
+#: returned once. The traffic module is Hungary-only, one relation.
+_COUNTRY_SEL = 'relation["boundary"="administrative"]["admin_level"="2"]'
+
+
+def country_query(b: BBox) -> str:
+    return (
+        '[out:json][timeout:90];\n(\n'
+        '  %s["ISO3166-1"="HU"](%s);\n'
+        '  %s["name"="Magyarország"](%s);\n'
+        ');\nout geom;' % (_COUNTRY_SEL, _bb(b), _COUNTRY_SEL, _bb(b))
+    )
+
+
 def water_query(b: BBox) -> str:
     sel = '["natural"="water"]["name"]["water"~"^(lake|reservoir)$"](%s)' % _bb(b)
     return '[out:json][timeout:90];\n(\n  way%s;\n  relation%s;\n);\nout geom;' % (sel, sel)
@@ -88,6 +105,8 @@ def layer_key(layer: str, view: BBox) -> str:
 
 
 async def _fetch_layer(layer: str, view: BBox, lat: float, lon: float) -> list:
+    if layer == "country":
+        return polylines(await fetch_airport_polygons(country_query(view)))
     if layer == "motorways":
         return polylines(await fetch_airport_polygons(motorway_query(view)))
     if layer == "waterways":
@@ -147,6 +166,7 @@ __all__ = [
     "AIRFIELD_RADIUS_M",
     "LAYERS",
     "SNAP_DEG",
+    "country_query",
     "layer_key",
     "load_basemap",
     "motorway_query",
