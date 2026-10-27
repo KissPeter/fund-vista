@@ -210,3 +210,130 @@ def test_render_request_icao_width_forbid():
     assert _req(width=100).width == 100 and _req(width=4000).width == 4000
     with pytest.raises(Exception):
         _req(icao="LHBP", date="2026-10-10", bogus=1)  # extra=forbid
+
+
+# -- r4: country border + paper-fill framing (aspect, min-path-length) --------
+
+
+def _view(lat=LAT, lon=LON, half_deg=0.5):
+    return (lat - half_deg, lat + half_deg, lon - half_deg, lon + half_deg)
+
+
+def test_country_layer_rides_the_map_switch():
+    """The border is a Map-layer group: on with Map, gone without it."""
+    base = {"country": [[[14.0, 48.0], [22.5, 48.6]]], "motorways": [], "waterways": [],
+            "water": [], "airfield": []}
+    assert "country" in R.MAP_LAYERS and R.MAP_LAYERS[0] == "country"  # plotted under everything
+    flt = Filters(t_from=0, t_to=24 * 3600)
+    svg, _ = R.render_svg([], base, _BBOX, flt, AP)
+    assert 'id="traffic-country"' in svg
+    svg, _ = R.render_svg([], base, _BBOX, flt, AP, include_map=False)
+    assert 'id="traffic-country"' not in svg
+    svg, _ = R.render_svg([], base, _BBOX, flt, AP)
+    assert 'inkscape:label="Country border"' in svg  # the group rides the Pen ink
+    assert bm.country_query((1, 2, 3, 4)).count("relation") >= 2  # union: ISO + name tag paths
+    assert "admin_level" in bm.country_query((1, 2, 3, 4)) and "out geom" in bm.country_query((1, 2, 3, 4))
+    assert bm.layer_key("country", (1, 2, 3, 4)) != bm.layer_key("motorways", (1, 2, 3, 4))
+
+
+def _d_points(svg: str) -> list[tuple[float, float]]:
+    """The (x, y) vertices of the SVG's first drawn path."""
+    coords = svg.split('d="M')[1].split('"')[0].replace("L", " ").split()
+    return [(float(c.split(",")[0]), float(c.split(",")[1])) for c in coords]
+
+
+def test_viewport_aspect_frames_canvas_and_centres():
+    """The canvas takes exactly the given ratio; content is fit-contain centred."""
+    # A line exactly spanning the view bbox — its clipped ends ARE the
+    # content frame, so the letterbox margin shows as distance from the
+    # canvas edges (a wider line would end outside the frame and lie).
+    base = {"motorways": [[[LON - 0.5, LAT], [LON + 0.5, LAT]]]}
+    flt = Filters(t_from=0, t_to=24 * 3600)
+    svg, _ = R.render_svg([], base, _view(), flt, AP, viewport_aspect=297 / 210)
+    assert svg.split('viewBox="')[1].split('"')[0] == "0 0 1000 707"  # A4-landscape shape
+    xs = [x for x, _y in _d_points(svg)]
+    assert 240 < min(xs) and max(xs) < 760  # the taller-than-wide view letterboxes left/right
+    # A projected-square (radius) view on a portrait sheet letterboxes
+    # top/bottom instead — the contain fit never distorts.
+    square = R.view_bbox(LAT, LON, 25.0)
+    svg_p, _ = R.render_svg([], base, square, flt, AP, viewport_aspect=210 / 297)
+    assert svg_p.split('viewBox="')[1].split('"')[0] == "0 0 1000 1414"
+    ys = [y for _x, y in _d_points(svg_p)]
+    assert 200 < min(ys) and max(ys) < 800  # canvas 1000 x 1414, content centred
+    # No aspect: the historical bbox-ratio canvas (square view → 1000 x 1000).
+    svg_sq, _ = R.render_svg([], base, square, flt, AP)
+    assert svg_sq.split('viewBox="')[1].split('"')[0] == "0 0 1000 1000"
+
+
+def test_min_path_len_filters_every_layer():
+    """Short pieces vanish on the basemap AND on movement traces; long stay."""
+    # 25 km square view: 1 SVG unit ≈ 25 m, so a ~100 m line is ~4 units.
+    small = R.view_bbox(LAT, LON, 25.0)
+    short = [[LON, LAT], [LON + 100.0 / 111200 / math.cos(math.radians(LAT)), LAT]]
+    long_ = [[LON, LAT], [LON + 3000.0 / 111200 / math.cos(math.radians(LAT)), LAT]]
+    base = {"motorways": [short, long_], "waterways": [], "water": [], "airfield": [], "country": []}
+    move = {"hex": "x", "type": "A320", "t": 100.0, "flight": "W1", "kind": "arr",
+            "holding": False, "go_around": False, "db_flags": 0,
+            "pts": [[100.0, LAT, LON, 0, 1],
+                    [110.0, LAT + 100.0 / 111200, LON, 0, 1]]}  # a ~100 m hop
+    flt = Filters(t_from=0, t_to=24 * 3600)
+    svg, _ = R.render_svg([move], base, small, flt, AP)
+    assert svg.count("<path") == 3  # 2 basemap + 1 movement — nothing filtered yet
+    svg, _ = R.render_svg([move], base, small, flt, AP, min_path_len_m=500.0)
+    assert svg.count("<path") == 1  # only the ~3 km motorway stays
+    assert 'd="M' in svg and 'id="traffic-motorways"' in svg
+    # 0 keeps the historical behaviour (same as omitting the knob).
+    svg0, _ = R.render_svg([move], base, small, flt, AP, min_path_len_m=0.0)
+    assert svg0.count("<path") == 3
+
+
+def test_expand_view_to_aspect():
+    """Grows one axis around the centre, clamped to the day bbox."""
+    view = _view(half_deg=0.25)  # a ~55 km square-in-degrees box (taller than wide)
+    limits = _view(half_deg=0.95)  # the day bbox (±1.9°/±3.6° would exceed the test's)
+    square = R.view_bbox(LAT, LON, 25.0)  # a projected-square radius view (aspect 1.0)
+    # Landscape: lon grows, lat untouched, centre kept, still inside the limits.
+    s, n, w, e = R.expand_view_to_aspect(view, 297 / 210, limits)
+    assert math.isclose((e - w) * math.cos(math.radians(LAT)) / (n - s), 297 / 210, rel_tol=1e-9)
+    assert s == view[0] and n == view[1] and limits[2] <= w < view[2] < LON < view[3] < e <= limits[3]
+    # Portrait on the square view: lat grows instead (the square is too wide).
+    s, n, w, e = R.expand_view_to_aspect(square, 210 / 297, limits)
+    assert math.isclose((e - w) * math.cos(math.radians(LAT)) / (n - s), 210 / 297, rel_tol=1e-9)
+    assert w == square[2] and e == square[3] and limits[0] <= s < square[0] < LAT < square[1] < n <= limits[1]
+    # A demand beyond the limits clamps and never leaves them.
+    tiny_limits = _view(half_deg=0.26)
+    s, n, w, e = R.expand_view_to_aspect(view, 297 / 210, tiny_limits)
+    assert tiny_limits[2] <= w and e <= tiny_limits[3]
+    # Already-matching aspect is returned untouched.
+    assert R.expand_view_to_aspect(square, 1.0, limits) == square
+    # A never-shrink guarantee: the grown view contains the original one.
+    grown = R.expand_view_to_aspect(view, 297 / 210, tiny_limits)
+    assert grown[0] <= view[0] and grown[1] >= view[1] and grown[2] <= view[2] and grown[3] >= view[3]
+
+
+def test_render_request_framing_knobs():
+    """min_path_len_m / viewport_aspect validate like the citymap knobs."""
+    r = _req()
+    assert r.min_path_len_m == 0.0 and r.viewport_aspect is None  # historical default
+    assert _req(min_path_len_m=10.0).min_path_len_m == 10.0
+    assert _req(viewport_aspect=297 / 210).viewport_aspect == pytest.approx(297 / 210)
+    with pytest.raises(Exception):
+        _req(min_path_len_m=100.1)  # above the citymap cap → 422
+    with pytest.raises(Exception):
+        _req(min_path_len_m=-0.1)  # negative → 422
+    with pytest.raises(Exception):
+        _req(viewport_aspect=0.0)  # gt=0 → 422
+    with pytest.raises(Exception):
+        _req(viewport_aspect=10.1)  # above cap → 422
+
+
+def test_cache_fingerprint_covers_framing_knobs():
+    """A min-length or aspect change must re-render, never serve stale art."""
+    from backend.traffic.render_cache import _filter_fingerprint
+
+    a = _req()
+    b = _req(min_path_len_m=10.0)
+    c = _req(viewport_aspect=1.414)
+    fps = {_filter_fingerprint(x) for x in (a, b, c)}
+    assert len(fps) == 3  # all three differ
+    assert "minlen=0.0" in _filter_fingerprint(a) and "aspect=0.0000" in _filter_fingerprint(a)

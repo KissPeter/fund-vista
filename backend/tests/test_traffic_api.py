@@ -687,7 +687,8 @@ def test_render_map_and_airport_layers(live, monkeypatch, tmp_path):
     # Airport off → the airfield group and the marker circle are gone.
     resp = live.post("/v1/traffic/render", json=_render_body(day, airport=False))
     assert resp.status_code == 200, resp.text
-    assert layer_calls[-1] == ("motorways", "waterways", "water")
+    # The country border rides the Map switch (r4) — fetched with the rest.
+    assert layer_calls[-1] == ("country", "motorways", "waterways", "water")
     art = live.get(urlsplit(resp.json()["svg_url"]).path).text
     assert 'id="traffic-airfield"' not in art
     assert "<circle" not in art  # the marker circle belongs to the Airport layer
