@@ -24,7 +24,7 @@ from backend.airports.ui import ui_router as airports_ui_router
 from backend.wordmark.cache import configure_wordmark_redis
 from backend.wordmark.router import router as wordmark_router
 from backend.jobs.router import router as jobs_router
-from backend.jobs.store import configure_jobs_redis
+from backend.jobs.store import configure_jobs_redis, reap_orphans
 from backend.traffic.cache import configure_traffic_redis
 from backend.traffic.router import router as traffic_router
 from backend.penplot.errors import PenPlotError
@@ -193,12 +193,19 @@ async def _startup() -> None:
         configure_wordmark_redis(redis_client)
         configure_jobs_redis(redis_client)
         configure_traffic_redis(redis_client)
+        # Issue #1061: reap every non-terminal job whose runner died — a
+        # restart must not leave pollers parked on a `running` doc for the
+        # whole TTL. The runner stamps + heartbeats while it lives, so
+        # anything dead is provably unreachable.
+        await reap_orphans()
     except Exception as exc:
         redis_client = None
         configure_redis(None)
         configure_citymap_redis(None)
         configure_airports_redis(None)
         configure_wordmark_redis(None)
+        configure_jobs_redis(None)
+        configure_traffic_redis(None)
         configure_jobs_redis(None)
         configure_traffic_redis(None)
         print(f"Redis unavailable, continuing without cache: {exc}")

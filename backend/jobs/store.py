@@ -41,6 +41,19 @@ _redis = None
 _memory: dict[str, tuple[float, dict]] = {}
 _ip_sets: dict[str, tuple[float, set[str]]] = {}
 _pending: list[str] = []
+# Runner liveness (issue #1061): `runner:{worker_id}` in Redis with a short
+# TTL, refreshed by the runner's heartbeat; the in-memory fallback keeps
+# expiring deadlines. A non-terminal job doc whose runner is NOT alive is an
+# orphan — the owning worker/container died and nothing will reach a
+# terminal state for it (the shop's poller would sit on `running` until the
+# queued TTL expires, then read a raw 404).
+_runner_live: dict[str, float] = {}
+
+RUNNER_TTL_S = 30
+# A job doc may sit between create_job and the runner's claim for the few
+# milliseconds of the enqueue; anything older than this grace without a live
+# runner is orphaned.
+CLAIM_GRACE_S = 10.0
 
 
 def configure_jobs_redis(client) -> None:
@@ -50,6 +63,12 @@ def configure_jobs_redis(client) -> None:
     _memory.clear()
     _ip_sets.clear()
     _pending.clear()
+    _runner_live.clear()
+
+
+def runner_deadline_set(worker_id: str, deadline: float) -> None:
+    """Test helper: pre-age a runner's liveness deadline."""
+    _runner_live[worker_id] = deadline
 
 
 def _job_key(job_id: str) -> str:
@@ -233,6 +252,109 @@ async def set_cancelled(job_id: str) -> None:
     await _remove_from_ip_sets(job_id, doc)
 
 
+def _runner_key(worker_id: str) -> str:
+    return f"runner:{worker_id}"
+
+
+def _runner_alive(worker_id: str) -> bool:
+    """Sync liveness check (no I/O): Redis key names are not readable without
+    an await, so the runner heartbeat also stamps `_runner_live` in-process."""
+    deadline = _runner_live.get(worker_id, 0.0)
+    return deadline >= time.time()
+
+
+def _runner_missing_heartbeats(worker_id: str) -> bool:
+    return not _runner_alive(worker_id)
+
+
+async def touch_runner(worker_id: str) -> None:
+    """The runner heartbeat (issue #1061): refresh the worker's liveness TTL
+    — one call per running task tick, not per doc. On Redis it is a plain
+    SETEX; the in-memory deadline serves the degraded mode + tests."""
+    now = time.time()
+    _runner_live[worker_id] = now + RUNNER_TTL_S
+    if _redis is not None:
+        try:
+            await _redis.setex(_runner_key(worker_id), RUNNER_TTL_S, now)
+        except Exception as exc:
+            log.warning("jobs.redis runner touch failed worker=%s: %s", worker_id[:8], exc)
+
+
+async def claim_job(job_id: str, worker_id: str) -> None:
+    """Stamp the owning runner onto the job doc (issue #1061) and touch its
+    liveness. The stamp + the heartbeats are what the orphan sweep reads."""
+    doc = await get_job(job_id)
+    if doc is None or doc.get("status") in TERMINAL:
+        return
+    doc["runner"] = worker_id
+    await _write_doc(job_id, doc, _ttl_for(doc.get("status", "running")))
+    await touch_runner(worker_id)
+
+
+async def reap_orphans(grace_s: float = CLAIM_GRACE_S) -> list[str]:
+    """Mark every non-terminal job doc without a live runner as
+    ``failed {orphaned}`` (issue #1061). The owning container died — no task
+    will ever reach a terminal state for it. Called on worker startup and
+    opportunistically by ``GET /v1/jobs/{id}`` poll checks. Returns the ids
+    it reaped. Guard rail: a doc younger than ``grace_s`` is skipped — the
+    enqueue→claim window is single-digit milliseconds, so younger docs are
+    still being claimed.
+
+    Without Redis (memory mode) there is nothing to survive a restart, so
+    the same rules run against the in-memory docs (the tests use them)."""
+    now = time.time()
+    reaped: list[str] = []
+    docs: list[tuple[str, dict]] = []
+    if _redis is not None:
+        try:
+            cursor: int | str = 0
+            while True:
+                cursor, keys = await _redis.scan(
+                    int(cursor), match="job:*", count=200
+                )
+                for key in keys:
+                    name = key.decode() if isinstance(key, bytes) else key
+                    if not name.startswith("job:"):
+                        continue
+                    job_id = name[4:]
+                    raw = await _redis.get(name)
+                    if raw is None:
+                        continue
+                    try:
+                        if isinstance(raw, bytes):
+                            raw = raw.decode("utf-8")
+                        docs.append((job_id, json.loads(raw)))
+                    except ValueError:
+                        continue
+                if int(cursor) == 0:
+                    break
+        except Exception as exc:
+            log.warning("jobs.redis orphan scan failed: %s", exc)
+            return reaped
+    else:
+        for key, entry in list(_memory.items()):
+            if entry[0] <= now:
+                continue
+            docs.append((key.removeprefix("job:"), entry[1]))
+    for job_id, doc in docs:
+        status = doc.get("status", "queued")
+        if status in TERMINAL:
+            continue
+        if now - float(doc.get("updated_at", 0.0)) < grace_s:
+            continue
+        runner = doc.get("runner")
+        if runner and _runner_alive(runner):
+            continue
+        await set_error(
+            job_id,
+            "orphaned",
+            "Job lost when the worker restarted before it finished — nothing owns it anymore.",
+        )
+        reaped.append(job_id)
+        log.warning("jobs.orphan reaped id=%s type=%s", job_id[:12], doc.get("type"))
+    return reaped
+
+
 async def request_cancel(job_id: str) -> bool:
     """Mark cancelling (runners poll → cancelled). True when known."""
     doc = await get_job(job_id)
@@ -325,10 +447,13 @@ def reset_memory() -> None:
     _memory.clear()
     _ip_sets.clear()
     _pending.clear()
+    _runner_live.clear()
 
 
 __all__ = [
     "TERMINAL",
+    "RUNNER_TTL_S",
+    "CLAIM_GRACE_S",
     "configure_jobs_redis",
     "create_job",
     "get_job",

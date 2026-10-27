@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import threading
 import time
 
@@ -136,6 +137,24 @@ async def _execute(
     raise ValueError(f"Unknown job type '{job_type}'.")
 
 
+WORKER_ID = secrets.token_hex(8)
+
+
+async def _runner_heartbeat(stop: threading.Event) -> None:
+    """Issue #1061: refresh the worker's runner liveness every 10 s while a
+    task runs. One heartbeat per running task (cheap); the store keeps a
+    single liveness deadline per worker."""
+    try:
+        while not stop.is_set():
+            try:
+                await _store.touch_runner(WORKER_ID)
+            except Exception:
+                pass
+            await asyncio.sleep(10)
+    except asyncio.CancelledError:
+        pass
+
+
 # Map job-failure exceptions to stored ``error`` envelopes (sync tokens kept).
 async def _store_job_exception(job_id: str, exc: BaseException) -> None:
     if isinstance(exc, _JobError):
@@ -159,6 +178,13 @@ async def _run_job(job_id: str, stop: threading.Event) -> None:
     payload = doc.get("request", {})
     started = time.monotonic()
     await _store.set_status(job_id, "running", progress={"stage": "running", "done": 0, "total": 0})
+    # Issue #1061 (the shop ticket): the owning runner stamps the doc and
+    # heartbeats its liveness while it runs — a non-terminal doc whose
+    # runner is dead is an orphan the restart sweep marks as
+    # `failed {orphaned}` instead of a poller stuck on `running` for the
+    # whole TTL.
+    await _store.claim_job(job_id, WORKER_ID)
+    heartbeat = asyncio.create_task(_runner_heartbeat(stop))
     poller = asyncio.create_task(_cancel_poller(job_id, stop))
     try:
         try:
@@ -209,6 +235,7 @@ async def _run_job(job_id: str, stop: threading.Event) -> None:
         )
     finally:
         poller.cancel()
+        heartbeat.cancel()
         _stops.pop(job_id, None)
 
 
