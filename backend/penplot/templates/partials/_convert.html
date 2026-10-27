@@ -55,9 +55,9 @@ function readParams() {
       frame: $("page_frame").checked,
       frame_radius_mm: num("page_frame_radius_mm"),
     },
+    // Draw/travel feedrates are server-side machine constants (2000/8000
+    // mm/min) — not sent; only the pen-lift delay is tunable.
     pen: {
-      draw_speed_mm_s: num("draw_speed_mm_s"),
-      travel_speed_mm_s: num("travel_speed_mm_s"),
       pen_lift_s: num("pen_lift_s"),
     },
     label: {
@@ -151,9 +151,7 @@ function render(body) {
   $("st_strokes").textContent = s.strokes;
   $("st_points").textContent = s.points.before + " → " + s.points.after;
   $("st_segments").textContent = s.segments.before + " → " + s.segments.after;
-  $("st_down").textContent = s.pen_down_mm;
-  $("st_up").textContent = s.pen_up_mm;
-  $("st_time").textContent = s.estimated_time_s;
+  // Plot time + distance stay API-only (shop prices from them); not shown here.
   $("stats").hidden = false;
   $("vpype").textContent = body.vpype_command;
   const ul = $("warnings");

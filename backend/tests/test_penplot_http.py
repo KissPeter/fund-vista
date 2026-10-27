@@ -172,10 +172,10 @@ def test_convert_unknown_image_404(http_client):
         lambda p: p.update(hatch_pitch_mm=-1.0),      # negative pitch
         lambda p: p.update(contour_simplify=-5.0),
         lambda p: p["page"].update(size="A9"),        # unknown page
-        lambda p: p["pen"].update(draw_speed_mm_s=0),  # zero speed
+        lambda p: p["pen"].update(pen_lift_s=99),     # beyond le=10
         lambda p: p.update(nonexistent_slider=1),     # typo'd slider (forbid-extra)
     ],
-    ids=["method", "threshold", "pitch", "simplify", "page", "speed", "typo"],
+    ids=["method", "threshold", "pitch", "simplify", "page", "lift", "typo"],
 )
 def test_convert_invalid_params_422_envelope(http_client, mutate):
     image_id = upload(http_client, png_bytes()).json()["image_id"]
@@ -209,26 +209,6 @@ def test_convert_svg_vector_input(http_client):
 def test_result_unknown_file_404(http_client):
     resp = http_client.get("/v1/results/does_not_exist_optimized.svg")
     assert resp.status_code == 404
-
-
-def test_convert_degenerate_travel_speed_never_5xx(http_client):
-    """Subnormal (or otherwise validated-but-degenerate) pen speeds must not
-    produce a bare 500: ``pen_up / 5e-324`` is inf, and FastAPI then fails
-    the response RENDER with ``json: Out of range float values are not JSON
-    compliant`` (found by the Schemathesis smoke, ST101, 2026-10-20).
-
-    Expected behavior: the estimate is dropped (0) with an explicit warning,
-    status stays 200. Everything else must still be a 4xx envelope, never 5xx.
-    """
-    params = default_params("hatch")
-    params["pen"]["travel_speed_mm_s"] = 5e-324  # subnormal: passes gt=0 / le=1000
-    image_id = upload(http_client, png_bytes(), "speed.png").json()["image_id"]
-    resp = _convert(http_client, image_id, params)
-    assert resp.status_code < 500, resp.text
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["stats"]["estimated_time_s"] == 0.0
-    assert "estimated_time_unavailable" in body["warnings"]
 
 
 def test_result_path_traversal_blocked(http_client):

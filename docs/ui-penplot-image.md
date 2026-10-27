@@ -71,7 +71,7 @@ warnings, vpype recipe, download link).
 | `page_orientation` select | `page.orientation` | portrait/landscape swap. |
 | `page_margin_mm` 0–50, `page_padding_mm` 0–20 | `page.margin_mm`, `page.padding_mm` | Outer margin + inner artwork padding. |
 | `page_frame` checkbox, `page_frame_radius_mm` 0–20 | `page.frame`, `page.frame_radius_mm` | Whole-page rounded border. |
-| `draw_speed_mm_s` 5–200, `travel_speed_mm_s` 10–500, `pen_lift_s` 0–2 | `pen.*` | Stats-only: estimated plot time (`pen_down/up_mm`, `estimated_time_s`). No geometry effect. |
+| `pen_lift_s` 0–2 | `pen.pen_lift_s` | Stats-only: estimated plot time (`pen_down/up_mm`, `estimated_time_s`). No geometry effect. Draw/travel feedrates are server-side machine constants (2000/8000 mm/min), not UI knobs. |
 
 ### 1b. Technical drawing — opt-in (`partials/_drawing.html`)
 

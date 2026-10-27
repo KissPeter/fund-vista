@@ -44,10 +44,12 @@ def test_nothing_configured_changes_nothing(tmp_path):
     assert svgmeta.salt(Settings()) == ""
     res = _convert(ConvertParams(methods=["centerline"]), tmp_path)
     assert "<metadata" not in res.svg_text and "<title" not in res.svg_text
-    # Legacy cache key/filename are untouched while unconfigured.
-    assert params_hash(ConvertParams()) == "36fc02273dcf"
+    # Cache key/filename are untouched while unconfigured (base hash changed
+    # 2026-10-27: pen feedrates became machine constants, see PART Q in
+    # SPEC_V1.md / the comment in test_penplot_drawing.py).
+    assert params_hash(ConvertParams()) == "b25eafd85c33"
     assert convert_result_filename("a" * 64, ConvertParams(), False, Settings()).endswith(
-        "_36fc02273dcf_optimized.svg")
+        "_b25eafd85c33_optimized.svg")
 
 
 # ------------------------------------------------------------------- the block
@@ -156,8 +158,8 @@ def test_a_client_cannot_override_ownership():
         ConvertParams(svg_meta={"creator": "Someone else"})
     with pytest.raises(ValueError):
         SvgMetaParams(title="x" * 201)
-    assert params_hash(ConvertParams(svg_meta={"title": ""})) == "36fc02273dcf"  # empty = unchanged key
-    assert params_hash(ConvertParams(svg_meta={"title": "t"})) != "36fc02273dcf"
+    assert params_hash(ConvertParams(svg_meta={"title": ""})) == "b25eafd85c33"  # empty = unchanged key
+    assert params_hash(ConvertParams(svg_meta={"title": "t"})) != "b25eafd85c33"
 
 
 def test_wordmark_svg_is_stamped_too(monkeypatch):

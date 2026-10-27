@@ -76,7 +76,7 @@ def test_ui_defaults_match_schema(http_client):
     html = http_client.get("/penplot").text
     assert f'value="{defaults["threshold"]}"' in html
     assert f'value="{defaults["hatch_pitch_mm"]}"' in html
-    assert f'value="{defaults["pen"]["draw_speed_mm_s"]}"' in html
+    assert f'value="{defaults["pen"]["pen_lift_s"]}"' in html
     assert "A4" in html and "A3" in html
 
 

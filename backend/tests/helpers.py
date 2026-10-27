@@ -83,11 +83,9 @@ def default_params(method: str = "hatch") -> dict:
         "linesort": True,
         "reloop_tolerance_mm": 0.05,
         "page": {"size": "A4", "orientation": "portrait", "margin_mm": 10},
-        "pen": {
-            "draw_speed_mm_s": 40,
-            "travel_speed_mm_s": 100,
-            "pen_lift_s": 0.3,
-        },
+        # Draw/travel feedrates are server-side machine constants; only the
+        # pen-lift delay is a request parameter.
+        "pen": {"pen_lift_s": 0.3},
     }
 
 

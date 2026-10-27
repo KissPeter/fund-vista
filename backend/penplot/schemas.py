@@ -105,11 +105,19 @@ class LabelParams(BaseModel):
     )
 
 
+# Measured machine feedrates (mm/min): pen-down drawing, pen-up travel.
+# Deliberately NOT request parameters (2026-10-27) — the plot-time estimate
+# (and the shop price derived from it + distance) stays comparable across
+# converts and can't be inflated by clients. SPEC_V1.md PART Q.
+DRAW_SPEED_MM_MIN: float = 2000.0
+TRAVEL_SPEED_MM_MIN: float = 8000.0
+
+
 class PenParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    draw_speed_mm_s: float = Field(default=40.0, gt=0.0, le=500.0)
-    travel_speed_mm_s: float = Field(default=100.0, gt=0.0, le=1000.0)
+    # Only the servo pen-lift delay per stroke is tunable; the feedrates are
+    # the machine constants above.
     pen_lift_s: float = Field(default=0.3, ge=0.0, le=10.0)
 
 

@@ -43,7 +43,14 @@ from backend.penplot.optimize import (
     reloop,
     to_svg,
 )
-from backend.penplot.schemas import ConvertParams, ConvertStats, PointsStats, SegmentsStats
+from backend.penplot.schemas import (
+    ConvertParams,
+    ConvertStats,
+    DRAW_SPEED_MM_MIN,
+    PointsStats,
+    SegmentsStats,
+    TRAVEL_SPEED_MM_MIN,
+)
 from backend.penplot.svgparsecache import load_parsed_svg, store_parsed_svg
 
 log = logging.getLogger(__name__)
@@ -166,6 +173,28 @@ def params_hash(params: ConvertParams, is_vector: bool = False, salt: str = "") 
     if salt:  # server-side ownership config (svgmeta.salt); "" keeps legacy keys
         canonical += "|" + salt
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
+def estimate_plot_time_s(
+    pen_down_mm: float, pen_up_mm: float, strokes: int, pen_lift_s: float
+) -> float:
+    """Plot time calculator: pen-down drawing + pen-up travel + pen lifts.
+
+    Feedrates are the measured machine constants ``DRAW_SPEED_MM_MIN`` /
+    ``TRAVEL_SPEED_MM_MIN`` (mm/min, converted to mm/s); simplified model
+    without acceleration ramps (SPEC_V1.md §3.4). Returns inf on degenerate
+    input — the caller drops the estimate with a warning instead of failing
+    the response JSON render (Schemathesis ST101, 2026-10-20).
+    """
+    try:
+        return (
+            pen_down_mm / (DRAW_SPEED_MM_MIN / 60.0)
+            + pen_up_mm / (TRAVEL_SPEED_MM_MIN / 60.0)
+            + strokes * pen_lift_s
+        )
+    except ZeroDivisionError:
+        # A speed so degenerate its mm/min → mm/s conversion underflows to 0.
+        return math.inf
 
 
 def convert_result_filename(
@@ -582,11 +611,7 @@ def run_convert(
             dist(final[i][-1], final[i + 1][0]) for i in range(len(final) - 1)
         ) if len(final) > 1 else 0.0
         strokes = len(final)
-        est = (
-            pen_down / params.pen.draw_speed_mm_s
-            + pen_up / params.pen.travel_speed_mm_s
-            + strokes * params.pen.pen_lift_s
-        )
+        est = estimate_plot_time_s(pen_down, pen_up, strokes, params.pen.pen_lift_s)
         if math.isfinite(est):
             estimated = round(est, 1)
         else:
