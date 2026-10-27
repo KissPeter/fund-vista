@@ -26,6 +26,7 @@ import math
 from dataclasses import replace
 from xml.sax.saxutils import escape
 
+from backend.traffic.corridors import corridor_keep
 from backend.traffic.filters import Filters, pen
 from backend.traffic.geo import clip_polyline, rdp
 
@@ -34,7 +35,10 @@ from backend.traffic.geo import clip_polyline, rdp
 #: r2 (Phase 5): category pen mode (wide/narrow/regional/other layers).
 #: r3 (issue #1080): the Map/Airport layer switches + potential per-layer
 #: counts (counted before the layer filter).
-RENDER_VERSION = "r3"
+#: r4 (corridor collapse): near-identical movement strokes merge into
+#: corridor representatives per layer — the runway funnel no longer re-inks
+#: one line dozens of times.
+RENDER_VERSION = "r4"
 
 PENS = {  # layer id -> (label, stroke, width)   widths are in SVG user units of a 1000-wide canvas
     "motorways": ("Motorways", "#8a6d3b", 0.9),
@@ -97,6 +101,12 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
     would land in when the layer toggles are all on, so a layer reports how
     many lines it would contribute even while it is unticked. The drawn
     paths still respect the toggles.
+
+    The **corridor collapse** (issue: runway-funnel line storm) merges
+    near-identical strokes of a layer into corridor representatives before
+    they are emitted, so a busy approach corridor does not re-ink the same
+    line dozens of times. The counts stay *movement* counts — zero always
+    means "no movements", never "all merged away".
     """
     proj = Projection(bbox, width)
     eps_base, eps_trk = 0.3, 0.35
@@ -110,6 +120,7 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
             layers[k] += ['<path d="%s"/>' % d for d in proj.path(line, eps_base)]
     move_layers = (CATEGORY_LAYERS if flt.pen_mode == "category" else KIND_LAYERS) + HIGHLIGHT_LAYERS
     counts = {k: 0 for k in move_layers}
+    segs_by_layer: dict[str, list[tuple[list[tuple[float, float]], str]]] = {k: [] for k in move_layers}
     # The potential-count pass: the layer toggles are neutralised, every
     # other filter (window, military, privacy, type, airline, …) still
     # applies. The counts therefore do not depend on the toggles — the
@@ -130,11 +141,17 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
         xy = [proj.xy(p[1], p[2]) for p in f["pts"]]
         title = escape(" ".join(x for x in (f.get("flight") or f["hex"], f.get("type") or "") if x))
         for seg in clip_polyline(rdp(xy, eps_trk), proj.width, proj.height):
-            layers[layer].append('<path d="M%s"><title>%s</title></path>' % (" L".join("%.1f,%.1f" % q for q in seg), title))
+            segs_by_layer[layer].append((seg, title))
     if airport and include_airport:  # marker so the airport stays findable at country zoom
         x, y = proj.xy(airport["lat"], airport["lon"])
         if 0 <= x <= proj.width and 0 <= y <= proj.height:
             layers["airfield"].append('<circle cx="%.1f" cy="%.1f" r="4"/>' % (x, y))
+    # Corridor collapse per movement layer (runway funnel): survivors keep
+    # their clipped segments and their title verbatim.
+    for k, arcs in segs_by_layer.items():
+        for i in corridor_keep([arc for arc, _t in arcs], proj.width):
+            seg, title = arcs[i]
+            layers[k].append('<path d="M%s"><title>%s</title></path>' % (" L".join("%.1f,%.1f" % q for q in seg), title))
     out = ['<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
            'viewBox="0 0 %.0f %.0f" width="%.0fmm" height="%.0fmm">' % (proj.width, proj.height, proj.width * 0.3, proj.height * 0.3)]
     for k in ORDER:
