@@ -1067,11 +1067,14 @@ Now the two are separate page-furniture elements:
   the frame and grew a radius where it should have met it.)
 
 The band bottom edge is the bottom margin, so the band is a bottom strip, not
-a second page frame; the shop preview (`src/lib/galleryCompose.ts`) draws the
-same two elements with the same presence rule (pen-pixel-shop issue #1089).
-Tests: label band geometry (span, radius clamp, reserve/band-top agreement,
-padded slot) + the frame/band independence over HTTP. Full suite at landing:
-**651 passed, 1 skipped** (plus one OCR test that needs a local tesseract).
+a second page frame. The shop preview mirrors the two elements' presence
+rule; its band geometry is updated to match this fix under pen-pixel-shop
+issue #1292 (until that lands, the preview still draws the pre-fix
+padded-slot rect). Tests: label band geometry (span, radius clamp,
+reserve/band-top agreement, full-width band with pads insetting only the
+lettering, square top junction + bottom-corner coincidence) + the
+frame/band independence over HTTP. Full suite at this fix: **840 passed,
+2 skipped** (plus one OCR test that needs a local tesseract).
 ## PART P — Cross-hatch opt-out (2026-10-22, pen-pixel-shop #1095)
 
 `params.cross_hatch` (bool, default **true**) turns the hatch generator's

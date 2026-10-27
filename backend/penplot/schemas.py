@@ -84,8 +84,11 @@ class LabelParams(BaseModel):
     border: bool = Field(
         default=True,
         description=(
-            "Draw the title-block band around the lettering (the padded text "
-            "slot at the bottom edge). Independent of the page frame."
+            "Draw the title-block band around the lettering: a closed rect "
+            "spanning the full inner width from the top of the title strip "
+            "down to the bottom margin - straight top edge landing square on "
+            "the page-frame verticals, rounded bottom corners. The pads "
+            "inset the lettering, not the band. Independent of the page frame."
         ),
     )
     border_radius_mm: float = Field(

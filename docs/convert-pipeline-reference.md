@@ -68,8 +68,9 @@ Geometry/painting: yes (page placement). Knob: `page.*`.
 
 ### 1.2 Label + page frame (`static_lines`)
 
-`render_label` + optional `page.frame` rect (skipped when the label border
-already draws the same rect). These join the cleanup chain *after* layout and
+`render_label` + optional `page.frame` rect (independent page furniture since
+SPEC Part O: with both on, both draw). These join the cleanup chain *after*
+layout and
 are merged **separately** from image strokes at 1.2 — a joint linemerge would
 fuse artwork into divider/frame across the gap strip at high tolerances.
 

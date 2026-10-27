@@ -88,7 +88,7 @@ def test_border_draws_title_block_band():
     assert len(boxed) == len(plain) + 1
     band = boxed[-1]
     assert len(band) == 5 and band[0] == band[-1]
-    # The band spans the padded text slot (no pads here: the inner width).
+    # The band spans the full inner width (no pads here: same thing).
     assert abs(band[0][0] - MARGIN) < 1e-6
     assert abs(band[1][0] - (PAGE_W - MARGIN)) < 1e-6
     # Its bottom edge is the bottom margin; its top edge sits above the text.
@@ -121,6 +121,34 @@ def test_border_band_spans_the_full_inner_width_pads_inset_text_only():
     tx0, _, tx1, _ = _bbox(text)
     assert abs(tx1 - (PAGE_W - MARGIN - 10.0)) < 1e-6  # right-aligned
     assert tx0 >= MARGIN + 20.0 - 1e-6
+
+
+def test_band_with_pads_and_unequal_radii():
+    # The frame/band interplay the HTTP cases never exercise: non-zero pads
+    # and label.border_radius_mm != page.frame_radius_mm. The band still
+    # spans the full inner width (riding the frame verticals) and follows
+    # its OWN radius at the bottom - the corners coincide with the frame's
+    # only when a caller sets the two radii equal (accepted outcome: with
+    # both on, the band re-inks the frame's lower half).
+    lines, _ = labels.render_label(
+        "AB", height_mm=5.0, align="right",
+        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+        border=True, border_radius_mm=3.0,
+        pad_left_mm=4.0, pad_right_mm=5.0,
+    )
+    band = lines[-1]
+    assert band[0] == band[-1] and band[0] == (MARGIN, band[0][1])
+    xs = [x for x, _ in band]
+    assert abs(min(xs) - MARGIN) < 1e-6
+    assert abs(max(xs) - (PAGE_W - MARGIN)) < 1e-6
+    # Bottom corners follow the band's own radius (3.0), not the frame's.
+    assert any(
+        MARGIN < x < MARGIN + 3.0 and y > PAGE_H - MARGIN - 3.0
+        for x, y in band
+    )
+    # The lettering stays inside the pads.
+    tx1 = max(x for pl in lines[:-1] for x, _ in pl)
+    assert abs(tx1 - (PAGE_W - MARGIN - 5.0)) < 1e-6
 
 
 def test_futural_draws_lowercase_simplex_warns():
