@@ -59,22 +59,25 @@ from backend.traffic.geo import clip_polyline, rdp
 #: switch), the viewport-aspect framing and the min-path-length detail
 #: filter. Bumped so cached r4 SVGs (no border, bbox-ratio canvas,
 #: unfiltered stubs) expire.
-RENDER_VERSION = "r5"
+#: r6 (monochrome): every pen is black on white. Bumped so cached r5 SVGs
+#: (coloured strokes) expire.
+RENDER_VERSION = "r6"
 
 PENS = {  # layer id -> (label, stroke, width)   widths are in SVG user units of a 1000-wide canvas
+    # Black on white only: layers are told apart by stroke width, not hue.
     "country": ("Country border", "#000000", 0.8),
-    "motorways": ("Motorways", "#8a6d3b", 0.9),
-    "waterways": ("Waterways", "#5aa0c8", 0.7),
-    "water": ("Lakes", "#5aa0c8", 0.9),
+    "motorways": ("Motorways", "#000000", 0.9),
+    "waterways": ("Waterways", "#000000", 0.7),
+    "water": ("Lakes", "#000000", 0.9),
     "airfield": ("Airfield", "#000000", 1.0),
-    "departures": ("Departures", "#2c6fbb", 0.7),
-    "arrivals": ("Arrivals", "#222222", 0.7),
-    "wide": ("Wide-body", "#6a3ec0", 0.7),
-    "narrow": ("Narrow-body", "#2c6fbb", 0.7),
-    "regional": ("Regional", "#1a936f", 0.7),
-    "other": ("Other", "#8a8a8a", 0.7),
-    "holding": ("Holding", "#e07a00", 1.4),
-    "go_around": ("Go-around", "#d6204a", 1.4),
+    "departures": ("Departures", "#000000", 0.7),
+    "arrivals": ("Arrivals", "#000000", 0.7),
+    "wide": ("Wide-body", "#000000", 0.7),
+    "narrow": ("Narrow-body", "#000000", 0.7),
+    "regional": ("Regional", "#000000", 0.7),
+    "other": ("Other", "#000000", 0.7),
+    "holding": ("Holding", "#000000", 1.4),
+    "go_around": ("Go-around", "#000000", 1.4),
 }
 #: The basemap groups behind the "Map" layer (issue #1080). The country
 #: border is first — drawn (and plotted) under everything else.
