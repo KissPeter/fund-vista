@@ -93,6 +93,11 @@ docker start fundvista
 
 ## Gotchas
 
+- **A full host disk aborts the Rancher VM's ext4 journal** and docker goes
+  read-only (`write /var/lib/docker/...: read-only file system`). The
+  launchd guard (`ops/mac-disk-guard.sh`, `hu.linuxadm.disk-guard`) alerts
+  before the floor; the recovery runbook is in
+  `docs/CR-009-mac-disk-guard.md` (`rdctl shutdown` + `rdctl start`).
 - **The store is a host directory, not a volume.** `/data` =
   `~/srv/fund-vista-data`; the container's write path is the Mac's disk.
   The deploy probes the directory daemon-side for a `.fund-vista-data`
