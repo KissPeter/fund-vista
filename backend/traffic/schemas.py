@@ -176,7 +176,8 @@ class RenderRequest(BaseModel):
     departures: bool = True
     holding: bool = True
     go_around: bool = True
-    map: bool = True  # issue #1080: the basemap groups (motorways/waterways/water)
+    map: bool = True  # issue #1080: the basemap groups (country/waterways/big lakes)
+    highways: bool = True  # the Highways group (motorway + trunk), its own switch
     airport: bool = True  # issue #1080: the airfield group + the airport marker circle
     types: list[str] = Field(default_factory=list)
     airlines: list[str] = Field(default_factory=list)
@@ -192,6 +193,18 @@ class RenderRequest(BaseModel):
     view_west: float | None = None
     view_east: float | None = None
     width: int = Field(default=1000, ge=100, le=4000)
+    min_path_len_m: float = Field(
+        default=0.0, ge=0.0, le=100.0,
+        description="Drop projected polylines shorter than this (meters). "
+        "Pen-plotter fast path, like city-roads' minLength option; "
+        "applies to every layer, basemap and movements alike.",
+    )
+    viewport_aspect: float | None = Field(
+        default=None, gt=0.0, le=10.0,
+        description="SVG canvas aspect (width/height) — the paper's shape. "
+        "The view grows to match where the day bbox allows, the rest is "
+        "framed fit-contain centred. Omit for the historical bbox ratio.",
+    )
 
     @field_validator("icao")
     @classmethod

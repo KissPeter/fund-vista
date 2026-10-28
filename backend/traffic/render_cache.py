@@ -28,7 +28,10 @@ def _filter_fingerprint(body) -> str:
         f"hold={int(body.holding)}", f"ga={int(body.go_around)}",
         # The Map / Airport layer switches (issue #1080) belong here too:
         # without them a Map-off render could be served for a Map-on one.
-        f"map={int(body.map)}", f"ap={int(body.airport)}",
+        f"map={int(body.map)}", f"ap={int(body.airport)}", f"hw={int(body.highways)}",
+        # Paper-fill knobs (r4): the framing and the detail filter change
+        # the drawn SVG, so both belong in the key.
+        f"minlen={body.min_path_len_m}", f"aspect={(body.viewport_aspect or 0.0):.4f}",
         "types=" + ",".join(sorted(body.types)),
         "airlines=" + ",".join(sorted(a.upper() for a in body.airlines)),
         "cs=" + body.callsign.upper(),

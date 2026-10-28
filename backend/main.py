@@ -20,6 +20,7 @@ from backend.citymap.cache import configure_citymap_redis
 from backend.citymap.router import router as citymap_router
 from backend.citymap.ui import ui_router as citymap_ui_router
 from backend.airports.cache import configure_airports_redis
+from backend.fulfillment.router import router as fulfillment_router
 from backend.airports.router import router as airports_router
 from backend.airports.ui import ui_router as airports_ui_router
 from backend.wordmark.cache import configure_wordmark_redis
@@ -148,6 +149,8 @@ app.include_router(airports_ui_router)
 app.include_router(wordmark_router)
 # Airport traffic (Phase 1: availability + ingest job; Mac-only until R2).
 app.include_router(traffic_router)
+# Fulfillment ink-split (fund-vista #147): one SVG per distinct ink.
+app.include_router(fulfillment_router)
 app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
 

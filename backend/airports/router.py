@@ -217,21 +217,24 @@ async def _build_and_store(
     return svg_text, path_counts, raw_counts, rotation
 
 
-@router.post("/render", response_model=RenderResponse,
-              dependencies=[Depends(require_rate_limit)])
-async def render(body: RenderRequest, request: Request) -> RenderResponse | JSONResponse:
-    """Fetch OSM ground polygons and render one blueprint SVG.
+async def render_document(
+    body: RenderRequest, request: Request, *, endpoint: str, started_mono: float,
+) -> dict | JSONResponse:
+    """Shared lookup → radius → L4 cache → build for render/import.
 
+    Consumers: ``/v1/airports/render``, ``/v1/airports/import`` and the
+    fulfillment ink-split (fund-vista #147), which re-renders the draft
+    from the persisted order params. Returns ``{"airport", "runway_rows",
+    "freq_rows", "icao", "svg_text", "path_counts", "raw_counts",
+    "rotation", "warnings", "cache_hit", "svg_key"}`` or an error response.
     P2 checkpoints (shapes unchanged): 1. after validation+cache; 2. before
     Overpass fetch (raced); 3. after fetch before build; 4. inside CPU loop
     (every 2000 elements). Abort → 499, no cache write.
     """
-    endpoint = "/v1/airports/render"
-    started = time.monotonic()
     resolved = await _lookup(body.icao)
     if isinstance(resolved, JSONResponse):
         return resolved
-    airport, runway_rows, freq_rows, warnings, lookup_hit = resolved
+    airport, runway_rows, freq_rows, warnings, _lookup_hit = resolved
     lat, lon = float(airport["latitude_deg"]), float(airport["longitude_deg"])
     icao = (airport.get("ident") or body.icao).strip().upper()
     radius_m = _bucket_radius_m(
@@ -243,38 +246,59 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     svg_key, meta_key = _render_keys(icao, radius_m, body)
     cached = await _load_cached_render(svg_key, meta_key, warnings)
     if cached is not None:
-        _, path_counts, raw_counts, rotation = cached
+        svg_text, path_counts, raw_counts, rotation = cached
         cache_hit = True
     else:
         cache_hit = False
         built = await _build_and_store(
             airport, runway_rows, freq_rows, lat, lon, radius_m, body,
             svg_key, meta_key, warnings,
-            request=request, endpoint=endpoint, started_mono=started,
+            request=request, endpoint=endpoint, started_mono=started_mono,
         )
         if isinstance(built, JSONResponse):
             return built
-        _, path_counts, raw_counts, rotation = built
+        svg_text, path_counts, raw_counts, rotation = built
+
+    return {
+        "airport": airport, "runway_rows": runway_rows, "freq_rows": freq_rows,
+        "icao": icao, "svg_text": svg_text, "path_counts": path_counts,
+        "raw_counts": raw_counts, "rotation": rotation, "warnings": warnings,
+        "cache_hit": cache_hit, "svg_key": svg_key,
+    }
+
+
+@router.post("/render", response_model=RenderResponse,
+              dependencies=[Depends(require_rate_limit)])
+async def render(body: RenderRequest, request: Request) -> RenderResponse | JSONResponse:
+    """Fetch OSM ground polygons and render one blueprint SVG.
+
+    Shared checkpoints live in ``render_document``.
+    """
+    endpoint = "/v1/airports/render"
+    started = time.monotonic()
+    doc = await render_document(body, request, endpoint=endpoint, started_mono=started)
+    if isinstance(doc, JSONResponse):
+        return doc
 
     base = resolve_public_base(request)
-    token = svg_key.rsplit(":", 1)[-1]
+    token = doc["svg_key"].rsplit(":", 1)[-1]
     log.info(
         "airports.render icao=%r paths=%d cache_hit=%s",
-        icao, sum(path_counts.values()), cache_hit,
+        doc["icao"], sum(doc["path_counts"].values()), doc["cache_hit"],
     )
     return RenderResponse(
-        icao=icao,
-        name=airport.get("name", ""),
-        municipality=airport.get("municipality", ""),
-        iso_country=airport.get("iso_country", ""),
-        runways=_runway_infos(runway_rows),  # type: ignore[arg-type]
-        frequencies=freq_rows,  # type: ignore[arg-type]
-        rotation_deg=rotation,
-        path_counts=path_counts,
-        raw_counts=raw_counts,
+        icao=doc["icao"],
+        name=doc["airport"].get("name", ""),
+        municipality=doc["airport"].get("municipality", ""),
+        iso_country=doc["airport"].get("iso_country", ""),
+        runways=_runway_infos(doc["runway_rows"]),  # type: ignore[arg-type]
+        frequencies=doc["freq_rows"],  # type: ignore[arg-type]
+        rotation_deg=doc["rotation"],
+        path_counts=doc["path_counts"],
+        raw_counts=doc["raw_counts"],
         svg_url=f"{base}/v1/airports/results/{token}",
-        warnings=warnings,
-        cache_hit=cache_hit,
+        warnings=doc["warnings"],
+        cache_hit=doc["cache_hit"],
     )
 
 
@@ -288,37 +312,17 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
     traces directly, Centerline/Hatch/Flow rasterize first so threshold
     and tone shape them; pen/page/label/display all apply).
 
-    Same P2 checkpoints as ``/render``.
+    Same P2 checkpoints as ``/render`` (via ``render_document``).
     """
     endpoint = "/v1/airports/import"
     started = time.monotonic()
-    resolved = await _lookup(body.icao)
-    if isinstance(resolved, JSONResponse):
-        return resolved
-    airport, runway_rows, freq_rows, warnings, _ = resolved
-    lat, lon = float(airport["latitude_deg"]), float(airport["longitude_deg"])
-    icao = (airport.get("ident") or body.icao).strip().upper()
-    radius_m = _bucket_radius_m(
-        _effective_radius_m(airport, runway_rows, body.radius_m)
-    )
-    if radius_m > body.radius_m:
-        warnings.append("radius_expanded_to_cover_runways")
-
-    # The UI fires /render and then /import with the same payload on every
-    # control change, so this is almost always the diagram just rendered.
-    svg_key, meta_key = _render_keys(icao, radius_m, body)
-    cached = await _load_cached_render(svg_key, meta_key, warnings)
-    if cached is not None:
-        svg_text, path_counts, raw_counts, rotation = cached
-    else:
-        built = await _build_and_store(
-            airport, runway_rows, freq_rows, lat, lon, radius_m, body,
-            svg_key, meta_key, warnings,
-            request=request, endpoint=endpoint, started_mono=started,
-        )
-        if isinstance(built, JSONResponse):
-            return built
-        svg_text, path_counts, raw_counts, rotation = built
+    doc = await render_document(body, request, endpoint=endpoint, started_mono=started)
+    if isinstance(doc, JSONResponse):
+        return doc
+    airport, runway_rows = doc["airport"], doc["runway_rows"]
+    freq_rows, warnings = doc["freq_rows"], doc["warnings"]
+    icao, svg_text = doc["icao"], doc["svg_text"]
+    path_counts, raw_counts, rotation = doc["path_counts"], doc["raw_counts"], doc["rotation"]
 
     if sum(path_counts.values()) == 0 and not runway_rows:
         return error_response(

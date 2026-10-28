@@ -2,13 +2,13 @@
   <p id="status" role="status"></p>
   <img id="preview" alt="Converted plot preview">
   <h2>Stats</h2>
+  <!-- Geometry QA only. Plot time + distance (pen down/up mm, est. s) are
+       API-only: the shop prices from /v1/convert + /results/{file}/meta, the
+       UI must not show them (2026-10-27). -->
   <table id="stats" hidden>
     <tr><th>strokes</th><td id="st_strokes"></td></tr>
     <tr><th>points before → after</th><td id="st_points"></td></tr>
     <tr><th>segments before → after</th><td id="st_segments"></td></tr>
-    <tr><th>pen down (mm)</th><td id="st_down"></td></tr>
-    <tr><th>pen up (mm)</th><td id="st_up"></td></tr>
-    <tr><th>estimated time (s)</th><td id="st_time"></td></tr>
   </table>
   <h2>Warnings</h2>
   <ul id="warnings"></ul>

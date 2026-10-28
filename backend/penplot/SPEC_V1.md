@@ -95,7 +95,7 @@ A tényleges generálás. Ez fut le minden csúszka-módosításnál.
     "linesort": true,
     "reloop_tolerance_mm": 0.05,
     "page": { "size": "A4", "orientation": "portrait", "margin_mm": 10 },
-    "pen": { "draw_speed_mm_s": 40, "travel_speed_mm_s": 100, "pen_lift_s": 0.3 }
+    "pen": { "pen_lift_s": 0.3 }
   }
 }
 ```
@@ -180,7 +180,7 @@ Lépésenként:
 A végleges SVG minden `path`-jára:
 - **pen-down hossz**: a path-ok tényleges (rajzolt) ívhosszának összege. Mivel a szerver már a vpype/Shapely geometriai objektumokból dolgozik, ez egyszerűen az egyes `LineString`/`Path` objektumok `.length` értékének összegzése — nem kell külön JS könyvtár hozzá szerver oldalon.
 - **pen-up hossz**: a `linesort` utáni sorrendben egymást követő path-ok végpontja és a következő path kezdőpontja közti euklideszi távolságok összege.
-- **becsült idő**: `pen_down_mm / draw_speed_mm_s + pen_up_mm / travel_speed_mm_s + strokes * pen_lift_s` (egyszerűsített modell; pontosabb, gyorsulási rámpát is figyelembe vevő becsléshez az Evil Mad Scientist AxiDraw API-jának nyílt forráskódú `estimate_time.py` mintája vehető alapul referenciaként).
+- **becsült idő**: `pen_down_mm / draw_speed + pen_up_mm / travel_speed + strokes * pen_lift_s`, ahol a sebességek a mért gépi konstansok (2000 mm/min rajzolás, 8000 mm/min toll-fent utazás — `schemas.DRAW_SPEED_MM_MIN` / `TRAVEL_SPEED_MM_MIN`, nem kérdezhető paraméter; egyszerűsített modell; pontosabb, gyorsulási rámpát is figyelembe vevő becsléshez az Evil Mad Scientist AxiDraw API-jának nyílt forráskódú `estimate_time.py` mintája vehető alapul referenciaként).
 - **pont-/szegmensszám előtte-utána**: a `linesimplify` előtti és utáni pontszám egyszerű összehasonlítása — ez adja a `stats.points` és `stats.segments` mezőket.
 
 ---
@@ -1053,19 +1053,28 @@ Now the two are separate page-furniture elements:
 
 - `page.frame` draws the whole-page margin frame (unchanged geometry:
   `page_frame_rect()`), whenever it is on.
-- `label.border` draws a **title-block band**: one closed rounded rect
-  (radius `label.border_radius_mm`) around the lettering, spanning the padded
-  text slot (`text_left`...`text_right`) from the top of the title strip down
-  to the bottom margin. The full-width divider is gone - the band's top edge
-  takes its place, so the artwork reservation (`label_reserve_mm`) is
-  unchanged.
+- `label.border` draws a **title-block band**: one closed rect around the
+  lettering, spanning the **full inner width** (`margin_mm`...
+  `page_w - margin_mm`) from the top of the title strip down to the bottom
+  margin. Its top edge is the straight divider the band replaced — square
+  corners landing exactly on the page-frame verticals, no radius at the
+  junction; only the bottom corners are rounded (`label.border_radius_mm`),
+  coinciding with the page frame's bottom corners so the band hugs the
+  sheet's rounded corners. The pads inset the lettering inside the band,
+  never the band itself. The artwork reservation (`label_reserve_mm`) is
+  unchanged. (Regression fix, 2026-10-27: the band initially spanned the
+  padded text slot with all four corners rounded, so it stopped short of
+  the frame and grew a radius where it should have met it.)
 
 The band bottom edge is the bottom margin, so the band is a bottom strip, not
-a second page frame; the shop preview (`src/lib/galleryCompose.ts`) draws the
-same two elements with the same presence rule (pen-pixel-shop issue #1089).
-Tests: label band geometry (span, radius clamp, reserve/band-top agreement,
-padded slot) + the frame/band independence over HTTP. Full suite at landing:
-**651 passed, 1 skipped** (plus one OCR test that needs a local tesseract).
+a second page frame. The shop preview mirrors the two elements' presence
+rule; its band geometry is updated to match this fix under pen-pixel-shop
+issue #1292 (until that lands, the preview still draws the pre-fix
+padded-slot rect). Tests: label band geometry (span, radius clamp,
+reserve/band-top agreement, full-width band with pads insetting only the
+lettering, square top junction + bottom-corner coincidence) + the
+frame/band independence over HTTP. Full suite at this fix: **840 passed,
+2 skipped** (plus one OCR test that needs a local tesseract).
 ## PART P — Cross-hatch opt-out (2026-10-22, pen-pixel-shop #1095)
 
 `params.cross_hatch` (bool, default **true**) turns the hatch generator's
@@ -1088,3 +1097,34 @@ line directions (main angle vs +90°, on and off), the `MethodContext` default,
 and over live HTTP the flag reaching `/v1/convert`, the smaller stroke count
 with the cross pass off, the shared pre-flag cache entry for the explicit
 `true`, and the 422 on an uncoercible value.
+
+## PART Q — Machine feedrates in the plot-time estimate (2026-10-27)
+
+The estimated plot time now uses the plotter's measured feedrates as **fixed
+machine constants**: pen-down drawing `DRAW_SPEED_MM_MIN = 2000` mm/min
+(≈33.3 mm/s), pen-up travel `TRAVEL_SPEED_MM_MIN = 8000` mm/min (≈133.3 mm/s)
+(`schemas.py`). The old request-tunable `pen.draw_speed_mm_s` (default
+40 mm/s = 2400 mm/min) and `pen.travel_speed_mm_s` (100 mm/s = 6000 mm/min)
+overestimated drawing time and underestimated travel. They are **removed from
+the API** (`PenParams` keeps only `pen_lift_s`; sending the old fields is a
+422 forbid-extra) so the estimate — and the shop price derived from it plus
+distance — stays comparable across converts and can't be inflated by clients.
+
+The calculator is a named unit, `pipeline.estimate_plot_time_s(pen_down_mm,
+pen_up_mm, strokes, pen_lift_s)`; the degenerate-speed guard (Schemathesis
+ST101, 2026-10-20: inf estimate must never reach the JSON render) stays and
+is unit-tested by monkeypatching the constant — the old HTTP test could no
+longer express the input. `pen_lift_s` is still in the params hash/dump, so
+existing result cache keys and stored stats keep validating.
+
+The two pricing values stay in the response contract unchanged:
+`stats.estimated_time_s` + `stats.pen_down_mm`/`pen_up_mm` on `POST
+/v1/convert` and `GET /v1/results/{filename}/meta` — but they are **API-only**
+from 2026-10-27: the shared result-panel stats table (penplot/citymap/airports
+pages) drops its pen-down/pen-up/estimated-time rows and shows geometry QA
+(strokes, points, segments) only.
+
+Tests: `backend/tests/test_penplot_estimate.py` (feedrate values, mm/min→s
+math, pen lifts, degenerate→inf); `test_penplot_http.py` invalid-param case
+switched to `pen_lift_s` out of range; UI defaults test asserts the
+`pen_lift_s` slider.

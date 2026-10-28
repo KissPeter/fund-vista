@@ -32,12 +32,12 @@ from backend.penplot.router import store as penplot_store
 from backend.traffic import availability as _avail
 from backend.traffic import cache as _cache
 from backend.traffic import store as _store
-from backend.traffic.basemap import load_basemap
+from backend.traffic.basemap import LAYERS, load_basemap
 from backend.traffic.classify import classify_day
 from backend.traffic.config import settings as traffic_settings
 from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
 from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
-from backend.traffic.render import AIRPORT_LAYERS, MAP_LAYERS, render_svg
+from backend.traffic.render import AIRPORT_LAYERS, HIGHWAY_LAYERS, MAP_LAYERS, expand_view_to_aspect, render_svg
 from backend.traffic.render_cache import (
     _load_cached_render,
     _load_result_svg,
@@ -127,7 +127,7 @@ def _fnum(v: object) -> float | None:
         return None
 
 
-async def _render_document(
+async def render_document(
     body: RenderRequest, request: Request, endpoint: str, started_mono: float,
 ) -> dict | JSONResponse:
     """Shared validation → L1 → L2/L3 → render + L4 store for render/import.
@@ -182,6 +182,13 @@ async def _render_document(
         view = (float(l1_bbox[0]), float(l1_bbox[1]), float(l1_bbox[2]), float(l1_bbox[3]))
     else:
         view = (body.view_south, body.view_north, body.view_west, body.view_east)  # type: ignore[misc]
+    if body.viewport_aspect is not None:
+        # Paper fill (r4): grow the view around its centre to the canvas
+        # ratio first, clamped to the day bbox — the ingest clipped the
+        # traces to it, so beyond it there is nothing to draw and the
+        # residual mismatch letterboxes in the SVG instead.
+        view = expand_view_to_aspect(view, body.viewport_aspect, tuple(float(x) for x in l1_bbox))  # type: ignore[arg-type]
+    if body.view_south is not None:
         if not (view[0] >= l1_bbox[0] and view[1] <= l1_bbox[1]
                 and view[2] >= l1_bbox[2] and view[3] <= l1_bbox[3]):
             return error_response(422, "invalid_params",
@@ -218,12 +225,20 @@ async def _render_document(
     # never fetched — the Overpass query and the L3 cache entry would be
     # wasted work for a group that is not drawn.
     wanted_basemap = tuple(
-        layer for layer in MAP_LAYERS + AIRPORT_LAYERS
-        if (body.map and layer in MAP_LAYERS) or (body.airport and layer in AIRPORT_LAYERS)
+        layer for layer in LAYERS
+        if (body.map and layer in MAP_LAYERS)
+        or (body.highways and layer in HIGHWAY_LAYERS)
+        or (body.airport and layer in AIRPORT_LAYERS)
     )
+    # The basemap is fetched for the whole loaded day bbox, not the picked
+    # view: the L3 key is per view, so every new "View extent" would miss and
+    # re-run five Overpass queries (minutes). The day bbox is stable per day
+    # (one fetch, 30-day cache) and the renderer clips the polylines to the
+    # view, so the drawn SVG is unchanged.
+    basemap_bbox = (float(l1_bbox[0]), float(l1_bbox[1]), float(l1_bbox[2]), float(l1_bbox[3]))
     try:
         base, failed = await race_cancel(
-            request, load_basemap(view, lat, lon, layers=wanted_basemap),
+            request, load_basemap(basemap_bbox, lat, lon, layers=wanted_basemap),
             endpoint=endpoint, stage="overpass", started_mono=started_mono,
         )
     except HTTPException:
@@ -231,7 +246,7 @@ async def _render_document(
     except Exception:
         # load_basemap already degrades per layer; this is belt-and-braces
         # for anything unexpected from the fetch layer.
-        base, failed = {k: [] for k in ("motorways", "waterways", "water", "airfield")}, ["all"]
+        base, failed = {k: [] for k in LAYERS}, ["all"]
     await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
     flt = body.filters(t_from_ts, t_to_ts)
     try:
@@ -241,7 +256,10 @@ async def _render_document(
     svg_text, counts = render_svg(window, base, view, flt,
                                   {"lat": lat, "lon": lon, "elev_ft": elev_ft},
                                   width=float(body.width),
-                                  include_map=body.map, include_airport=body.airport)
+                                  include_map=body.map, include_airport=body.airport,
+                                  include_highways=body.highways,
+                                  viewport_aspect=body.viewport_aspect,
+                                  min_path_len_m=body.min_path_len_m)
     stats = movement_stats(window)
     if failed:
         warnings.append("basemap_unavailable")
@@ -262,7 +280,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     """
     endpoint = "/v1/traffic/render"
     started = time.monotonic()
-    info = await _render_document(body, request, endpoint, started)
+    info = await render_document(body, request, endpoint, started)
     if isinstance(info, JSONResponse):
         return info
     base = resolve_public_base(request)
@@ -288,7 +306,7 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
     """
     endpoint = "/v1/traffic/import"
     started = time.monotonic()
-    info = await _render_document(body, request, endpoint, started)
+    info = await render_document(body, request, endpoint, started)
     if isinstance(info, JSONResponse):
         return info
     try:

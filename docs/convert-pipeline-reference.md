@@ -68,8 +68,9 @@ Geometry/painting: yes (page placement). Knob: `page.*`.
 
 ### 1.2 Label + page frame (`static_lines`)
 
-`render_label` + optional `page.frame` rect (skipped when the label border
-already draws the same rect). These join the cleanup chain *after* layout and
+`render_label` + optional `page.frame` rect (independent page furniture since
+SPEC Part O: with both on, both draw). These join the cleanup chain *after*
+layout and
 are merged **separately** from image strokes at 1.2 — a joint linemerge would
 fuse artwork into divider/frame across the gap strip at high tolerances.
 
@@ -136,8 +137,10 @@ nothing external at runtime.
 ### 1.10 `stats` — the observable contract
 
 `points`/`segments` before/after (counted around simplify+merge), `strokes`,
-`pen_down_mm`, `pen_up_mm`, `estimated_time_s` (from `pen.draw_speed_mm_s`,
-`pen.travel_speed_mm_s`, `pen_lift_s`). This is what the shop shows and what
+`pen_down_mm`, `pen_up_mm`, `estimated_time_s` (from the measured machine
+feedrates `DRAW_SPEED_MM_MIN`/`TRAVEL_SPEED_MM_MIN` — 2000/8000 mm/min,
+fixed constants, not request parameters — plus `pen_lift_s`; see
+`pipeline.estimate_plot_time_s`). This is what the shop shows and what
 tests assert — anything that changes stroke count or pen-up also moves stats
 (and usually the result cache key).
 

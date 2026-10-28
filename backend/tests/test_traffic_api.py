@@ -673,12 +673,12 @@ def test_render_map_and_airport_layers(live, monkeypatch, tmp_path):
     layer_calls: list = []
     _stub_basemap(monkeypatch, layer_calls=layer_calls)
 
-    # Map off → the basemap groups are not fetched and not drawn.
+    # Map off → country/waterway/lake groups are not fetched; Highways + airfield are.
     resp = live.post("/v1/traffic/render", json=_render_body(day, map=False))
     assert resp.status_code == 200, resp.text
-    assert layer_calls[-1] == ("airfield",)
+    assert layer_calls[-1] == ("motorways", "airfield")
     art = live.get(urlsplit(resp.json()["svg_url"]).path).text
-    assert 'id="traffic-motorways"' not in art
+    assert 'id="traffic-motorways"' in art
     assert 'id="traffic-waterways"' not in art
     assert 'id="traffic-water"' not in art
     assert 'id="traffic-airfield"' in art
@@ -687,14 +687,23 @@ def test_render_map_and_airport_layers(live, monkeypatch, tmp_path):
     # Airport off → the airfield group and the marker circle are gone.
     resp = live.post("/v1/traffic/render", json=_render_body(day, airport=False))
     assert resp.status_code == 200, resp.text
-    assert layer_calls[-1] == ("motorways", "waterways", "water")
+    # The country border rides the Map switch (r4) — fetched with the rest.
+    assert layer_calls[-1] == ("country", "motorways", "waterways", "water")
     art = live.get(urlsplit(resp.json()["svg_url"]).path).text
     assert 'id="traffic-airfield"' not in art
     assert "<circle" not in art  # the marker circle belongs to the Airport layer
     assert 'id="traffic-motorways"' in art
 
-    # Both off → no basemap query at all (and the counts stay the same).
-    resp = live.post("/v1/traffic/render", json=_render_body(day, map=False, airport=False))
+    # Highways off → the motorway group is not fetched and not drawn.
+    resp = live.post("/v1/traffic/render", json=_render_body(day, highways=False))
+    assert resp.status_code == 200, resp.text
+    assert layer_calls[-1] == ("country", "waterways", "water", "airfield")
+    art = live.get(urlsplit(resp.json()["svg_url"]).path).text
+    assert 'id="traffic-motorways"' not in art
+
+    # All off → no basemap query at all (and the counts stay the same).
+    resp = live.post("/v1/traffic/render",
+                     json=_render_body(day, map=False, airport=False, highways=False))
     assert resp.status_code == 200, resp.text
     assert layer_calls[-1] == ()
     art = live.get(urlsplit(resp.json()["svg_url"]).path).text
@@ -736,6 +745,133 @@ def test_render_view_rules(live, monkeypatch, tmp_path):
     resp = live.post("/v1/traffic/render", json=_render_body(
         day, view_south=n, view_north=s, view_west=w, view_east=e))
     assert resp.status_code == 422, resp.text  # inverted view
+
+
+# -- view extent (shop issue #1239 / #1283): the picked radius must reach the art --
+
+_RADII_KM = (100, 50, 25, 10)
+
+
+def _radius_view(km: float) -> dict:
+    """The ``view_*`` quartet the shop sends for a radius around the airport.
+
+    Same projection as the shop's ``trafficViewBbox`` and ``view_bbox`` —
+    around the stubbed airport row (``HU_ROW``), well inside the fixture's
+    day bbox, so every radius here is accepted.
+    """
+    from backend.traffic.render import view_bbox
+
+    s, n, w, e = view_bbox(float(HU_ROW["latitude_deg"]), float(HU_ROW["longitude_deg"]), km)
+    return {"view_south": s, "view_north": n, "view_west": w, "view_east": e}
+
+
+def _render_art(live, body: dict) -> tuple[str, str]:
+    """POST a render, then GET its art: ``(token, svg_text)``."""
+    from urllib.parse import urlsplit
+
+    resp = live.post("/v1/traffic/render", json=body)
+    assert resp.status_code == 200, resp.text
+    url = resp.json()["svg_url"]
+    art = live.get(urlsplit(url).path)
+    assert art.status_code == 200, art.text
+    return url.rsplit("/", 1)[-1], art.text
+
+
+def _viewbox(svg: str) -> tuple[float, float]:
+    import re
+
+    m = re.search(r'viewBox="0 0 (\d+) (\d+)"', svg)
+    assert m, svg[:200]
+    return float(m.group(1)), float(m.group(2))
+
+
+def _marker(svg: str) -> tuple[float, float]:
+    import re
+
+    m = re.search(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="4"/>', svg)
+    assert m, "no airport marker drawn"
+    return float(m.group(1)), float(m.group(2))
+
+
+def test_render_view_reframes_the_art(live, monkeypatch, tmp_path):
+    """A1: a picked view renders a different picture, framed on the airport.
+
+    The shop's "View extent" is useless if the render ignores it, so the
+    artwork itself is asserted — not just that the request was accepted.
+    Third parties are mocked: OurAirports (``resolve_airport``), Overpass
+    (``load_basemap``) and the durable store (a seeded file store).
+    """
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    _stub_basemap(monkeypatch)
+
+    country_token, country = _render_art(live, _render_body(day))
+    zoom_token, zoom = _render_art(live, _render_body(day, **_radius_view(25)))
+
+    assert zoom_token != country_token
+    assert zoom != country
+    # The canvas follows the picked extent: a ~square 25 km box is not the
+    # country-wide day bbox ratio.
+    assert _viewbox(zoom) != _viewbox(country)
+    # The airport sits in the middle of its own radius.
+    zw, zh = _viewbox(zoom)
+    zx, zy = _marker(zoom)
+    assert abs(zx - zw / 2) < 1.0 and abs(zy - zh / 2) < 1.0
+
+
+def test_render_view_is_part_of_the_cache_key(live, monkeypatch, tmp_path):
+    """B2: only ``view_*`` varies → every view gets its own token and art.
+
+    A view missing from the L4 key would serve one radius' art for another
+    (the shop would show a stale framing as if the pick had worked).
+    """
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    _stub_basemap(monkeypatch)
+
+    bodies = {"country": _render_body(day)}
+    bodies.update({f"{km} km": _render_body(day, **_radius_view(km)) for km in _RADII_KM})
+    arts = {name: _render_art(live, body) for name, body in bodies.items()}
+
+    tokens = [token for token, _svg in arts.values()]
+    assert len(set(tokens)) == len(tokens), tokens  # one L4 entry per view
+    svgs = [svg for _token, svg in arts.values()]
+    assert len(set(svgs)) == len(svgs)  # and each token serves its own art
+
+    # The same view again is the same entry (a hit, not a re-render).
+    again = live.post("/v1/traffic/render", json=bodies["25 km"])
+    assert again.status_code == 200, again.text
+    assert again.json()["cache_hit"] is True
+    assert again.json()["svg_url"].rsplit("/", 1)[-1] == arts["25 km"][0]
+
+
+def test_render_view_outside_day_bbox_contract(live, monkeypatch, tmp_path):
+    """D2: the containment 422 the shop's fallback keys on (shop issue #1283).
+
+    The shop matches ``code`` + the message substring ``view must lie
+    inside`` (``isTrafficViewOutsideDayBbox``) to fall back to the country
+    framing. Rewording either silently turns the fallback into a generic
+    error for buyers — this pins the wire contract.
+    """
+    day = _yesterday_iso()
+    data = _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    _stub_basemap(monkeypatch)
+    s, n, w, e = data["bbox"]
+
+    resp = live.post("/v1/traffic/render", json=_render_body(
+        day, view_south=s - 0.5, view_north=n, view_west=w, view_east=e))
+    assert resp.status_code == 422, resp.text
+    err = resp.json()["error"]
+    assert err["code"] == "invalid_params"
+    assert "view must lie inside the loaded day bbox" in err["message"]
+    # import shares the validation: same verdict, same wording.
+    imp = live.post("/v1/traffic/import", json=_render_body(
+        day, view_south=s - 0.5, view_north=n, view_west=w, view_east=e))
+    assert imp.status_code == 422, imp.text
+    assert imp.json()["error"] == err
 
 
 def test_render_validation_boundaries(live, monkeypatch):
