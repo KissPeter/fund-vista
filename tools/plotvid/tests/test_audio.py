@@ -14,7 +14,7 @@ from plotvid.audio import detect
 from plotvid.config import DetectConfig
 
 SR = 32000
-CFG = DetectConfig(sample_rate=SR)
+CFG = DetectConfig(sample_rate=SR, min_width_s=None)  # gate tested separately
 
 
 def _bandpass_noise(rng, n, lo, hi):
@@ -126,6 +126,11 @@ def test_width_gate_moves_ticks_to_dropped():
     assert match([e.time_s for e in det.dropped], ticks)[0] == 1.0
 
 
-def test_width_gate_off_by_default():
+def test_width_gate_on_by_default():
+    det = detect(synth(ticks=[2.0, 4.0]), DetectConfig(sample_rate=SR))
+    assert det.events == [] and len(det.dropped) == 2
+
+
+def test_width_gate_can_be_disabled():
     det = detect(synth(ticks=[2.0, 4.0]), CFG)
     assert len(det.events) == 2 and det.dropped == []

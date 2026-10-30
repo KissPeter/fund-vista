@@ -43,11 +43,11 @@ class DetectConfig:
     min_prominence_db: float = 6.0
     min_gap_s: float = 0.1
     # Burst width: contiguous time within width_drop_db of the peak, measured
-    # at ~1 ms resolution. Optional gate (None = off): events narrower than
-    # min_width_s are reported as dropped. Servo bursts measure 35-100 ms;
+    # at ~1 ms resolution. Gate (None = off): events narrower than
+    # min_width_s are reported as dropped. Servo bursts measure 13-100 ms;
     # the vid2 false tick at 48.62 s about 10 ms.
     width_drop_db: float = 6.0
-    min_width_s: float | None = None
+    min_width_s: float | None = 0.012  # accepted on vid2: drops both known false ticks
     ignore_before_s: float = 0.0
     ignore_after_s: float | None = None
 

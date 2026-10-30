@@ -16,7 +16,7 @@ detect:
   min_prominence_db: 6.0
   min_gap_s: 0.1        # events closer than this count as one
   width_drop_db: 6.0    # burst width = contiguous time within this of the peak
-  min_width_s: null     # e.g. 0.012 drops sharp ticks (servo bursts are 13-100 ms)
+  min_width_s: 0.012    # drops sharp ticks (servo bursts are 13-100 ms); null = off
   ignore_before_s: 0.0
   ignore_after_s: null
 
