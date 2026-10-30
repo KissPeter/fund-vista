@@ -17,9 +17,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 #: The buyer-pickable inks (the runway ink set, issues #923/#1078) — every
 #: assignment is one of these, or the Pen.
-InkName = Literal["black", "red", "blue"]
+#: Green is the fourth ink of ``PAPER_PEN_MATRIX.white`` in the shop
+#: (``src/lib/runway.ts`` ``RUNWAY_INK_HEX``), so a green runway / layer pick
+#: is a valid order, not a 422.
+InkName = Literal["black", "red", "blue", "green"]
 #: The Pen itself may be white (electric-blue paper's single ink).
-PenName = Literal["black", "red", "blue", "white"]
+PenName = Literal["black", "red", "blue", "green", "white"]
 
 Kind = Literal["airport", "traffic"]
 

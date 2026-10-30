@@ -555,6 +555,19 @@ def test_ink_split_refuses_an_unplottable_pass(live, monkeypatch):
     assert resp.json()["error"]["code"] == "unplottable_pass"
 
 
+def test_green_is_an_accepted_ink_everywhere():
+    """Green is the fourth ink of the shop's white-paper pen matrix (shop
+    #923/#1078): a green runway, layer pick or Pen is a valid order, and the
+    pass is re-stroked to the shop's green hex."""
+    from backend.fulfillment.schemas import InkAssignment
+
+    inks = InkAssignment(pen="green", runway="green")
+    assert inks.runway == "green" and inks.pen == "green"
+    traffic = InkAssignment(pen="black", layer_colors={"departures": "green"})
+    assert traffic.layer_colors == {"departures": "green"}
+    assert ink_split.INK_HEX["green"] == "#1e7a46"
+
+
 def test_ink_split_of_an_all_empty_draft_serves_no_files(live, monkeypatch):
     """Every layer unticked + nothing drawn: the split is an honest empty
     list (200), not an error — there is nothing to plot."""
