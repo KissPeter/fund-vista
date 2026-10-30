@@ -42,6 +42,12 @@ class DetectConfig:
     baseline_percentile: float = 20.0
     min_prominence_db: float = 6.0
     min_gap_s: float = 0.1
+    # Burst width: contiguous time within width_drop_db of the peak, measured
+    # at ~1 ms resolution. Optional gate (None = off): events narrower than
+    # min_width_s are reported as dropped. Servo bursts measure 35-100 ms;
+    # the vid2 false tick at 48.62 s about 10 ms.
+    width_drop_db: float = 6.0
+    min_width_s: float | None = None
     ignore_before_s: float = 0.0
     ignore_after_s: float | None = None
 
@@ -108,6 +114,10 @@ def load(path: str | Path) -> Config:
         raise ConfigError("detect: tick_s must be >= 0")
     if detect.window_s < detect.hop_s:
         raise ConfigError("detect: window_s must be >= hop_s")
+    if detect.width_drop_db <= 0:
+        raise ConfigError("detect: width_drop_db must be > 0")
+    if detect.min_width_s is not None and detect.min_width_s < 0:
+        raise ConfigError("detect: min_width_s must be >= 0 or null")
     if not 0 <= detect.baseline_percentile <= 100:
         raise ConfigError("detect: baseline_percentile must be within 0..100")
     if not 0 < detect.band_lo_hz < detect.band_hi_hz <= detect.sample_rate / 2:

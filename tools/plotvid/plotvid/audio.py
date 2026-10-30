@@ -16,6 +16,11 @@ Pipeline, on a 5 ms hop:
    standing above their own baseline, where a median would not.
 5. Local maxima at least ``min_prominence_db`` above the baseline, at least
    ``min_gap_s`` apart (stronger wins).
+6. Width: each event's burst is re-measured at fine resolution (~5 ms window,
+   1 ms hop) as the contiguous time its band level stays within
+   ``width_drop_db`` of the peak. Servo bursts measure 35-100 ms; a sharp
+   tick ~10 ms. With ``min_width_s`` set, narrower events move to
+   ``Detection.dropped`` instead of ``events``.
 
 Tuned on vid2 (no-plunger pen) against hand labels. The low band
 (``lf_db``) is kept for the planned pause-length labeller.
@@ -50,6 +55,7 @@ class Event:
     time_s: float
     level_db: float
     prominence_db: float  # above the rolling baseline
+    width_s: float  # contiguous time within width_drop_db of the burst peak
 
 
 @dataclass(frozen=True)
@@ -57,6 +63,7 @@ class Detection:
     envelope: Envelope
     min_prominence_db: float
     events: list[Event]
+    dropped: list[Event]  # rejected by the min_width_s gate
 
 
 def _band_power(x: np.ndarray, cfg: DetectConfig) -> tuple[np.ndarray, np.ndarray, float]:
@@ -131,6 +138,42 @@ def _suppress(idx: np.ndarray, strength: np.ndarray, min_gap: int) -> np.ndarray
     return np.sort(np.array(keep, dtype=int))
 
 
+_WIDTH_WIN_S = 256 / 48000  # ~5 ms: resolves a 10 ms tick from a 40 ms burst
+_WIDTH_HOP_S = 0.001
+_WIDTH_SPAN_S = 0.15  # searched either side of the event
+_WIDTH_PEAK_S = 0.03  # the burst peak must lie this close to the event time
+
+
+def burst_width(x: np.ndarray, time_s: float, cfg: DetectConfig) -> float:
+    """Contiguous time the fine band level stays within width_drop_db of its peak."""
+    sr = cfg.sample_rate
+    win = max(8, round(_WIDTH_WIN_S * sr))
+    hop = max(1, round(_WIDTH_HOP_S * sr))
+    a = max(0, round((time_s - _WIDTH_SPAN_S) * sr))
+    seg = x[a:round((time_s + _WIDTH_SPAN_S) * sr) + win]
+    n = 1 + (len(seg) - win) // hop if len(seg) >= win else 0
+    if n < 3:
+        return 0.0
+    idx = np.arange(n)[:, None] * hop + np.arange(win)[None, :]
+    spec = np.abs(np.fft.rfft(seg[idx] * np.hanning(win), axis=1)) ** 2
+    freqs = np.fft.rfftfreq(win, 1 / sr)
+    band = (freqs >= cfg.band_lo_hz) & (freqs < cfg.band_hi_hz)
+    level = 10 * np.log10(np.convolve(spec[:, band].sum(1), np.ones(3) / 3, mode="same") + _EPS)
+    centre = (np.arange(n) * hop + win / 2) / sr + a / sr
+    near = np.flatnonzero(np.abs(centre - time_s) <= _WIDTH_PEAK_S)
+    if near.size == 0:
+        return 0.0
+    peak = int(near[np.argmax(level[near])])
+    floor = level[peak] - cfg.width_drop_db
+    lo = peak
+    while lo > 0 and level[lo - 1] >= floor:
+        lo -= 1
+    hi = peak
+    while hi < n - 1 and level[hi + 1] >= floor:
+        hi += 1
+    return (hi - lo + 1) * hop / sr
+
+
 def detect(x: np.ndarray, cfg: DetectConfig) -> Detection:
     env = envelope(x, cfg)
     t = env.times()
@@ -142,5 +185,11 @@ def detect(x: np.ndarray, cfg: DetectConfig) -> Detection:
     peaks = _local_maxima(prom)
     peaks = peaks[(prom[peaks] >= cfg.min_prominence_db) & active[peaks]]
     kept = _suppress(peaks, prom, max(1, round(cfg.min_gap_s / env.hop_s)))
-    events = [Event(float(t[i]), float(env.band_db[i]), float(prom[i])) for i in kept]
-    return Detection(env, cfg.min_prominence_db, events)
+    events: list[Event] = []
+    dropped: list[Event] = []
+    for i in kept:
+        ev = Event(float(t[i]), float(env.band_db[i]), float(prom[i]),
+                   burst_width(x, float(t[i]), cfg))
+        too_narrow = cfg.min_width_s is not None and ev.width_s < cfg.min_width_s
+        (dropped if too_narrow else events).append(ev)
+    return Detection(env, cfg.min_prominence_db, events, dropped)

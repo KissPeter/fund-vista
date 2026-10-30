@@ -22,6 +22,7 @@ LF = (170, 170, 170)
 THRESH = (210, 40, 40)
 BASE = (240, 160, 160)
 EVENT = (30, 90, 220)
+DROPPED = (240, 140, 0)
 TEXT = (90, 90, 90)
 
 
@@ -39,7 +40,7 @@ def envelope_png(det: Detection, out: Path, title: str) -> None:
         (8, 8),
         f"{title}  events={len(det.events)}  min prominence={det.min_prominence_db:.1f} dB  "
         f"(black: servo band, pink: baseline, red: baseline+min, grey: motor band "
-        f"shifted to fit, blue: events)",
+        f"shifted to fit, blue: events, orange: dropped by width)",
         fill=TEXT, font=font,
     )
     top_db = float(np.percentile(env.band_db, 99.5)) + 3 if len(t) else 0.0
@@ -66,25 +67,31 @@ def envelope_png(det: Detection, out: Path, title: str) -> None:
                                    (thr, THRESH), (env.band_db, BAND)):
                 ys = y_of(series[sel], y0)
                 draw.line(list(zip(xs.tolist(), ys.tolist())), fill=colour)
-        for ev in det.events:
-            if t0 <= ev.time_s < t0 + ROW_S:
-                x = x_of(ev.time_s)
-                draw.line([(x, y0 + 4), (x, y0 + 14)], fill=EVENT, width=3)
-                draw.line([(x, y0 + 14), (x, y0 + ROW_H - 20)], fill=EVENT)
+        for events, colour in ((det.events, EVENT), (det.dropped, DROPPED)):
+            for ev in events:
+                if t0 <= ev.time_s < t0 + ROW_S:
+                    x = x_of(ev.time_s)
+                    draw.line([(x, y0 + 4), (x, y0 + 14)], fill=colour, width=3)
+                    draw.line([(x, y0 + 14), (x, y0 + ROW_H - 20)], fill=colour)
     img.save(out)
 
 
+def _beep(sample_rate: int, freq: float, dur: float) -> np.ndarray:
+    tt = np.arange(int(dur * sample_rate)) / sample_rate
+    return 0.5 * np.sin(2 * np.pi * freq * tt) * np.hanning(len(tt))
+
+
 def beep_track(x: np.ndarray, sample_rate: int, det: Detection, out: Path) -> None:
-    """Stereo WAV: left = original audio, right = a short beep at each event."""
-    beep_len = int(0.03 * sample_rate)
-    tt = np.arange(beep_len) / sample_rate
-    beep = 0.5 * np.sin(2 * np.pi * 1500 * tt) * np.hanning(beep_len)
+    """Stereo WAV: left = original audio; right = a high beep at each event and a
+    low beep at each event the width gate dropped."""
     right = np.zeros_like(x)
-    for ev in det.events:
-        i = int(ev.time_s * sample_rate)
-        j = min(len(right), i + beep_len)
-        if i < j:
-            right[i:j] += beep[: j - i]
+    for events, beep in ((det.events, _beep(sample_rate, 1500, 0.03)),
+                         (det.dropped, _beep(sample_rate, 400, 0.06))):
+        for ev in events:
+            i = int(ev.time_s * sample_rate)
+            j = min(len(right), i + len(beep))
+            if i < j:
+                right[i:j] += beep[: j - i]
     stereo = np.stack([x, right], axis=1)
     pcm = (np.clip(stereo, -1, 1) * 32767).astype("<i2")
     with wave.open(str(out), "wb") as w:

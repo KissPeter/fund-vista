@@ -107,3 +107,25 @@ def test_ignore_window():
 
 def test_empty_audio():
     assert detect(np.zeros(10, dtype=np.float32), CFG).events == []
+
+
+def test_width_measures_bursts_and_ticks():
+    from plotvid.audio import burst_width
+    x = synth([3.0], ticks=[6.0])
+    assert burst_width(x, 3.0 + 0.03, CFG) >= 0.025  # 60 ms hanning burst
+    assert burst_width(x, 6.0, CFG) <= 0.012  # 4 ms tick
+
+
+def test_width_gate_moves_ticks_to_dropped():
+    truth = sparse_bursts()
+    ticks = [t + 0.3 for t in truth[:4]]
+    cfg = DetectConfig(sample_rate=SR, min_width_s=0.012)
+    det = detect(synth(truth, ticks=ticks), cfg)
+    recall, precision = match(times(det), truth)
+    assert recall >= 0.9 and precision >= 0.9
+    assert match([e.time_s for e in det.dropped], ticks)[0] == 1.0
+
+
+def test_width_gate_off_by_default():
+    det = detect(synth(ticks=[2.0, 4.0]), CFG)
+    assert len(det.events) == 2 and det.dropped == []

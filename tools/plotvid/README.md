@@ -22,7 +22,8 @@ uv run pytest -q
 |---|---|
 | `events.csv` | One row per detected pen event: time, level, prominence over the rolling baseline, and the gap to the previous event |
 | `envelope.png` | A strip plot of the servo-band level (black), its baseline (pink), the detection line (red), the motor band (grey, shifted to fit) and detected events (blue) |
-| `preview.mp4` | Only with `--preview`. The original video, with original audio on the left channel and a beep on the right at each detected event. Use it to listen for missed or false events. |
+| `preview.mp4` | Only with `--preview`. The original video, with original audio on the left channel and a beep on the right at each detected event, and a low beep at each event the width gate dropped. Use it to listen for missed or false events. |
+| `dropped.csv` | Same columns for events the optional width gate rejected (empty when the gate is off) |
 | `summary.json` | Probe data, the detector config and its statistics |
 
 Sources are ordered by container `creation_time`, falling back to file mtime.
@@ -38,7 +39,11 @@ On a 5 ms hop the detector:
 
 Tuned on vid2 (pen without a plunger) against hand labels; the user judged the result "pretty accurate".
 
-Known limitation: a sharp, loud tick in the band (about 10 ms) still fires. On vid2 that is the one significant false event, at 48.62 s. Real servo bursts are 35–100 ms wide at −6 dB, so a minimum-width gate would reject it. It is not added yet because about 10% of events are similarly narrow and haven't been checked.
+Each event also records its burst width: how long the band level stays continuously within `width_drop_db` (6 dB) of its peak, measured at about 1 ms resolution. Servo bursts measure 13–100 ms, while the vid2 false ticks measure 4–8 ms (49.97 s and 48.62 s).
+
+`min_width_s` is an optional gate and is off by default. When set, narrower events go to `dropped.csv` instead of `events.csv`.
+
+On vid2 at 12 ms the gate drops 70 of 456 events. That includes both known false ticks and none of the 30 events in the confirmed detail runs at 24–27 s and 41–44 s, whose narrowest is 13 ms. Whether the other dropped events are real still needs a listen.
 
 ## Licensing
 NumPy (BSD-3), Pillow (HPND) and PyYAML (MIT) are permissive. ffmpeg's licence depends on how it was built; builds with libx264 are GPL, which is fine for rendering our own videos.

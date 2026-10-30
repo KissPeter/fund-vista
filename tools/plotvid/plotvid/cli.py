@@ -21,6 +21,19 @@ def _timecode(s: float) -> str:
     return f"{int(m):02d}:{sec:06.3f}"
 
 
+def _write_events(path: Path, events: list[audio.Event]) -> None:
+    with path.open("w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["index", "time_s", "timecode", "level_db", "prominence_db", "width_ms",
+                    "gap_s"])
+        prev = None
+        for i, ev in enumerate(events):
+            gap = "" if prev is None else f"{ev.time_s - prev:.3f}"
+            w.writerow([i, f"{ev.time_s:.3f}", _timecode(ev.time_s), f"{ev.level_db:.1f}",
+                        f"{ev.prominence_db:.1f}", f"{ev.width_s * 1000:.0f}", gap])
+            prev = ev.time_s
+
+
 def run_detect(cfg: config.Config, preview: bool) -> int:
     root = cfg.out_dir / "detect"
     root.mkdir(parents=True, exist_ok=True)
@@ -37,15 +50,8 @@ def run_detect(cfg: config.Config, preview: bool) -> int:
         x = media.extract_audio(info.path, cfg.detect.sample_rate)
         det = audio.detect(x, cfg.detect)
 
-        with (out / "events.csv").open("w", newline="") as fh:
-            w = csv.writer(fh)
-            w.writerow(["index", "time_s", "timecode", "level_db", "prominence_db", "gap_s"])
-            prev = None
-            for i, ev in enumerate(det.events):
-                gap = "" if prev is None else f"{ev.time_s - prev:.3f}"
-                w.writerow([i, f"{ev.time_s:.3f}", _timecode(ev.time_s), f"{ev.level_db:.1f}",
-                            f"{ev.prominence_db:.1f}", gap])
-                prev = ev.time_s
+        _write_events(out / "events.csv", det.events)
+        _write_events(out / "dropped.csv", det.dropped)
         debug.envelope_png(det, out / "envelope.png", info.path.name)
         if preview:
             wav = out / "beeps.wav"
@@ -64,12 +70,14 @@ def run_detect(cfg: config.Config, preview: bool) -> int:
             "fps": info.fps,
             "detect": asdict(cfg.detect),
             "events": len(det.events),
+            "dropped_by_width": len(det.dropped),
             "first_event_s": det.events[0].time_s if det.events else None,
             "last_event_s": det.events[-1].time_s if det.events else None,
         }
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
         overview.append(summary)
-        print(f"[{order}] {info.path.name}: {len(det.events)} pen events -> {out}")
+        print(f"[{order}] {info.path.name}: {len(det.events)} pen events, "
+              f"{len(det.dropped)} dropped by width -> {out}")
     (root / "overview.json").write_text(json.dumps(overview, indent=2))
     return 0
 
@@ -80,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     d = sub.add_parser("detect", help="detect pen events and write hand-check artefacts")
     d.add_argument("config", type=Path)
     d.add_argument("--preview", action="store_true",
-                   help="also write preview.mp4 with a beep at each detected event")
+                   help="also write preview.mp4: high beep per event, low beep per width-dropped event")
     args = ap.parse_args(argv)
 
     for tool in ("ffmpeg", "ffprobe"):
