@@ -31,6 +31,7 @@ metro (full Budapest buildings) render size/latency wall-time.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import socket
@@ -40,7 +41,6 @@ import time
 from urllib.parse import urlsplit
 
 os.environ.setdefault("PENPLOT_DATA_DIR", tempfile.mkdtemp(prefix="penplot-citymap-api-"))
-os.environ["REDIS_CLOUD_URL"] = "redis://127.0.0.1:1/0"
 os.environ["PENPLOT_RATE_LIMIT"] = "100000"
 
 import httpx
@@ -51,6 +51,7 @@ from backend import upstream_mock
 from backend.citymap.geocode import GeocodeError
 from backend.citymap.osm_api import OsmApiError
 from backend.citymap.overpass import OverpassError
+from backend.tests import redis_harness
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -70,7 +71,14 @@ def _free_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def live():
+def app_on_harness_redis():
+    """The in-process app caches into the harness Redis for this module."""
+    with redis_harness.app_on_harness_redis():
+        yield
+
+
+@pytest.fixture(scope="module")
+def live(app_on_harness_redis):
     """Real HTTP: in-process uvicorn on a socket (module scope, one server)."""
     from backend.main import app as full_app
 
@@ -122,9 +130,8 @@ def _clean_slate():
 
 def _reset_shared_state() -> None:
     from backend.citymap import geocode
-    from backend.citymap.cache import configure_citymap_redis
 
-    configure_citymap_redis(None)
+    redis_harness.flush()
     geocode._reset_nominatim_throttle()
 
 
@@ -149,6 +156,14 @@ def test_geocode_happy_szeged(live):
     assert body["lat"] == pytest.approx(46.255)
     assert body["lon"] == pytest.approx(20.13)
     assert body["cache_hit"] is False  # cache cleared around every test
+
+
+def test_geocode_caches_payload_in_redis(live):
+    assert live.get("/v1/citymap/geocode", params={"city": "Szeged"}).status_code == 200
+    cached = redis_harness.cached_values("fund-vista:citymap:v1:geocode:")
+    assert cached, "geocode result was not written to Redis"
+    payloads = [json.loads(value) for value in cached.values()]
+    assert any(p.get("display_name") == "Szeged, Csongrád-Csanád, Hungary" for p in payloads)
 
 
 def test_geocode_unknown_city_404_envelope(live):
@@ -236,6 +251,19 @@ def test_render_happy_overpass_and_result_roundtrip(live):
     assert art.status_code == 200, art.text
     assert art.headers["content-type"] == "image/svg+xml"
     assert "<svg" in art.text
+
+
+def test_render_caches_tiles_split_and_svg_in_redis(live):
+    resp = live.post("/v1/citymap/render", json=_bbox_body(BBOX_RENDER, ["roads", "buildings"]))
+    assert resp.status_code == 200, resp.text
+    prefix = "fund-vista:citymap:v1:"
+    # Per-tile Overpass slices, the split of them, and the rendered SVG.
+    assert redis_harness.cached_values(prefix + "tile:"), "no Overpass tile slices in Redis"
+    assert redis_harness.cached_values(prefix + "split:"), "no split geometry in Redis"
+    svgs = redis_harness.cached_values(prefix + "svg:")
+    assert len(svgs) == 1
+    (svg,) = svgs.values()
+    assert svg.lstrip().startswith("<svg")
 
 
 def test_render_osm_api_fallback_source(live, monkeypatch):

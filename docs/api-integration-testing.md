@@ -65,10 +65,20 @@ invalid classes) and explicit boundaries `min−1 / min / min+1` and
 `max−1 / max / max+1` where the domain allows. Full conventions: the
 `test-design` skill. Negative coverage is mandatory for every endpoint.
 
+## Redis content
+
+- The citymap and airports API suites **MUST** assert on what the app writes
+  to Redis, not only on `cache_hit` flags. They run against a throwaway
+  `redis-server` started by `backend/tests/redis_harness.py` (needs
+  `redis-server` on PATH) and read keys with `redis_harness.cached_values`.
+- Each test starts with a flushed Redis (`redis_harness.flush()`), so every
+  test is cold and independent.
+- Other suites keep `REDIS_CLOUD_URL=redis://127.0.0.1:1/0` (memory fallback).
+
 ## Baseline commands
 
 ```sh
-# Full suite (hermetic; no Redis, no external calls):
+# Full suite (hermetic; no external calls; the API suites start their own redis-server):
 PENPLOT_DATA_DIR=/tmp/fv-test REDIS_CLOUD_URL=redis://127.0.0.1:1/0 \
 PENPLOT_RATE_LIMIT=100000 PYTHONPATH=. \
 backend/.venv/bin/python -m pytest backend/tests/ -q

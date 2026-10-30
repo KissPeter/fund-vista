@@ -1,7 +1,9 @@
 # Two layers over the mocked app (FUNDVISTA_UPSTREAM_MODE=mock — every
 # third-party call is served from in-repo fixtures and unmocked hosts fail
-# closed; see backend/upstream_mock/). Both run offline: no real data, no
-# external services, no Redis.
+# closed; see backend/upstream_mock/). Both run offline: no real data and no
+# external services. The API integration tests run against a throwaway
+# redis-server (backend/tests/redis_harness.py) and assert on the mock data
+# that lands in Redis, so the CI runner needs redis-server installed.
 #
 #   1. integration  — the full pytest live-server suite, hermetic.
 #   2. schemathesis — OpenAPI property fuzzing against the running mock-mode
@@ -97,6 +99,11 @@ jobs:
 
       - name: OCR system dep (pytesseract fallback path)
         run: command -v tesseract >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr)
+
+      # The API integration tests start their own redis-server and assert on
+      # the mock data cached in it (backend/tests/redis_harness.py).
+      - name: Redis server binary (API tests assert cache contents)
+        run: command -v redis-server >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq redis-server)
 
       - name: Run integration suite (live servers, mocked upstreams)
         env:

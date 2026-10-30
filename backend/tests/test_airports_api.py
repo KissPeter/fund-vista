@@ -20,6 +20,7 @@ httpx client construction) was only visible through it.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import tempfile
@@ -29,12 +30,13 @@ import time
 os.environ.setdefault(
     "PENPLOT_DATA_DIR", tempfile.mkdtemp(prefix="penplot-airports-api-")
 )
-os.environ["REDIS_CLOUD_URL"] = "redis://127.0.0.1:1/0"
 os.environ["PENPLOT_RATE_LIMIT"] = "100000"
 
 import httpx
 import pytest
 import uvicorn
+
+from backend.tests import redis_harness
 
 
 # ------------------------------------------------------------ server -------
@@ -46,7 +48,14 @@ def _free_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def live():
+def app_on_harness_redis():
+    """The in-process app caches into the harness Redis for this module."""
+    with redis_harness.app_on_harness_redis():
+        yield
+
+
+@pytest.fixture(scope="module")
+def live(app_on_harness_redis):
     """Real HTTP: in-process uvicorn on a socket (module scope, one server)."""
     from backend.main import app as full_app
 
@@ -84,11 +93,10 @@ def _reset(monkeypatch):
     teardown restores stock clients for other modules.
     """
     from backend import upstream_mock
-    from backend.airports import cache as airports_cache
     from backend.penplot import router as penplot_router
 
     upstream_mock.install()
-    airports_cache.configure_airports_redis(None)  # also clears memory store
+    redis_harness.flush()  # cold cache per test; the server keeps its live client
     penplot_router._limiter._memory.clear()
     yield
     upstream_mock.uninstall()
@@ -160,6 +168,14 @@ def test_search_cache_hit_on_second_call(live: httpx.Client):
     second = live.get("/v1/airports/search?q=EGLL").json()
     assert second["cache_hit"] is True
     assert second["candidates"] == first["candidates"]
+
+
+def test_search_caches_ourairports_csv_in_redis(live: httpx.Client):
+    assert live.get("/v1/airports/search?q=LHBP").status_code == 200
+    cached = redis_harness.cached_values("fund-vista:airports:v1:ourairports:")
+    assert cached, "OurAirports CSV was not written to Redis"
+    # The mock fixture CSV is what got cached, not a network body.
+    assert any("LHBP" in value for value in cached.values())
 
 
 def test_search_limit_min_minus_1_is_422(live: httpx.Client):
@@ -287,6 +303,19 @@ def test_render_second_call_hits_cache(live: httpx.Client):
     second = live.post("/v1/airports/render", json=body)
     assert second.status_code == 200
     assert second.json()["cache_hit"] is True
+
+
+def test_render_stores_svg_and_overpass_payload_in_redis(live: httpx.Client):
+    resp = live.post("/v1/airports/render", json={"icao": "LHBP"})
+    assert resp.status_code == 200, resp.text
+    svgs = redis_harness.cached_values("fund-vista:airports:v1:svg:")
+    assert len(svgs) == 1
+    (svg,) = svgs.values()
+    assert svg.lstrip().startswith("<svg")
+    # The Overpass "around" payload behind the render is cached too.
+    overpass = redis_harness.cached_values("fund-vista:airports:v1:overpass")
+    assert overpass, "Overpass payload was not written to Redis"
+    assert any(json.loads(value) for value in overpass.values())  # non-empty JSON
 
 
 def test_render_upstream_outage_is_502_envelope(live, monkeypatch):
