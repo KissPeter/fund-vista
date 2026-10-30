@@ -259,6 +259,11 @@ def test_context_table_on_draws_bordered_group():
     assert len(rules) == len(ROWS)
     text = [p for g in _marked(root, "data-kp-context-text") for p in g.iter(NS + "polyline")]
     assert text  # the cell lettering is drawn
+    # Every cell carries its text as a marker, key before value, in row order.
+    marked = [g.attrib["data-kp-text"] for g in root.iter(NS + "g")
+              if "data-kp-text" in g.attrib and g.attrib["data-kp-text"] != "Title"]
+    expected = [t for row in ROWS for t in (row["label"], str(row["value"]))]
+    assert marked == [t for t in expected if t.strip()]
 
 
 def test_context_table_rows_empty_is_a_noop():
