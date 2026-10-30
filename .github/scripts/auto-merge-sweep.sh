@@ -509,12 +509,13 @@ merge_pr() {
     log "dry-run: would merge #$number"
     return 0
   fi
-  if gh pr merge "$number" --repo "$REPO" --"$MERGE_METHOD" >/dev/null 2>&1; then
+  local err
+  if err="$(gh pr merge "$number" --repo "$REPO" --"$MERGE_METHOD" 2>&1 >/dev/null)"; then
     log "merged #$number"
     cleanup_issue_labels "$number"
     return 0
   fi
-  log "WARNING: the merge of #$number failed"
+  log "WARNING: the merge of #$number failed: ${err:-no output from gh}"
   return 1
 }
 
