@@ -1,20 +1,13 @@
-"""YAML config -> frozen dataclasses.
-
-Only the sections implemented so far are validated strictly; sections owned
-by later pipeline steps (strokes, segment, videos, render, final_photo,
-outro) are accepted and kept raw in ``Config.extra`` until their step lands.
-"""
+"""YAML config -> frozen dataclasses, validated strictly (unknown keys fail)."""
 
 from __future__ import annotations
 
 import glob
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
 import yaml
-
-FUTURE_SECTIONS = {"strokes", "segment", "videos", "render", "final_photo", "outro"}
 
 
 class ConfigError(ValueError):
@@ -53,12 +46,100 @@ class DetectConfig:
 
 
 @dataclass(frozen=True)
+class InkConfig:
+    """Video ink check (see ink.py). Pixel thresholds are in 0..255 gray."""
+    enabled: bool = True
+    fps: float = 10.0
+    width: int = 288  # analysis width in px; height follows the display aspect
+    # Optional paper region override, fractions of the displayed frame:
+    # [x0, y0, x1, y1]. null = every bright, unoccluded pixel counts.
+    roi: tuple[float, float, float, float] | None = None
+    ink_threshold: int = 25  # black top-hat response that counts as a pen line
+    paper_level: int = 150  # smoothed brightness above which a pixel is paper
+    occluder_ratio: float = 0.75  # blob darker than this x local paper = arm/pen
+    persist_s: float = 0.7  # new ink must stay visible this long after the span
+    persist_frac: float = 0.75  # ... in at least this share of frames seeing it
+
+
+@dataclass(frozen=True)
+class StrokesConfig:
+    # Stroke = interval between consecutive pen events. Long = duration at or
+    # above this percentile of all stroke durations in the source.
+    long_percentile: float = 70.0
+    # A stroke is drawing when at least this much new ink (px at 288 px
+    # analysis width) appears over it.
+    drawn_min_px: float = 20.0
+    # If fewer than this share of long strokes read as drawing, the ink check
+    # is deemed unreliable and every stroke is labelled unknown (= any event
+    # may cut).
+    min_drawn_share: float = 0.1
+
+
+@dataclass(frozen=True)
+class SegmentConfig:
+    min_s: float = 3.0
+    max_s: float = 8.0
+    # Segments start this many short strokes before a long stroke.
+    lead_short: tuple[int, ...] = (2, 3)
+    pre_roll: float = 0.15  # start this long before the first event
+    post_roll: float = 0.25  # end this long after the closing pen event
+    # Relaxation levels tried per zone until the clip can be filled:
+    # 0 strict, 1 any lead-in before a long stroke, 2 end after any drawn
+    # stroke / start at any event, 3 every event is a cut candidate.
+    max_relax: int = 3
+    relax_penalty: float = 0.5  # score multiplier per relaxation level
+
+
+@dataclass(frozen=True)
+class VideosConfig:
+    # Number of clips; "auto" = the most (up to max_count) whose zones can
+    # all reach min_total_s.
+    count: int | str = "auto"
+    max_count: int = 7
+    target_s: float = 17.0  # plotting footage per clip
+    min_total_s: float = 15.0
+    max_total_s: float = 20.0
+    seed: int = 42
+    attempts: int = 200  # random subset draws per zone; best fit wins
+
+
+@dataclass(frozen=True)
+class RenderConfig:
+    fps: float | None = None  # None = first source's frame rate
+    crf: int = 20
+    preset: str = "medium"
+    audio_bitrate: str = "160k"
+    audio_fade_s: float = 0.02  # fade in/out at every segment cut
+    transition: str = "cut"  # "cut" | "crossfade"
+    crossfade_s: float = 0.25
+
+
+@dataclass(frozen=True)
+class FinalPhotoConfig:
+    path: Path | None = None  # None = last clean frame of the last source
+    seconds: float = 2.5
+
+
+@dataclass(frozen=True)
+class OutroConfig:
+    path: Path | None = None  # image or video; None = generated card
+    seconds: float | None = 2.5  # video: None = its full length
+    text: str = "drawn by a pen plotter"
+
+
+@dataclass(frozen=True)
 class Config:
     plot: str
     sources: tuple[Path, ...]
     out_dir: Path
     detect: DetectConfig = field(default_factory=DetectConfig)
-    extra: dict[str, Any] = field(default_factory=dict)
+    ink: InkConfig = field(default_factory=InkConfig)
+    strokes: StrokesConfig = field(default_factory=StrokesConfig)
+    segment: SegmentConfig = field(default_factory=SegmentConfig)
+    videos: VideosConfig = field(default_factory=VideosConfig)
+    render: RenderConfig = field(default_factory=RenderConfig)
+    final_photo: FinalPhotoConfig = field(default_factory=FinalPhotoConfig)
+    outro: OutroConfig = field(default_factory=OutroConfig)
 
 
 def _build(cls, raw: dict[str, Any] | None, section: str):
@@ -86,6 +167,19 @@ def _resolve_sources(patterns: list[str], base: Path) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(found))
 
 
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def _asset(value: Any, base: Path, section: str) -> Path | None:
+    if value is None:
+        return None
+    p = Path(str(value)).expanduser()
+    p = p if p.is_absolute() else base / p
+    if not p.is_file():
+        raise ConfigError(f"{section}: path {value!r} not found")
+    return p.resolve()
+
+
 def load(path: str | Path) -> Config:
     path = Path(path).resolve()
     raw = yaml.safe_load(path.read_text()) or {}
@@ -93,7 +187,8 @@ def load(path: str | Path) -> Config:
         raise ConfigError("config root must be a mapping")
     base = path.parent
 
-    allowed = {"plot", "sources", "out_dir", "detect"} | FUTURE_SECTIONS
+    allowed = {"plot", "sources", "out_dir", "detect", "ink", "strokes", "segment", "videos",
+               "render", "final_photo", "outro"}
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise ConfigError(f"unknown top-level keys {unknown}")
@@ -123,6 +218,65 @@ def load(path: str | Path) -> Config:
     if not 0 < detect.band_lo_hz < detect.band_hi_hz <= detect.sample_rate / 2:
         raise ConfigError("detect: need 0 < band_lo_hz < band_hi_hz <= Nyquist")
 
+    ink = _build(InkConfig, raw.get("ink"), "ink")
+    if ink.roi is not None:
+        roi = tuple(float(v) for v in ink.roi)
+        if len(roi) != 4 or not (0 <= roi[0] < roi[2] <= 1 and 0 <= roi[1] < roi[3] <= 1):
+            raise ConfigError("ink: roi must be [x0, y0, x1, y1] fractions with x0<x1, y0<y1")
+        ink = replace(ink, roi=roi)
+    if ink.fps <= 0 or ink.width < 64:
+        raise ConfigError("ink: fps must be > 0 and width >= 64")
+    if not 0 < ink.persist_frac <= 1 or ink.persist_s <= 0:
+        raise ConfigError("ink: need persist_s > 0 and 0 < persist_frac <= 1")
+
+    strokes = _build(StrokesConfig, raw.get("strokes"), "strokes")
+    if not 0 <= strokes.long_percentile <= 100:
+        raise ConfigError("strokes: long_percentile must be within 0..100")
+    if strokes.drawn_min_px < 0 or not 0 <= strokes.min_drawn_share <= 1:
+        raise ConfigError("strokes: drawn_min_px >= 0 and min_drawn_share within 0..1")
+
+    segment = _build(SegmentConfig, raw.get("segment"), "segment")
+    lead = segment.lead_short
+    lead = (lead,) if isinstance(lead, int) else tuple(int(v) for v in lead)
+    segment = replace(segment, lead_short=lead)
+    if not 0 < segment.min_s <= segment.max_s:
+        raise ConfigError("segment: need 0 < min_s <= max_s")
+    if not lead or min(lead) < 0:
+        raise ConfigError("segment: lead_short must be non-negative integers")
+    if segment.pre_roll < 0 or segment.post_roll < 0:
+        raise ConfigError("segment: pre_roll and post_roll must be >= 0")
+    if not 0 <= segment.max_relax <= 3 or not 0 < segment.relax_penalty <= 1:
+        raise ConfigError("segment: max_relax within 0..3, relax_penalty within (0, 1]")
+
+    videos = _build(VideosConfig, raw.get("videos"), "videos")
+    if not (videos.count == "auto" or (isinstance(videos.count, int) and videos.count >= 1)):
+        raise ConfigError("videos: count must be a positive integer or 'auto'")
+    if videos.max_count < 1 or videos.attempts < 1:
+        raise ConfigError("videos: max_count and attempts must be >= 1")
+    if not 0 < videos.min_total_s <= videos.target_s <= videos.max_total_s:
+        raise ConfigError("videos: need 0 < min_total_s <= target_s <= max_total_s")
+
+    render = _build(RenderConfig, raw.get("render"), "render")
+    if render.transition not in ("cut", "crossfade"):
+        raise ConfigError("render: transition must be 'cut' or 'crossfade'")
+    if render.fps is not None and render.fps <= 0:
+        raise ConfigError("render: fps must be > 0 or null")
+    if render.crossfade_s <= 0 or render.audio_fade_s < 0:
+        raise ConfigError("render: crossfade_s > 0 and audio_fade_s >= 0")
+    if render.transition == "crossfade" and render.crossfade_s * 2 >= segment.min_s:
+        raise ConfigError("render: crossfade_s must be under half of segment.min_s")
+
+    final_photo = _build(FinalPhotoConfig, raw.get("final_photo"), "final_photo")
+    outro = _build(OutroConfig, raw.get("outro"), "outro")
+    final_photo = replace(final_photo, path=_asset(final_photo.path, base, "final_photo"))
+    outro = replace(outro, path=_asset(outro.path, base, "outro"))
+    if final_photo.seconds <= 0:
+        raise ConfigError("final_photo: seconds must be > 0")
+    if outro.seconds is not None and outro.seconds <= 0:
+        raise ConfigError("outro: seconds must be > 0 or null")
+    if outro.seconds is None and (outro.path is None or outro.path.suffix.lower() in IMAGE_EXTS):
+        raise ConfigError("outro: seconds may be null only for a video")
+
     out_dir = Path(raw.get("out_dir", "out")).expanduser()
     if not out_dir.is_absolute():
         out_dir = base / out_dir
@@ -132,5 +286,11 @@ def load(path: str | Path) -> Config:
         sources=_resolve_sources(list(sources), base),
         out_dir=out_dir,
         detect=detect,
-        extra={k: raw[k] for k in FUTURE_SECTIONS if k in raw},
+        ink=ink,
+        strokes=strokes,
+        segment=segment,
+        videos=videos,
+        render=render,
+        final_photo=final_photo,
+        outro=outro,
     )

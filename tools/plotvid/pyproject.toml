@@ -6,9 +6,10 @@ requires-python = "==3.13.*"
 # All permissive: NumPy BSD-3, Pillow HPND/MIT-CMU, PyYAML MIT.
 # ffmpeg/ffprobe are external binaries (licence depends on the build; a
 # libx264 build is GPL, which is fine for rendering our own videos).
-# opencv-python-headless (Apache-2.0) joins with the ink-curve step.
+# opencv-python-headless (Apache-2.0) runs the video ink check.
 dependencies = [
     "numpy>=1.26",
+    "opencv-python-headless>=5.0.0.93",
     "pillow>=10.0",
     "pyyaml>=6.0",
 ]

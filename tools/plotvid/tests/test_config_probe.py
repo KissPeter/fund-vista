@@ -29,10 +29,21 @@ def test_load_defaults_and_relative_paths(tmp_path):
     assert cfg.detect == config.DetectConfig()
 
 
-def test_future_sections_kept_raw(tmp_path):
+def test_clip_sections_parsed(tmp_path):
     (tmp_path / "a.mp4").touch()
-    cfg = config.load(write(tmp_path, "plot: p\nsources: a.mp4\nvideos: {count: 3}\n"))
-    assert cfg.extra == {"videos": {"count": 3}}
+    (tmp_path / "photo.jpg").touch()
+    cfg = config.load(write(tmp_path, (
+        "plot: p\nsources: a.mp4\nvideos: {count: 3, seed: 7}\n"
+        "segment: {lead_short: [1, 2]}\nink: {roi: [0, 0.1, 1, 0.9]}\n"
+        "render: {transition: crossfade, crossfade_s: 0.3}\n"
+        "final_photo: {path: photo.jpg, seconds: 2}\n")))
+    assert cfg.videos.count == 3 and cfg.videos.seed == 7
+    assert cfg.videos.target_s == 17.0 and cfg.videos.count != "auto"
+    assert cfg.segment.lead_short == (1, 2)
+    assert cfg.ink.roi == (0.0, 0.1, 1.0, 0.9)
+    assert cfg.render.transition == "crossfade"
+    assert cfg.final_photo.path == (tmp_path / "photo.jpg").resolve()
+    assert cfg.outro.path is None and cfg.outro.seconds == 2.5
 
 
 @pytest.mark.parametrize("body, msg", [
@@ -42,6 +53,13 @@ def test_future_sections_kept_raw(tmp_path):
     ("plot: p\nsources: a.mp4\ndetect: {k_mad: 3, bogus: 1}\n", "unknown keys"),
     ("plot: p\nsources: a.mp4\nwhatever: 1\n", "unknown top-level"),
     ("plot: p\nsources: a.mp4\ndetect: {band_hi_hz: 30000}\n", "Nyquist"),
+    ("plot: p\nsources: a.mp4\nrender: {transition: wipe}\n", "transition"),
+    ("plot: p\nsources: a.mp4\nvideos: {count: 0}\n", "count"),
+    ("plot: p\nsources: a.mp4\nvideos: {min_total_s: 21}\n", "min_total_s"),
+    ("plot: p\nsources: a.mp4\nsegment: {min_s: 9}\n", "min_s"),
+    ("plot: p\nsources: a.mp4\nink: {roi: [0.5, 0, 0.2, 1]}\n", "roi"),
+    ("plot: p\nsources: a.mp4\noutro: {path: nope.mp4}\n", "not found"),
+    ("plot: p\nsources: a.mp4\noutro: {seconds: null}\n", "only for a video"),
 ])
 def test_invalid_configs(tmp_path, body, msg):
     (tmp_path / "a.mp4").touch()

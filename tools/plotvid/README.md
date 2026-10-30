@@ -2,7 +2,7 @@
 
 Cuts pen-plotter recordings into short 9:16 clips at pen events. It is a standalone tool and imports nothing from `backend/`.
 
-Status: PoC. Build steps 1–2 are done: config, probing, and pen-event detection with hand-check output. Segmentation and rendering come next (see the plan).
+Status: PoC, end to end. It covers config, probing, pen-event detection, the video ink check, segmentation, clip assignment, rendering and manifests.
 
 ## Requirements
 - `uv` and Python 3.13
@@ -12,9 +12,24 @@ Status: PoC. Build steps 1–2 are done: config, probing, and pen-event detectio
 ```bash
 cd tools/plotvid
 uv sync
-uv run python -m plotvid detect example.yaml --preview
+uv run python -m plotvid detect example.yaml --preview   # events + hand-check artefacts
+uv run python -m plotvid plan example.yaml     # detect + ink check + segments -> manifests
+uv run python -m plotvid render example.yaml   # manifests -> MP4 clips
+uv run python -m plotvid all example.yaml      # plan, then render
 uv run pytest -q
 ```
+
+`plan` writes `out_dir/plan/`:
+
+| File | Content |
+|---|---|
+| `clip_NN.json` | One manifest per clip: source path, each segment's source start and end, its strokes (duration, new ink, drawing/travel, long), ink score, DP weight, relaxation level, the zone, the seed and the final-photo frame |
+| `strokes_<source>.csv` | Every stroke with its new-ink count and label, for hand checks |
+| `summary.json` | Per-source label statistics, the clip counts tried and the zones that could not be filled |
+
+Detection and the ink check are cached in `out_dir/cache/`, keyed by path, size, mtime and the `detect` and `ink` configs. Re-planning with other `strokes`, `segment` or `videos` settings is therefore instant.
+
+`render` reads the manifests and writes `out_dir/clips/clip_NN.mp4`. A hand-edited manifest renders the same way.
 
 `detect` writes `out_dir/detect/<source>/`:
 
@@ -45,5 +60,39 @@ Each event also records its burst width: how long the band level stays continuou
 
 On vid2 at 12 ms the gate drops 70 of 456 events. That includes both known false ticks and none of the 30 events in the confirmed detail runs at 24–27 s and 41–44 s, whose narrowest is 13 ms. Whether the other dropped events are real still needs a listen.
 
+## Ink check (drawing vs travel)
+Pen events are untyped, so a stroke between two events may be a drawn line or a pen-up travel move. The video decides. Note that the vid2 phone is hand-held: the view pans, tilts and zooms. A fixed-pixel ink map therefore does not work.
+
+1. Decode grayscale frames at 10 fps and 288 px wide (`ink.fps`, `ink.width`).
+2. **Ink:** a black top-hat picks thin dark lines. The arm, pen body, rails and shadows are large dark blobs, which are masked (and dilated, so the pen tip is covered too). Paper is the bright, unmasked area, optionally limited by `ink.roi`.
+3. **Registration:** consecutive frames are aligned with an affine ECC on the line image, seeded by phase correlation.
+4. **New ink over a stroke:** pixels that are ink in at least 75% of the frames over the next 0.7 s (so a passing arm does not count), and that were paper but not ink at the stroke start. Old ink is dilated by 2 px against misregistration.
+5. **Labels:** a stroke with at least `strokes.drawn_min_px` new pixels is drawing; anything less is travel. If almost no long stroke reads as drawing, the check is distrusted and every stroke becomes unknown, so any event may cut.
+
+At 10 fps the dense 0.1–0.2 s detail strokes cannot be resolved, so their labels are noisy. The cut rules only rely on the labels of long strokes.
+
+## Segments and clips
+- **A segment** is 3–8 s of whole strokes. It ends `post_roll` after a long drawn stroke and starts `pre_roll` before 2–3 short strokes that lead into a long one. *Long* is `strokes.long_percentile` of stroke durations. Rolls are clamped halfway to the neighbouring event.
+- **Relaxation**, when strict rules cannot fill a clip (the level is recorded per segment and per clip):
+
+  | Level | Rules |
+  |---|---|
+  | 1 | Any lead-in before a long stroke |
+  | 2 | Start at any event; end after any stroke that may be drawn |
+  | 3 | Every event may cut |
+
+- **Zones:** the plotting timeline (sources end to end) is split into N equal zones. Clip k only uses segments entirely inside zone k, so footage is never reused.
+- **Per zone:** a weighted-interval DP picks the non-overlapping segments with the most ink. Shorter segment caps are tried before looser rules. A seeded weighted draw then takes a subset of 15–20 s (target 17 s) and plays it in chronological order.
+- **`videos.count: auto`** picks the most clips, up to `max_count`, for which every zone can reach `min_total_s`. Clips are never shortened to fit.
+
+## Rendering
+- **Output:** 9:16 H.264 + AAC MP4 with `+faststart`, at the source frame rate (a phone's 30.013 average snaps to 30).
+- **Size:** the largest 9:16 crop of the source at native resolution, with no upscaling. Too-tall sources lose top and bottom equally; too-wide ones lose left and right.
+- **Audio:** each segment keeps the plotter's own sound, with 20 ms fades at every cut.
+- **Ending:**
+  - `final_photo`: silent, 2.5 s. The default is the frame in the source's last 5 s where the arm covers the least paper.
+  - `outro`: 2.5 s. The default is a Pillow card with the plot name and `outro.text`. An image is silent; a video keeps its own audio.
+- **Transition:** `cut` (concat) or `crossfade` (`xfade` + `acrossfade`, `crossfade_s`). Everything is one ffmpeg call.
+
 ## Licensing
-NumPy (BSD-3), Pillow (HPND) and PyYAML (MIT) are permissive. ffmpeg's licence depends on how it was built; builds with libx264 are GPL, which is fine for rendering our own videos.
+NumPy (BSD-3), Pillow (HPND), PyYAML (MIT) and opencv-python-headless (Apache-2.0) are permissive. ffmpeg's licence depends on how it was built; builds with libx264 are GPL, which is fine for rendering our own videos.

@@ -20,10 +20,53 @@ detect:
   ignore_before_s: 0.0
   ignore_after_s: null
 
-# Sections for later steps (accepted, not used yet):
-# strokes:  {long_percentile: 70}
-# segment:  {min_s: 3, max_s: 8, lead_short: [2, 3], pre_roll: 0.15, post_roll: 0.2}
-# videos:   {count: 3, target_s: 20, seed: 42}
-# render:   {aspect: "9:16", fps: 30, crf: 20, transition: cut, crossfade_s: 0.25}
-# final_photo: {path: photos/plot.jpg, seconds: 2.5}
-# outro:    {path: assets/outro.mp4, seconds: 3}
+ink:                    # video ink check: which strokes left new ink on the paper
+  enabled: true
+  fps: 10               # analysis frame rate
+  width: 288            # analysis width (px); height follows the display aspect
+  roi: null             # [x0, y0, x1, y1] fractions of the frame to restrict the paper to
+  ink_threshold: 25     # black top-hat response that counts as a pen line
+  paper_level: 150      # smoothed brightness that counts as paper
+  occluder_ratio: 0.75  # blob darker than this x local paper = arm/pen (masked)
+  persist_s: 0.7        # new ink must stay visible this long ...
+  persist_frac: 0.75    # ... in this share of frames that see it
+
+strokes:
+  long_percentile: 70   # stroke duration percentile that counts as long
+  drawn_min_px: 20      # new ink (px at 288 px width) for a stroke to count as drawn
+  min_drawn_share: 0.1  # below this share of drawn long strokes the ink check is ignored
+
+segment:
+  min_s: 3
+  max_s: 8
+  lead_short: [2, 3]    # start this many short strokes before a long one
+  pre_roll: 0.15        # cut in this long before the first pen event
+  post_roll: 0.25       # cut out this long after the closing pen event
+  max_relax: 3          # 0 strict .. 3 every event may cut (see README)
+  relax_penalty: 0.5
+
+videos:
+  count: auto           # or an integer; auto = most clips (<= max_count) that all reach min_total_s
+  max_count: 7
+  target_s: 17          # plotting footage per clip
+  min_total_s: 15
+  max_total_s: 20
+  seed: 42
+
+render:
+  fps: null             # null = source frame rate (snapped to a standard rate)
+  crf: 20
+  preset: medium
+  audio_bitrate: 160k
+  audio_fade_s: 0.02    # fade at every segment cut
+  transition: cut       # cut | crossfade
+  crossfade_s: 0.25
+
+final_photo:
+  path: null            # image; null = last clean frame of the last source
+  seconds: 2.5
+
+outro:
+  path: null            # image or video (keeps its own audio); null = generated card
+  seconds: 2.5          # for a video, null = its full length
+  text: drawn by a pen plotter
