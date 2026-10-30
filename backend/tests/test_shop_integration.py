@@ -22,7 +22,7 @@ from backend.tests.helpers import (
     upload,
 )
 
-SHOP_ORIGIN = "https://penplot.linuxadm.hu"
+SHOP_ORIGIN = "https://pen-pixel.hu"
 # Static GitHub Pages frontend (VITE_BACKEND_BASE_URL points here in prod).
 PAGES_ORIGIN = "https://kisspeter.github.io"
 
@@ -205,16 +205,16 @@ def test_cors_env_accepts_json_array_format():
     from backend.main import Settings
 
     assert Settings._split_origins(
-        '["https://kisspeter.github.io", "https://penplot.linuxadm.hu"]'
-    ) == ["https://kisspeter.github.io", "https://penplot.linuxadm.hu"]
+        '["https://kisspeter.github.io", "https://pen-pixel.hu"]'
+    ) == ["https://kisspeter.github.io", "https://pen-pixel.hu"]
 
 
 def test_cors_env_still_accepts_comma_separated():
     from backend.main import Settings
 
-    assert Settings._split_origins("http://localhost:8080,https://penplot.linuxadm.hu") == [
+    assert Settings._split_origins("http://localhost:8080,https://pen-pixel.hu") == [
         "http://localhost:8080",
-        "https://penplot.linuxadm.hu",
+        "https://pen-pixel.hu",
     ]
 
 
@@ -223,9 +223,9 @@ def test_cors_env_json_array_reaches_settings(monkeypatch):
 
     monkeypatch.setenv(
         "CORS_ALLOW_ORIGINS",
-        '["https://kisspeter.github.io", "https://penplot.linuxadm.hu"]',
+        '["https://kisspeter.github.io", "https://pen-pixel.hu"]',
     )
     assert Settings().cors_allow_origins == [
         "https://kisspeter.github.io",
-        "https://penplot.linuxadm.hu",
+        "https://pen-pixel.hu",
     ]

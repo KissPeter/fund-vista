@@ -66,7 +66,7 @@ byte-identical (no visible line, deterministic). The download variant applies
 - `?credit=1` — same bytes, inline disposition (no attachment header).
 
 The visible text is the hostname of `PENPLOT_SVG_ATTRIBUTION_URL`
-(`https://penplot.linuxadm.hu/…` → `penplot.linuxadm.hu`), so no new setting
+(`https://pen-pixel.hu/…` → `pen-pixel.hu`), so no new setting
 is needed; with no attribution URL configured the download is byte-identical
 to the preview. Plot geometry (`<path>` data) is never modified, re-requests
 are byte-identical no-ops (including shop-stamped files — the shop guard
@@ -79,7 +79,7 @@ on re-ingest, so a download converts back to identical geometry.
 PENPLOT_SVG_CREATOR="Pen Pixel Shop"
 PENPLOT_SVG_RIGHTS="(c) 2026 Pen Pixel Shop. All rights reserved."
 PENPLOT_SVG_LICENSE=all-rights-reserved   # or a cc-* preset above
-PENPLOT_SVG_ATTRIBUTION_URL=https://penplot.linuxadm.hu
+PENPLOT_SVG_ATTRIBUTION_URL=https://pen-pixel.hu
 ```
 
 The ownership digest is part of result filenames, so enabling this never

@@ -38,7 +38,7 @@ GENERATOR = "fund-vista penplot"
 CREDIT_GROUP_ID = "penplot-credit"
 #: Shop-side downloads already carry this host line; treat it as credited so
 #: a re-served file never grows a second line (idempotent across backends).
-CREDIT_KNOWN_HOST = "penplot.linuxadm.hu"
+CREDIT_KNOWN_HOST = "pen-pixel.hu"
 
 CC_NS = "http://creativecommons.org/ns#"
 _NAMESPACES = (
@@ -219,7 +219,7 @@ def credit_domain(settings: Settings | None = None) -> str:
 
     Returns the lowercased hostname (``""`` when unconfigured or unparsable),
     so the download line reuses the ``svgmeta`` vocabulary instead of a new
-    setting. ``https://penplot.linuxadm.hu/shop`` -> ``penplot.linuxadm.hu``.
+    setting. ``https://pen-pixel.hu/shop`` -> ``pen-pixel.hu``.
     """
     raw = (resolve(settings).attribution_url or "").strip()
     if not raw:

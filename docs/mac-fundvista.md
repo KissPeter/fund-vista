@@ -20,7 +20,7 @@ browser ──► https://pen-pixel.hu/v1/* ──► nginx (VPS) ──┬─�
   FastAPI Cloud fallback runs.
 - Env (in `~/srv/fund-vista/.env`, `600`, never in git): `PORT=8100`,
   `WORKERS=4`, `REDIS_CLOUD_URL=redis://fundvista-redis:6379/0`,
-  `PENPLOT_PUBLIC_BASE_URL=https://penplot.linuxadm.hu` (absolute
+  `PENPLOT_PUBLIC_BASE_URL=https://pen-pixel.hu` (absolute
   `svg_url`s stay same-origin), `PENPIXEL_HMAC_SECRET` (== cloud, HMAC
   verify cross-backend), `PENPLOT_TRUST_FORWARDED_FOR=1`,
   `PENPLOT_DATA_DIR=/data`.
@@ -42,7 +42,7 @@ browser ──► https://pen-pixel.hu/v1/* ──► nginx (VPS) ──┬─�
   ~300 s) + `@fundvista_cloud`. `X-Penplot-Upstream: mac|cloud` identifies
   the serving backend.
 - Shop: `src/lib/penplot.api.ts` (same-origin `/v1/*`, `kp_*` mapping),
-  `src/lib/v1proxy.ts` (dev/e2e), `PENPLOT_API_BASE=https://penplot.linuxadm.hu`.
+  `src/lib/v1proxy.ts` (dev/e2e), `PENPLOT_API_BASE=https://pen-pixel.hu`.
 
 ## Pre-deploy gates (all mandatory)
 
@@ -125,7 +125,7 @@ docker start fundvista
   metadata store and broke every mutating `docker` call — keep free space
   in the tens of GB.
 - `svg_url`s are absolute: the Mac stamps
-  `https://penplot.linuxadm.hu/v1/...`, the cloud stamps its own host. The
+  `https://pen-pixel.hu/v1/...`, the cloud stamps its own host. The
   shop download allow-list accepts both.
 - Never include secrets in docs or commit messages; `.env` is gitignored
   and `git pull`/`git status` must stay clean of it.

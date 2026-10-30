@@ -365,7 +365,7 @@ def test_system_curl_recipe_documented():
 
     .. code-block:: sh
 
-        BASE=https://penplot.linuxadm.hu
+        BASE=https://pen-pixel.hu
         # 1. enqueue a slow convert job (no >100 ms POST held)
         J=$(curl -s -X POST $BASE/v1/jobs \\
           -H 'Content-Type: application/json' \\

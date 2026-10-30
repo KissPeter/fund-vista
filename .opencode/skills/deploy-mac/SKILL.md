@@ -25,7 +25,7 @@ runs on the Mac (Rancher Desktop VM), with a FastAPI Cloud fallback on
   `--restart unless-stopped`, `--env-file /opt/fund-vista/.env`.
   Key env (in `.env`): `PORT=8100`, `WORKERS=4`,
   `REDIS_CLOUD_URL=redis://fundvista-redis:6379/0`,
-  `PENPLOT_PUBLIC_BASE_URL=https://penplot.linuxadm.hu`,
+  `PENPLOT_PUBLIC_BASE_URL=https://pen-pixel.hu`,
   `PENPLOT_DATA_DIR=/data`.
 - **Store** `/data`: the host directory `~/srv/fund-vista-data`,
   bind-mounted (NOT a Docker volume — a volume lives in the engine's disk

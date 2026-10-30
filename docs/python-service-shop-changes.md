@@ -8,7 +8,7 @@ Suite: 213 passed.
 ## §1 CORS — done
 
 - `backend/main.py`: default `cors_allow_origins` now
-  `["http://localhost:8080", "https://penplot.linuxadm.hu"]`; the future
+  `["http://localhost:8080", "https://pen-pixel.hu"]`; the future
   own domain goes through the existing `CORS_ALLOW_ORIGINS` env var
   (comma-separated, no redeploy-time code change).
 - `allow_credentials` flipped `True → False`: no-credentials mode, all

@@ -211,7 +211,7 @@ Contract (in-process app, memory job store, fake Overpass/vpype where noted):
 System: curl acceptance (no client code needed):
 
 ```sh
-BASE=http://127.0.0.1:8000  # or https://penplot.linuxadm.hu
+BASE=http://127.0.0.1:8000  # or https://pen-pixel.hu
 # 1. enqueue (never blocks): 202 in <100ms
 J=$(curl -s -X POST $BASE/v1/jobs -H 'Content-Type: application/json' \
   -d '{"type":"convert","request":{"image_id":"<64hex>","params":{"methods":["hatch"]}},"cancel_previous":true}' \

@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     # origin) goes through the same CORS_ALLOW_ORIGINS env var.
     cors_allow_origins: Annotated[list[str], NoDecode] = [
         "http://localhost:8080",
-        "https://penplot.linuxadm.hu",
+        "https://pen-pixel.hu",
     ]
     cors_allow_origin_regex: str = r"(https?://[^/]+:8080|https://[^/]+\.github\.io)"
 

@@ -22,7 +22,7 @@ SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="210.00mm" '
 NS = {"svg": "http://www.w3.org/2000/svg"}
 OWNER = {"svg_creator": "Pen Pixel Shop", "svg_rights": "(c) 2026 Pen Pixel Shop.",
          "svg_license": "cc-by-nc-4.0",
-         "svg_attribution_url": "https://penplot.linuxadm.hu/shop"}
+         "svg_attribution_url": "https://pen-pixel.hu/shop"}
 
 
 def _settings(**kw) -> Settings:
@@ -37,7 +37,7 @@ def _paths(text: str) -> list[str]:
 
 
 def test_credit_domain_uses_attribution_host():
-    assert svgmeta.credit_domain(_settings(**OWNER)) == "penplot.linuxadm.hu"
+    assert svgmeta.credit_domain(_settings(**OWNER)) == "pen-pixel.hu"
     assert svgmeta.credit_domain(Settings()) == ""
     assert svgmeta.credit_domain(
         _settings(svg_attribution_url="https://Example.ORG:8443/a?b=c")) == "example.org"
@@ -52,8 +52,8 @@ def test_has_visible_credit_detects_own_shop_and_generic_markers():
     assert svgmeta.has_visible_credit(SVG.replace(
         "</svg>", '<g data-credit="1"><text>x</text></g></svg>'))
     assert svgmeta.has_visible_credit(SVG.replace(
-        "</svg>", '<g id="svg-credit-line"><text>penplot.linuxadm.hu</text></g></svg>'))
-    assert svgmeta.has_visible_credit(SVG + "<!-- penplot.linuxadm.hu -->")
+        "</svg>", '<g id="svg-credit-line"><text>pen-pixel.hu</text></g></svg>'))
+    assert svgmeta.has_visible_credit(SVG + "<!-- pen-pixel.hu -->")
 
 
 # ------------------------------------------------------------- visible stamp
@@ -70,7 +70,7 @@ def test_visible_credit_is_viewbox_aware_centred_and_valid_xml():
     out = svgmeta.stamp_visible_credit(SVG, _settings(**OWNER))
     root = ET.fromstring(out)
     el = root.find("svg:g[@id='penplot-credit']/svg:text", NS)
-    assert el is not None and el.text == "penplot.linuxadm.hu"
+    assert el is not None and el.text == "pen-pixel.hu"
     assert el.get("text-anchor") == "middle"
     assert abs(float(el.get("x")) - 105.0) < 1e-6  # minx + w/2
     y = float(el.get("y"))
@@ -87,7 +87,7 @@ def test_visible_credit_idempotent_and_deterministic():
     assert svgmeta.stamp_visible_credit(SVG, s) == svgmeta.stamp_visible_credit(SVG, s)
     # Shop-stamped input is a no-op (no second line).
     shop = SVG.replace("</svg>",
-                       '<g id="svg-credit"><text>penplot.linuxadm.hu</text></g></svg>')
+                       '<g id="svg-credit"><text>pen-pixel.hu</text></g></svg>')
     assert svgmeta.stamp_visible_credit(shop, s) == shop
 
 
@@ -107,7 +107,7 @@ def test_download_carries_metadata_plus_visible_line():
     download = svgmeta.stamp_download(SVG, s)
     root = ET.fromstring(download)
     assert root.find("svg:metadata", NS) is not None
-    assert root.find("svg:g[@id='penplot-credit']/svg:text", NS).text == "penplot.linuxadm.hu"
+    assert root.find("svg:g[@id='penplot-credit']/svg:text", NS).text == "pen-pixel.hu"
     assert _paths(download) == _paths(SVG)
 
 
@@ -135,7 +135,7 @@ def test_parser_ignores_visible_credit_on_reingest():
 
 def test_parser_ignores_generic_credit_id():
     shop = SVG.replace("</svg>",
-                       '<g id="svgCredit"><text x="105" y="294">penplot.linuxadm.hu</text></g></svg>')
+                       '<g id="svgCredit"><text x="105" y="294">pen-pixel.hu</text></g></svg>')
     plain = imaging.parse_svg_vectors(SVG.encode())
     again = imaging.parse_svg_vectors(shop.encode())
     assert plain[0] == again[0]
