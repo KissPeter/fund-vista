@@ -1,0 +1,26 @@
+# plotvid example config. Relative paths resolve against this file's folder.
+plot: vid1-poc
+sources: ["../../video/*.mp4"]   # ordered by container creation_time (fallback: mtime)
+out_dir: out
+
+detect:
+  sample_rate: 32000
+  hop_s: 0.005          # envelope resolution
+  window_s: 0.016
+  click_lo_hz: 4000     # servo click band (~20 dB over plotting noise on vid1)
+  click_hi_hz: 14000
+  k_mad: 3.0            # global gate = median + max(k_mad * MAD, min_rise_db)
+  min_rise_db: 8.0
+  min_prominence_db: 10.0   # local gate: peak over median within +-window
+  prominence_window_s: 0.25
+  min_gap_s: 0.15       # two clicks closer than this count as one
+  ignore_before_s: 0.0
+  ignore_after_s: null
+
+# Sections for later steps (accepted, not used yet):
+# strokes:  {long_percentile: 70}
+# segment:  {min_s: 3, max_s: 8, lead_short: [2, 3], pre_roll: 0.15, post_roll: 0.2}
+# videos:   {count: 3, target_s: 20, seed: 42}
+# render:   {aspect: "9:16", fps: 30, crf: 20, transition: cut, crossfade_s: 0.25}
+# final_photo: {path: photos/plot.jpg, seconds: 2.5}
+# outro:    {path: assets/outro.mp4, seconds: 3}

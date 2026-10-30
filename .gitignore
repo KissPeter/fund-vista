@@ -19,3 +19,7 @@ dist/
 # recipe symlinks `backend/.venv` to the developer's real venv, and git
 # treats a symlink as a file - `backend/.venv/` would not match it.
 .venv
+
+# plotvid: raw plotter recordings and render output (local only).
+/video/
+tools/plotvid/out/
