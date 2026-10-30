@@ -6,10 +6,10 @@ fills — the white-on-navy look of the reference mock is a display style,
 available via the page's Display background picker.
 
 Runway boldness is GEOMETRY, not ``stroke-width``: each strip is drawn as
-a solid band of nine parallel longitudinal paths across twice the true
+a solid band of 25 parallel longitudinal paths across twice the true
 width (2× ``width_ft`` schematic exaggeration — at poster scale the true
 45 m strip is ~1.6 mm wide and unreadable). At typical pen/plot scales the
-~0.3 mm line pitch merges into a near-solid black bar, making the runway
+dense line pitch merges into a near-solid black bar, making the runway
 the heaviest feature through ``parse_svg_vectors`` (which discards stroke
 widths), vpype and the single-ink plot. The heavy ``stroke-width`` on the
 group only affects the raw-SVG preview.
@@ -68,11 +68,12 @@ def render_source_version() -> str:
 _MARGIN = 40.0
 _PAGE_ASPECT = 297.0 / 210.0  # A4 portrait h/w
 
-# Runway strip treatment: schematic 2× width exaggeration + 9 longitudinal
+# Runway strip treatment: schematic 2× width exaggeration + 25 longitudinal
 # infill lines. True-width strips vanish at poster scale; the exaggerated
-# band with ~0.3 mm line pitch plots as a near-solid black bar.
+# band with a tight line pitch plots as a solid black bar. (9 lines left
+# visible gaps once printed, so the pitch is ~3× finer now.)
 _RUNWAY_WIDTH_EXAGGERATE = 2.0
-_RUNWAY_INFILL_FRACS = tuple(-1.0 + 2.0 * i / 8 for i in range(9))
+_RUNWAY_INFILL_FRACS = tuple(-1.0 + 2.0 * i / 24 for i in range(25))
 
 
 def _esc(text: object) -> str:
@@ -453,9 +454,9 @@ def render_diagram(
         parts.append("</g>")
 
     # -- authoritative strips: solid band (geometry-bold) ------------------
-    # Nine longitudinal paths across 2× the true width. The exaggeration is
+    # 25 longitudinal paths across 2× the true width. The exaggeration is
     # deliberate: at poster scale a true 45 m strip is ~1.6 mm wide and the
-    # infill pitch (~0.3 mm) merges into a near-solid black bar — the
+    # infill pitch merges into a near-solid black bar — the
     # heaviest feature on the page. Pure geometry: stroke-width would not
     # survive the vector pipeline.
     if show_runway:

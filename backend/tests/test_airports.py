@@ -223,9 +223,9 @@ def test_render_blueprint_groups_and_badges():
     # No degree ovals: the ident already encodes the heading.
     assert "<ellipse" not in svg
     assert "130°" not in svg and "310°" not in svg
-    # Geometry-bold: 1 OSM outline + 9 strip lines per runway
+    # Geometry-bold: 1 OSM outline + 25 strip lines per runway
     # (solid band across 2× width).
-    assert counts == {"runway": 10, "taxiway": 1, "apron": 1,
+    assert counts == {"runway": 26, "taxiway": 1, "apron": 1,
                       "terminal": 0, "hangar": 0, "stands": 0,
                       "stopways": 0, "highways": 0, "roads": 0,
                       "paths": 0, "rails": 0, "waterway": 0,
@@ -545,7 +545,7 @@ def test_geometry_independent_of_frequency_strip():
         airport=_airport(), runways=[_runway_row()], frequencies=freqs,
         osm_geoms=osm, width=1000)
     assert counts_full["taxiway"] == counts_bare["taxiway"] == 1
-    assert counts_full["runway"] == counts_bare["runway"] == 9
+    assert counts_full["runway"] == counts_bare["runway"] == 25
 
     def group_paths(svg, gid):
         section = svg.split(f'id="{gid}"')[1].split("</g>")[0]
@@ -699,20 +699,20 @@ def test_render_runway_band_is_parallel_at_exaggerated_width():
         airport=_airport(), runways=[_runway_row()], frequencies=[],
         osm_geoms=osm, width=1000,
     )
-    assert counts["runway"] == 9  # solid band of 9, no OSM outlines
+    assert counts["runway"] == 25  # solid band of 25, no OSM outlines
     group = svg.split('id="runways"')[1].split("</g>")[0]
     segs = re.findall(r"M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)", group)
-    assert len(segs) == 9
+    assert len(segs) == 25
     lines = [tuple(map(float, s)) for s in segs]
     (x1, y1, x2, y2), (a1, b1, a2, b2) = lines[0], lines[-1]
-    (c1, d1, c2, d2) = lines[4]  # centerline
+    (c1, d1, c2, d2) = lines[12]  # centerline (middle of 25)
     # Outer edges are parallel to the centerline and symmetric about it.
     assert abs((x1 + a1) / 2 - c1) < 0.05 and abs((y1 + b1) / 2 - d1) < 0.05
     edge_gap = math.hypot(x1 - a1, y1 - b1)
     assert edge_gap > 0  # exaggerated band, not overlapping lines
     # Infill sits strictly inside the edges, evenly spaced.
     inner_gap = math.hypot(lines[1][0] - lines[2][0], lines[1][1] - lines[2][1])
-    assert abs(inner_gap - edge_gap / 8) < 0.05
+    assert abs(inner_gap - edge_gap / 24) < 0.05
 
 
 def test_render_no_runway_data_warns_but_draws_osm():
