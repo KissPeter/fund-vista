@@ -226,7 +226,21 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
             grid, text = table_lines[:grid_count], table_lines[grid_count:]
             outer = _path(grid[0], ink, 'data-kp-context-border="1"')
             rules = "".join(_polyline(pl, ink, ' data-kp-context-rule="1"') for pl in grid[1:])
-            text_svg = "".join(_polyline(pl, ink) for pl in text)
+            # Cell lettering, one marked group per non-blank cell in layout
+            # order (key then value, row by row), so the table stays
+            # assertable: the stroke count per cell is the one
+            # layout_stats_table itself drew (_text_lines of the same text).
+            cells = [text_ for row in ctx_rows for text_ in (row[0], str(row[1]))]
+            groups: list[str] = []
+            at = 0
+            for cell in cells:
+                n = len(stats_table._text_lines(cell, stats_table.HEIGHT_MM)[0])
+                if n == 0:
+                    continue
+                strokes_svg = "".join(_polyline(pl, ink) for pl in text[at : at + n])
+                at += n
+                groups.append(f'<g data-kp-text="{escape(cell, {chr(34): "&quot;"})}">{strokes_svg}</g>')
+            text_svg = "".join(groups)
             parts.append(
                 f'<g data-kp-context="1" data-kp-context-position="{table.position}">'
                 f"{outer}{rules}"
