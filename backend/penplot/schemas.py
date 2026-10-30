@@ -9,10 +9,11 @@ Conventions:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, create_model, model_validator
 
 MethodName = Literal["contour", "centerline", "hatch", "flow"]
 PageSizeName = Literal["A4", "A3", "A5", "Letter", "a4", "a3", "a5", "letter"]
@@ -525,3 +526,96 @@ class HealthResponse(BaseModel):
     redis: str
     disk_free_mb: float
     store_writable: bool
+
+
+# -- Gallery sheet compose (POST /v1/compose-sheet) ---------------------------
+#
+# The compose request reuses the convert models' field definitions (same names,
+# ranges and defaults) so the two wire contracts cannot drift. The sheet is
+# always A4 and the title lines travel as a top-level ``lines`` list, so the
+# ``size`` field and the label's ``enabled``/``text`` fields are left out.
+
+_COMPOSE_PAGE_FIELDS = {
+    name: (info.annotation, info)
+    for name, info in PageParams.model_fields.items()
+    if name != "size"
+}
+_COMPOSE_LABEL_FIELDS = {
+    name: (info.annotation, info)
+    for name, info in LabelParams.model_fields.items()
+    if name not in ("enabled", "text")
+}
+
+ComposePageParams = create_model(
+    "ComposePageParams",
+    __config__=ConfigDict(extra="forbid"),
+    **_COMPOSE_PAGE_FIELDS,
+)
+ComposeLabelParams = create_model(
+    "ComposeLabelParams",
+    __config__=ConfigDict(extra="forbid"),
+    **_COMPOSE_LABEL_FIELDS,
+)
+
+
+class ComposeLayout(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    page: ComposePageParams = Field(default_factory=ComposePageParams)  # type: ignore[valid-type]
+    label: ComposeLabelParams = Field(default_factory=ComposeLabelParams)  # type: ignore[valid-type]
+
+
+class ComposeContextPads(BaseModel):
+    """Per-side insets of the context table (same ranges as ContextTableParams.pad_*)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    left: float = Field(default=10.0, ge=0.0, le=20.0)
+    right: float = Field(default=10.0, ge=0.0, le=20.0)
+    top: float = Field(default=10.0, ge=0.0, le=20.0)
+    bottom: float = Field(default=10.0, ge=0.0, le=20.0)
+
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+class ComposeContextTable(BaseModel):
+    """Gallery context table; rows and row cap mirror ContextTableParams."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    position: StatsTablePosition = "top-right"
+    rows: list[ContextTableRow] = Field(default_factory=list, max_length=12)
+    pads: ComposeContextPads = Field(default_factory=ComposeContextPads)
+
+    @model_validator(mode="after")
+    def _no_control_chars(self) -> ComposeContextTable:
+        for row in self.rows:
+            if _CONTROL_CHARS.search(row.label) or _CONTROL_CHARS.search(row.value):
+                raise ValueError("control characters are not allowed in context rows")
+        return self
+
+
+class ComposeSheetRequest(BaseModel):
+    """Stateless gallery sheet: artwork SVG + layout + title lines + context table."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    svg: str = Field(
+        min_length=1,
+        description="Artwork SVG document, embedded unchanged. Size-capped by max_upload_bytes.",
+    )
+    ink_hex: str = Field(default="#1a1a1a", pattern=r"^#[0-9a-fA-F]{6}$")
+    layout: ComposeLayout = Field(default_factory=ComposeLayout)
+    lines: list[Annotated[str, StringConstraints(max_length=41)]] = Field(
+        default_factory=list, max_length=2,
+        description="Title then subtitle. Blank entries are dropped.",
+    )
+    context_table: ComposeContextTable = Field(default_factory=ComposeContextTable)
+
+    @model_validator(mode="after")
+    def _no_control_chars(self) -> ComposeSheetRequest:
+        if any(_CONTROL_CHARS.search(line) for line in self.lines):
+            raise ValueError("control characters are not allowed in lines")
+        return self
