@@ -932,3 +932,24 @@ def test_content_bbox_matches_crop_viewbox():
     import re
     vb = [float(v) for v in re.search(r'viewBox="([^"]+)"', cropped).group(1).split()]
     assert vb == pytest.approx([x0, y0, x1 - x0, y1 - y0], abs=1e-3)
+
+
+def test_crop_svg_carries_the_import_revision():
+    """The revision rides in the stored image so a pipeline change gets new
+    cache keys (image sha) instead of serving the old algorithm's results."""
+    from backend.airports import router as airports_router
+    from backend.airports.router import crop_svg_to_content
+
+    osm = {"runway": [], "taxiway": [[(19.252, 47.438), (19.259, 47.435)]],
+           "apron": [], "terminal": [], "hangar": []}
+    svg, _, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=[],
+        osm_geoms=osm, width=1000,
+    )
+    cropped = crop_svg_to_content(svg)
+    assert f"airport import r{airports_router.IMPORT_REVISION}" in cropped
+    airports_router.IMPORT_REVISION += 1
+    try:
+        assert crop_svg_to_content(svg) != cropped
+    finally:
+        airports_router.IMPORT_REVISION -= 1

@@ -324,6 +324,14 @@ def content_bbox(svg_text: str) -> tuple[float, float, float, float] | None:
     return x0, y0, x1, y1
 
 
+#: Bump when a pipeline change should reach airports already converted: the
+#: convert result cache is keyed by (image sha, params), so an unchanged
+#: draft would otherwise keep serving the previous algorithm's output after
+#: a deploy. The revision rides in the stored image, so it changes the sha
+#: (and with it every cache key and design id) for airports only.
+IMPORT_REVISION = 2
+
+
 def crop_svg_to_content(svg_text: str) -> str:
     """Shrink the root ``width``/``height``/``viewBox`` to the drawn content.
 
@@ -343,6 +351,7 @@ def crop_svg_to_content(svg_text: str) -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.3f}" '
         f'height="{h:.3f}" viewBox="{x0:.3f} {y0:.3f} {w:.3f} {h:.3f}">'
     )
+    root += f"<!-- penplot airport import r{IMPORT_REVISION} -->"
     return _SVG_ROOT_RE.sub(lambda _m: root, svg_text, count=1)
 
 
