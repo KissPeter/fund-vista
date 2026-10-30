@@ -74,7 +74,7 @@ def to_svg(
 ) -> str:
     """Render plot geometry plus an optional display-only background layer.
 
-    ``stroke_color`` is a pen name (black/white/red/blue) resolved through
+    ``stroke_color`` is a pen name (black/white/red/blue/green) resolved through
     the ``LINE_COLORS`` allowlist — unknown values fall back to black so a
     display param can never inject markup. ``background_data_uri`` (a
     ``data:image/...`` URI) is embedded as a fill-only ``<image>`` stretched

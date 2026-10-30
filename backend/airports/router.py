@@ -306,6 +306,24 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
 _SVG_ROOT_RE = re.compile(r"<svg\b[^>]*>")
 
 
+def content_bbox(svg_text: str) -> tuple[float, float, float, float] | None:
+    """Drawn-content bbox ``(x0, y0, x1, y1)`` in draft coordinates.
+
+    Same parser convert uses (paths + outlined ``<text>`` labels, ``Z``
+    closed). ``None`` when degenerate. Single source for the crop and the
+    ``content_bbox`` import field so they cannot drift.
+    """
+    polys, _, _ = imaging.parse_svg_vectors(svg_text.encode("utf-8"))[:3]
+    pts = [p for poly in polys for p in poly]
+    if not pts:
+        return None
+    x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
+    y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
+    if x1 - x0 <= 0 or y1 - y0 <= 0:
+        return None
+    return x0, y0, x1, y1
+
+
 def crop_svg_to_content(svg_text: str) -> str:
     """Shrink the root ``width``/``height``/``viewBox`` to the drawn content.
 
@@ -316,15 +334,11 @@ def crop_svg_to_content(svg_text: str) -> str:
     canvas == final artwork bbox under convert's uniform scale + translate.
     Returns the input unchanged if the bbox is degenerate.
     """
-    polys, _, _ = imaging.parse_svg_vectors(svg_text.encode("utf-8"))[:3]
-    pts = [p for poly in polys for p in poly]
-    if not pts:
+    bbox = content_bbox(svg_text)
+    if bbox is None:
         return svg_text
-    x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
-    y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
+    x0, y0, x1, y1 = bbox
     w, h = x1 - x0, y1 - y0
-    if w <= 0 or h <= 0:
-        return svg_text
     root = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.3f}" '
         f'height="{h:.3f}" viewBox="{x0:.3f} {y0:.3f} {w:.3f} {h:.3f}">'
@@ -367,6 +381,7 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
     # Convert gets the content-cropped canvas; /results keeps the framed draft.
     image_id = penplot_store.put_image_bytes(
         crop_svg_to_content(svg_text).encode("utf-8"), "svg")
+    bbox = content_bbox(svg_text)
     log.info(
         "airports.import icao=%r paths=%d image=%s",
         icao, sum(path_counts.values()), image_id[:12],
@@ -381,6 +396,7 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
         path_counts=path_counts,
         raw_counts=raw_counts,
         warnings=warnings,
+        content_bbox=list(bbox) if bbox else None,
     )
 
 

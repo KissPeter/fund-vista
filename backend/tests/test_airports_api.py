@@ -36,6 +36,8 @@ import httpx
 import pytest
 import uvicorn
 
+from backend.tests.helpers import default_params, svg_bytes, upload
+
 from backend.tests import redis_harness
 
 
@@ -375,3 +377,62 @@ def test_import_padding_zero_touches_margin_evenly(live: httpx.Client):
     assert abs(gl - gr) < 0.3 and abs(gt - gb) < 0.3
     assert min(gl, gt) < 0.3 and min(gr, gb) < 0.3  # limiting axis touches
     assert min(gl, gr, gt, gb) > -0.3  # no clipping past the margin
+
+
+def test_import_returns_content_bbox_matching_cropped_image(live: httpx.Client):
+    body = live.post("/v1/airports/import", json={"icao": "EGLL"}).json()
+    bbox = body["content_bbox"]
+    assert len(bbox) == 4 and bbox[2] > bbox[0] and bbox[3] > bbox[1]
+    got = live.get(f"/v1/images/{body['image_id']}")
+    assert got.status_code == 200, got.text
+
+
+def test_convert_runway_hatch_band_keeps_full_strip_length(live: httpx.Client):
+    """The 25 hatch lines of a runway strip must survive linemerge +
+    curvesmooth at full length (Chaikin used to trim the merged U-turns, so
+    the dense band came out ~half as long as the strip)."""
+    import re
+
+    lines = "".join(
+        f'<path d="M {100 + i * 0.71:.2f} 100 L {100 + i * 0.71:.2f} 700"/>'
+        for i in range(25)
+    )
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="800" '
+        'viewBox="0 0 400 800">'
+        f'<g id="runways" fill="none" stroke="#000" stroke-width="7.69">{lines}</g>'
+        '<path d="M 20 20 L 380 20 L 380 780 L 20 780 Z"/></svg>'
+    )
+    image_id = upload(live, svg.encode(), "rwy.svg").json()["image_id"]
+    params = {
+        "method": "contour", "threshold": 128, "blur_radius": 1.0,
+        "hatch_pitch_mm": 1.2, "contour_simplify": 1.5, "curve_smooth": 1,
+        "linemerge_tolerance_mm": 0.5, "linesimplify_tolerance_mm": 0.1,
+        "linesort": True, "reloop_tolerance_mm": 0.05,
+        "page": {"size": "A4", "orientation": "portrait", "margin_mm": 10,
+                 "padding_mm": 0, "frame": False},
+        "pen": {"pen_lift_s": 0.3},
+    }
+    resp = live.post("/v1/convert", json={"image_id": image_id, "params": params})
+    assert resp.status_code == 200, resp.text
+    final = live.get(resp.json()["svg_url"]).text
+    segs = []  # lengths of the near-vertical hatch segments in the final
+    for d in re.findall(r'<path d="([^"]+)"', final):
+        pts = [(float(x), float(y)) for x, y in re.findall(r"(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)", d)]
+        if max(p[0] for p in pts) - min(p[0] for p in pts) > 10:
+            continue  # the border, not the strip
+        segs += [abs(b[1] - a[1]) for a, b in zip(pts, pts[1:]) if abs(b[1] - a[1]) > 5]
+    assert len(segs) >= 20, "runway band missing from final"
+    # the 800-unit canvas fits the 277 mm sheet height, so the 600-unit strip
+    # is 207.75 mm; every hatch line must keep it all (Chaikin cut ~half).
+    assert min(segs) > 0.99 * 600 * (277 / 800)
+
+
+def test_convert_accepts_green_pen(live: httpx.Client):
+
+    image_id = upload(live, svg_bytes(), "g.svg").json()["image_id"]
+    params = default_params("contour")
+    params["line_color"] = "green"
+    resp = live.post("/v1/convert", json={"image_id": image_id, "params": params})
+    assert resp.status_code == 200, resp.text
+    assert 'stroke="#1E7A46"' in live.get(resp.json()["svg_url"]).text

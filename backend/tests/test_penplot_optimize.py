@@ -270,3 +270,17 @@ def test_polyline_length_is_fast():
     for pl in lines:
         polyline_length(pl)
     assert time.perf_counter() - t0 < 2.0
+
+def test_curvesmooth_keeps_hatch_u_turns_full_length():
+    """Boustrophedon strokes (linemerge of parallel hatch lines) keep their
+    line ends; ordinary corners still round."""
+    from backend.penplot.stages.simplify import curvesmooth
+
+    zig = [(0.0, 0.0), (0.0, 100.0), (0.15, 100.0), (0.15, 0.0), (0.3, 0.0), (0.3, 100.0)]
+    out = curvesmooth([zig], 2)[0]
+    ys = [p[1] for p in out]
+    assert min(ys) == 0.0 and max(ys) == 100.0
+    assert (0.0, 100.0) in out and (0.15, 0.0) in out
+    # a plain 90-degree corner between long segments is still cut
+    corner = curvesmooth([[(0.0, 0.0), (0.0, 50.0), (50.0, 50.0)]], 1)[0]
+    assert (0.0, 50.0) not in corner

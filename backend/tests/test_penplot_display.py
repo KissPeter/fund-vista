@@ -23,6 +23,7 @@ STROKE = {
     "white": "#FFFFFF",
     "red": "#FF0000",
     "blue": "#0000FF",
+    "green": "#1E7A46",
 }
 
 
@@ -124,7 +125,7 @@ def test_display_params_do_not_change_geometry(http_client):
 def test_invalid_display_params_422(http_client):
     image_id = upload(http_client, png_bytes()).json()["image_id"]
     params = default_params("hatch")
-    params["line_color"] = "green"
+    params["line_color"] = "purple"
     resp = http_client.post("/v1/convert", json={"image_id": image_id, "params": params})
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "invalid_params"

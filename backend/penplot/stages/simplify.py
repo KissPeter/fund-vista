@@ -97,6 +97,59 @@ def _chaikin_once(points: Polyline) -> Polyline:
     return out
 
 
+#: cos(turn) below which a vertex is a hairpin (turn > 150 degrees).
+_HAIRPIN_COS = -0.866
+#: A sharp-ish turn (> ~45 degrees) next to a segment this much shorter than
+#: its neighbour is a hatch-line U-turn connector, not a curve to round.
+_CONNECTOR_COS = 0.7
+_CONNECTOR_RATIO = 0.1
+
+
+def _pinned(a: tuple[float, float], b: tuple[float, float]) -> bool:
+    la, lb = math.hypot(*a), math.hypot(*b)
+    if la <= 1e-9 or lb <= 1e-9:
+        return False
+    cos = (a[0] * b[0] + a[1] * b[1]) / (la * lb)
+    if cos < _HAIRPIN_COS:
+        return True
+    return cos < _CONNECTOR_COS and min(la, lb) <= _CONNECTOR_RATIO * max(la, lb)
+
+
+def _split_at_hairpins(points: Polyline) -> list[Polyline]:
+    """Split an open polyline at U-turn vertices (shared end vertex).
+
+    Chaikin trims a quarter of each adjacent segment at a corner per pass, so
+    on a boustrophedon stroke (linemerge joins the parallel hatch lines of a
+    runway strip end to end, via a short connector hop) every U-turn would
+    eat the line ends and the dense band would come out much shorter than
+    the strip. Pinning those vertices keeps them put; gentle corners still
+    round.
+    """
+    if len(points) < 3 or dist(points[0], points[-1]) <= 1e-9:
+        return [points]
+    chains: list[Polyline] = []
+    start = 0
+    for i in range(1, len(points) - 1):
+        a = (points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1])
+        b = (points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1])
+        if _pinned(a, b):
+            chains.append(points[start: i + 1])
+            start = i
+    chains.append(points[start:])
+    return chains
+
+
+def _smooth_once(points: Polyline) -> Polyline:
+    chains = _split_at_hairpins(points)
+    if len(chains) == 1:
+        return _chaikin_once(points)
+    out: Polyline = []
+    for chain in chains:
+        piece = _chaikin_once(chain)
+        out.extend(piece if not out else piece[1:])
+    return out
+
+
 def curvesmooth(lines: list[Polyline], iterations: int) -> list[Polyline]:
     """Round polyline corners via Chaikin corner-cutting (mm space)."""
     iters = max(0, int(iterations))
@@ -104,7 +157,7 @@ def curvesmooth(lines: list[Polyline], iterations: int) -> list[Polyline]:
         return [list(pl) for pl in lines]
     out = [list(pl) for pl in lines]
     for _ in range(min(iters, 5)):  # CPU/size guard: each pass ~doubles points
-        out = [_chaikin_once(pl) for pl in out]
+        out = [_smooth_once(pl) for pl in out]
     log.debug(
         "curvesmooth: %d -> %d pts (iters=%d)",
         count_points(lines), count_points(out), iters,

@@ -53,6 +53,8 @@ LINE_COLORS: dict[str, str] = {
     "white": "#FFFFFF",
     "red": "#FF0000",
     "blue": "#0000FF",
+    # Shop RUNWAY_INK_HEX / ink_split green.
+    "green": "#1E7A46",
 }
 
 LINE_COLOR_IDS = tuple(LINE_COLORS)
