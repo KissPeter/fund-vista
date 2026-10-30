@@ -42,9 +42,11 @@ INK_HEX: dict[str, str] = {
 
 #: Airport draft groups that belong to the runway layer — the shop's
 #: ``RUNWAY_GROUP_IDS`` (``src/lib/airportSvgTint.ts``, "live backend shape";
-#: ``runway`` is a legacy alias kept for old drafts).
+#: ``runway`` is a legacy alias kept for old drafts). The runway labels
+#: (``runway-marks``) are text, not the runway layer: the buyer's preview draws
+#: them in the Pen ink, so they stay on the Pen file.
 AIRPORT_RUNWAY_GROUPS: frozenset[str] = frozenset(
-    {"runways", "runway-marks", "osm-runways", "runway"}
+    {"runways", "osm-runways", "runway"}
 )
 
 #: Traffic draft group suffixes that always ride the Pen ink: the Map layer
