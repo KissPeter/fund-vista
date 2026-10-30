@@ -436,3 +436,53 @@ def test_convert_accepts_green_pen(live: httpx.Client):
     resp = live.post("/v1/convert", json={"image_id": image_id, "params": params})
     assert resp.status_code == 200, resp.text
     assert 'stroke="#1E7A46"' in live.get(resp.json()["svg_url"]).text
+
+
+def test_airport_import_convert_runway_band_spans_the_strip(live: httpx.Client):
+    """End to end on the mock airport, through the exact calls the shop makes
+    (`/v1/airports/import` -> `/v1/convert` with the shop's default params):
+    the dense runway band in the final must reach both ends of the strip.
+
+    The merged hatch is one boustrophedon stroke; every interior leg must run
+    as far as the stroke's own extent. Chaikin used to cut 25% off both ends
+    of each interior leg (the band came out half as long as the runway edge
+    lines), and a cached result from before a fix kept being served after
+    the deploy, so this runs on the real import path with a unique draft.
+    """
+    import re
+
+    imp = live.post("/v1/airports/import", json={"icao": "EGLL"})
+    assert imp.status_code == 200, imp.text
+    image_id = imp.json()["image_id"]
+    params = {
+        "methods": ["contour"], "threshold": 128, "blur_radius": 1,
+        "contrast": 1, "brightness": 0, "remove_background": False,
+        "strip_hatch_px": 0, "hatch_pitch_mm": 1.2, "hatch_angle_deg": 45,
+        "contour_simplify": 1.5, "centerline_prune_px": 4, "curve_smooth": 1,
+        "linemerge_tolerance_mm": 0.5, "linesimplify_tolerance_mm": 0.1,
+        "linesort": True, "reloop_tolerance_mm": 0.05,
+        "page": {"size": "A4", "orientation": "portrait", "margin_mm": 10,
+                 "padding_mm": 5, "frame": True, "frame_radius_mm": 2},
+        "pen": {"pen_lift_s": 0.3},
+        "line_color": "black", "background": "none",
+    }
+    resp = live.post("/v1/convert", json={"image_id": image_id, "params": params})
+    assert resp.status_code == 200, resp.text
+    final = live.get(resp.json()["svg_url"]).text
+
+    bands = 0
+    for d in re.findall(r'<path d="([^"]+)"', final):
+        pts = [(float(x), float(y)) for x, y in re.findall(r"(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)", d)]
+        if len(pts) < 20:
+            continue
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        if max(xs) - min(xs) > 8 or max(ys) - min(ys) < 60:
+            continue  # not a runway hatch serpentine
+        bands += 1
+        extent = max(ys) - min(ys)
+        legs = [abs(b[1] - a[1]) for a, b in zip(pts, pts[1:]) if abs(b[1] - a[1]) > 5]
+        assert legs, "serpentine without legs"
+        # every interior leg reaches (almost) the stroke's own ends
+        assert min(legs[1:-1] or legs) > 0.97 * extent, (extent, sorted(legs)[:3])
+    assert bands >= 1, "runway band missing from the final"
