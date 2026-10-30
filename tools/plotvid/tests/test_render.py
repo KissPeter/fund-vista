@@ -58,7 +58,7 @@ def test_render_cut_portrait_source(tmp_path):
     src = tmp_path / "src.mp4"
     make_source(src, "576x1024", 30, 10)
     hand_plan(tmp_path, src, [(1.0, 4.0), (5.0, 8.5)])
-    info = run(tmp_path, src)
+    info = run(tmp_path, src, "render: {transition: cut}\n")
     v, a = streams(info)
     assert (v["codec_name"], a["codec_name"]) == ("h264", "aac")
     assert (v["width"], v["height"]) == (576, 1024)  # exact 9:16, native size
@@ -83,3 +83,16 @@ def test_render_crossfade_wide_source_video_outro(tmp_path):
     assert v["r_frame_rate"] == "60/1"
     # 3.5 + 3 + 2.5 photo + 2 outro video, minus three 0.25 s crossfades.
     assert float(info["format"]["duration"]) == pytest.approx(11.0 - 0.75, abs=0.15)
+
+
+def test_render_default_is_soft_and_matches_duration_math(tmp_path):
+    from plotvid import assign
+    src = tmp_path / "src.mp4"
+    make_source(src, "576x1024", 30, 10)
+    spans = [(0.5, 4.0), (5.0, 8.5), (8.5, 9.9)]
+    hand_plan(tmp_path, src, spans)
+    info = run(tmp_path, src)  # defaults: crossfade 0.5 s
+    # 3 segments + photo + outro = 4 joins of 0.5 s.
+    expect = assign.Budget(5.0, 0.5).total(sum(b - a for a, b in spans), 3)
+    assert expect == pytest.approx(3.5 + 3.5 + 1.4 + 5.0 - 2.0)
+    assert float(info["format"]["duration"]) == pytest.approx(expect, abs=0.15)

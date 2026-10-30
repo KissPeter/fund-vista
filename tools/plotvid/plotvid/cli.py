@@ -187,7 +187,13 @@ def run_plan(cfg: config.Config) -> int:
               f"{st['long_travel']} travel); ink reliable: {st['ink_reliable']}")
 
     tls = assign.timelines(per_source)
-    result = assign.assign(tls, cfg.segment, cfg.videos)
+    # A video outro with `seconds: null` lasts its own length (needs a probe).
+    outro_s = (render.asset_part(cfg.outro.path, cfg.outro.seconds).duration_s
+               if cfg.outro.path else cfg.outro.seconds)
+    budget = assign.Budget(
+        ending_s=cfg.final_photo.seconds + outro_s,
+        join_s=cfg.render.crossfade_s if cfg.render.transition == "crossfade" else 0.0)
+    result = assign.assign(tls, cfg.segment, cfg.videos, budget)
     last = sources[-1]
     photo = {"path": str(cfg.final_photo.path) if cfg.final_photo.path else None,
              "seconds": cfg.final_photo.seconds,
@@ -196,24 +202,35 @@ def run_plan(cfg: config.Config) -> int:
     for clip in result.clips:
         data = manifest.clip_manifest(
             cfg.plot, clip, [s.path for s in sources], [lb.strokes for lb in labels_all], photo,
+            result.parts,
             {"clip_count": result.count,
              "ink_reliable": [lb.ink_reliable for lb in labels_all]})
         path = root / f"clip_{clip.clip + 1:02d}.json"
         manifest.write(path, data)
         paths.append(str(path))
-        spans = ", ".join(f"{s.start_s:.2f}-{s.end_s:.2f}" for s in clip.segments)
-        print(f"clip {clip.clip + 1}: zone {clip.zone[0]:.1f}-{clip.zone[1]:.1f} s, "
-              f"relax {clip.level}, cap {clip.cap_s:g} s, {len(clip.segments)} segments, {clip.total_s:.1f} s: {spans}")
-    summary = {"sources": stats, "count": result.count, "tried": result.tried,
-               "infeasible_zones": result.infeasible_zones, "manifests": paths,
+        spans = ", ".join(f"p{s.part + 1}:{s.start_s:.2f}-{s.end_s:.2f}(L{s.level})"
+                          for s in clip.segments)
+        print(f"clip {clip.clip + 1}: {clip.length_s:.1f} s total, {clip.footage_s:.1f} s footage, "
+              f"{len(clip.segments)} segments: {spans}")
+    used = result.used_s
+    usage = [{"part": i, "start_s": round(a, 2), "end_s": round(b, 2),
+              "pool_s": round(result.pool_s[i], 2), "used_s": round(used[i], 2)}
+             for i, (a, b) in enumerate(result.parts)]
+    summary = {"sources": stats, "count": result.count, "level": result.level,
+               "tried": {str(k): v for k, v in result.tried.items()},
+               "part_usage": usage, "manifests": paths,
                "config": {k: asdict(getattr(cfg, k)) for k in
                           ("strokes", "segment", "videos", "ink")}}
     (root / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
-    if result.infeasible_zones:
-        print(f"plotvid: zones {[z + 1 for z in result.infeasible_zones]} of {result.count} "
-              f"cannot reach {cfg.videos.min_total_s} s of footage", file=sys.stderr)
+    if not result.clips:
+        print(f"plotvid: no clip count reaches {cfg.videos.min_total_s} s without reusing "
+              f"footage (tried {result.tried}); lower min_total_s or add footage",
+              file=sys.stderr)
+        return 1
+    print(f"{result.count} clips (relaxation level {result.level}); per part pool/used s: "
+          + ", ".join(f"{u['pool_s']}/{u['used_s']}" for u in usage))
     print(f"{len(result.clips)} clip plans -> {root}")
-    return 0 if result.clips else 1
+    return 0
 
 
 def _fps(cfg: config.Config, infos: dict[str, probe.SourceInfo]) -> float:

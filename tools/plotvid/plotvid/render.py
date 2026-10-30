@@ -157,7 +157,7 @@ def build_command(parts: list[Part], size: tuple[int, int], fps: float, cfg: Ren
             v_next, a_next = labels[k]
             offset = elapsed - x
             vo, ao = ("vout", "aout") if k == len(parts) - 1 else (f"vx{k}", f"ax{k}")
-            filters.append(f"[{v_prev}][{v_next}]xfade=transition=fade:duration={x:.4f}:"
+            filters.append(f"[{v_prev}][{v_next}]xfade=transition={cfg.crossfade_type}:duration={x:.4f}:"
                            f"offset={offset:.6f}[{vo}]")
             filters.append(f"[{a_prev}][{a_next}]acrossfade=d={x:.4f}[{ao}]")
             v_prev, a_prev = vo, ao

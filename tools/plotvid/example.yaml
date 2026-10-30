@@ -44,14 +44,18 @@ segment:
   post_roll: 0.25       # cut out this long after the closing pen event
   max_relax: 3          # 0 strict .. 3 every event may cut (see README)
   relax_penalty: 0.5
+  final_extra_s: 3      # the plot's last segment may run to the source end, up to max_s + this
 
 videos:
-  count: auto           # or an integer; auto = most clips (<= max_count) that all reach min_total_s
-  max_count: 7
-  target_s: 17          # plotting footage per clip
-  min_total_s: 15
-  max_total_s: 20
+  count: auto           # or an integer; auto = most clips (<= max_count) that each reach min_total_s
+  max_count: 8
+  parts: 3              # story parts (equal time ranges of the plotting timeline); every clip
+                        # takes segments from every part, first segment from part 1, last from the last
+  target_s: 35          # whole clip: plotting footage + final photo + outro, minus crossfade overlaps
+  min_total_s: 30
+  max_total_s: 40
   seed: 42
+  attempts: 24          # seeded selection draws per (count, relaxation level)
 
 render:
   fps: null             # null = source frame rate (snapped to a standard rate)
@@ -59,8 +63,9 @@ render:
   preset: medium
   audio_bitrate: 160k
   audio_fade_s: 0.02    # fade at every segment cut
-  transition: cut       # cut | crossfade
-  crossfade_s: 0.25
+  transition: crossfade # crossfade | cut
+  crossfade_s: 0.5      # overlap at every join (segments, photo, outro); shortens the clip
+  crossfade_type: fade  # xfade style: fade | dissolve | fadeblack | fadewhite
 
 final_photo:
   path: null            # image; null = last clean frame of the last source

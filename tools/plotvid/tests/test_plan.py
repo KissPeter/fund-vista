@@ -98,62 +98,128 @@ def test_dp_picks_non_overlapping_max_weight():
     assert sum(c.weight for c in segment.choose(small)) == pytest.approx(best)
 
 
+BUDGET = assign.Budget(ending_s=5.0, join_s=0.5)
+VIDS = VideosConfig(count=2, parts=3, seed=42)
+
+
+def _timeline(blocks=70, sources=1):
+    per = []
+    for k in range(sources):
+        st = _labels(*pattern(blocks, t0=1.0 + 0.5 * k))
+        per.append((st, st[-1].end_s + 1.0))
+    return assign.timelines(per)
+
+
 def test_relaxation_used_when_dense():
     # A detail run: only 0.15 s strokes, none long relative to a few huge
-    # travels at the end. Strict rules cannot cut inside it.
-    times = list(np.round(np.arange(0, 30, 0.15), 3)) + [33.0, 36.0, 39.0]
+    # travels at the end. Strict rules cannot cut inside it, so a clip that
+    # needs that footage only becomes feasible at a relaxed level.
+    times = list(np.round(np.arange(0, 100, 0.15), 3)) + [104.0, 108.0, 112.0]
     ink = [10.0] * (len(times) - 1)
-    strokes = events.build_strokes(times, ink, StrokesConfig(long_percentile=99)).strokes
-    seg, vids = SegmentConfig(), VideosConfig(count=1, min_total_s=15, target_s=17,
-                                              max_total_s=20)
-    assert not segment.candidates(strokes, seg, max_level=0, window=(0, 29.0))
-    tls = assign.timelines([(strokes, 40.0)])
-    res = assign.zone_pool(tls, (0.0, 30.0), seg, vids)
-    assert res.level is not None and res.level >= 2
-    seg0 = SegmentConfig(max_relax=0)
-    assert assign.zone_pool(tls, (0.0, 30.0), seg0, vids).level is None
+    strokes = events.build_strokes(times, ink, StrokesConfig(long_percentile=100)).strokes
+    seg = SegmentConfig()
+    assert not segment.candidates(strokes, seg, max_level=0, window=(0, 99.0))
+    tls = assign.timelines([(strokes, 113.0)])
+    vids = VideosConfig(count=1, parts=3, seed=1)
+    res = assign.assign(tls, seg, vids, BUDGET)
+    assert res.clips and res.level >= 2
+    assert max(s.level for s in res.clips[0].segments) >= 2  # recorded per segment
+    assert not assign.assign(tls, SegmentConfig(max_relax=0), vids, BUDGET).clips
+    # No segment-length cap: footage per clip comes from varied lengths.
+    assert not hasattr(assign.ClipPlan, "cap_s")
 
 
-def _plan(seed=42, count=4):
-    strokes = _labels(*pattern(50))
-    tls = assign.timelines([(strokes, strokes[-1].end_s + 1)])
-    vids = VideosConfig(count=count, seed=seed)
-    return tls, assign.assign(tls, SegmentConfig(), vids)
+def _flat(a):
+    return [[(s.source, s.start_s, s.end_s) for s in c.segments] for c in a.clips]
 
 
-def test_assignment_deterministic_no_reuse_in_zone():
-    tls, a = _plan()
-    _, b = _plan()
-    assert [[(s.start_s, s.end_s) for s in c.segments] for c in a.clips] == \
-        [[(s.start_s, s.end_s) for s in c.segments] for c in b.clips]
-    assert len(a.clips) == 4 and not a.infeasible_zones
+def test_story_assignment_every_clip_covers_all_parts():
+    tls = _timeline()
+    seg = SegmentConfig()
+    a = assign.assign(tls, seg, VIDS, BUDGET)
+    assert len(a.clips) == 2 and a.level is not None
+    for c in a.clips:
+        parts = [s.part for s in c.segments]
+        # Invariant: first segment from the first part, last from the last.
+        assert parts[0] == 0 and parts[-1] == 2
+        assert assign.story_ok(c.segments, 3)
+        assert parts == sorted(parts) and set(parts) == {0, 1, 2}
+        assert [(s.source, s.start_s) for s in c.segments] == \
+            sorted((s.source, s.start_s) for s in c.segments)  # chronological
+        for s in c.segments:  # a segment lies wholly inside its part
+            lo, hi = tls[0].to_global(s.start_s), tls[0].to_global(s.end_s)
+            assert a.parts[s.part][0] - 1e-6 <= lo and hi <= a.parts[s.part][1] + 1e-6
     used = [s for c in a.clips for s in c.segments]
     for i, x in enumerate(used):
         for y in used[i + 1:]:
-            assert not x.overlaps(y)
-    for c in a.clips:
-        assert 15 - 1e-6 <= c.total_s <= 20 + 1e-6
-        assert [s.start_s for s in c.segments] == sorted(s.start_s for s in c.segments)
-        for s in c.segments:
-            g0, g1 = tls[0].to_global(s.start_s), tls[0].to_global(s.end_s)
-            assert c.zone[0] - 1e-6 <= g0 and g1 <= c.zone[1] + 1e-6
+            assert not x.overlaps(y)  # footage never reused
 
 
-def test_auto_count_drops_until_feasible():
-    strokes = _labels(*pattern(50))  # ~80 s of plotting
-    tls = assign.timelines([(strokes, strokes[-1].end_s + 1)])
-    res = assign.assign(tls, SegmentConfig(), VideosConfig(count="auto", max_count=7))
-    assert res.count < 7 and res.tried[7]
-    assert not res.infeasible_zones and len(res.clips) == res.count
+def test_story_assignment_deterministic_and_seeded():
+    tls = _timeline()
+    a = assign.assign(tls, SegmentConfig(), VIDS, BUDGET)
+    b = assign.assign(tls, SegmentConfig(), VIDS, BUDGET)
+    c = assign.assign(tls, SegmentConfig(), VideosConfig(count=2, parts=3, seed=7), BUDGET)
+    assert _flat(a) == _flat(b)
+    assert _flat(a) != _flat(c)
 
 
-def test_two_sources_never_mix_in_a_segment():
-    s1 = _labels(*pattern(25))
-    s2 = _labels(*pattern(25, t0=0.5))
-    tls = assign.timelines([(s1, s1[-1].end_s + 1), (s2, s2[-1].end_s + 1)])
-    res = assign.assign(tls, SegmentConfig(), VideosConfig(count=4))
-    assert {s.source for c in res.clips for s in c.segments} == {0, 1}
+def test_clip_totals_in_window_with_crossfades_and_cuts():
+    tls = _timeline()
+    for join in (0.5, 0.0):
+        budget = assign.Budget(5.0, join)
+        a = assign.assign(tls, SegmentConfig(), VIDS, budget)
+        assert a.clips
+        for c in a.clips:
+            n = len(c.segments)
+            assert c.footage_s == pytest.approx(sum(s.duration_s for s in c.segments))
+            expect = c.footage_s + 5.0 - join * (n + 1)
+            assert c.length_s == pytest.approx(expect)
+            assert 30 - 1e-6 <= c.length_s <= 40 + 1e-6
+
+
+def test_auto_count_maximal_and_never_below_minimum():
+    tls = _timeline()  # ~160 s of plotting
+    res = assign.assign(tls, SegmentConfig(), VideosConfig(count="auto", max_count=8), BUDGET)
+    assert res.count >= 2 and res.tried[8] is None
+    assert len(res.clips) == res.count
+    assert all(c.length_s >= 30 - 1e-6 for c in res.clips)
+    # One more clip is not feasible, and the search says so.
+    assert res.tried.get(res.count + 1, None) is None
+    # An impossible minimum plans nothing instead of shortening clips.
+    none = assign.assign(tls, SegmentConfig(), VideosConfig(count=20, max_count=20), BUDGET)
+    assert not none.clips and none.count == 0
+
+
+def test_final_segment_runs_to_source_end():
+    strokes = _labels(*pattern(12))
+    dur = strokes[-1].end_s + 2.0  # the pen travels home after the last event
+    seg = SegmentConfig()
+    cands = segment.candidates(strokes, seg, 0, 3, dur, tail=True)
+    finals = [c for c in cands if c.final]
+    assert finals and all(c.end_s == dur for c in finals)
+    assert any(c.duration_s > seg.max_s for c in finals)
+    assert all(c.duration_s <= seg.max_s + seg.final_extra_s + 1e-6 for c in finals)
+    assert all(c.duration_s <= seg.max_s + 1e-6 for c in cands if not c.final)
+    # The timeline extends to the source end, and the last part's final
+    # segment is pinned to the last clip.
+    tls = assign.timelines([(strokes, dur)])
+    assert tls[0].span_s == pytest.approx(dur - strokes[0].start_s)
+    big = _timeline()
+    a = assign.assign(big, SegmentConfig(), VIDS, BUDGET)
+    ends = [(i, s) for i, c in enumerate(a.clips) for s in c.segments if s.final]
+    assert len(ends) == 1 and ends[0][0] == len(a.clips) - 1
+    assert ends[0][1].end_s == big[0].duration_s
+
+
+def test_two_sources_parts_span_the_global_timeline():
+    tls = _timeline(blocks=40, sources=2)
+    res = assign.assign(tls, SegmentConfig(), VideosConfig(count=2, parts=3), BUDGET)
+    assert res.clips
     assert tls[1].offset_s == pytest.approx(tls[0].span_s)
+    assert {s.source for c in res.clips for s in c.segments} == {0, 1}
+    for c in res.clips:
+        assert assign.story_ok(c.segments, 3)
 
 
 @pytest.mark.parametrize("w, h, expect", [
@@ -175,3 +241,19 @@ def test_output_size_never_upscales():
     assert render.nice_fps(339487 / 11311) == 30.0
     assert render.nice_fps(60.0) == 60.0
     assert render.nice_fps(17.0) == 17.0
+
+
+def test_manifest_records_story_invariant():
+    from pathlib import Path
+
+    from plotvid import manifest
+    tls = _timeline()
+    a = assign.assign(tls, SegmentConfig(), VIDS, BUDGET)
+    for c in a.clips:
+        m = manifest.clip_manifest("p", c, [Path("x.mp4")], [tls[0].strokes],
+                                   {"path": None, "seconds": 2.5}, a.parts)
+        assert m["story"] == {"parts": 3, "first_segment_part": 0, "last_segment_part": 2,
+                              "ok": True}
+        assert m["segments"][0]["part"] == 0 and m["segments"][-1]["part"] == 2
+        assert all("relax_level" in s for s in m["segments"])
+        assert m["length_s"] == pytest.approx(c.length_s)

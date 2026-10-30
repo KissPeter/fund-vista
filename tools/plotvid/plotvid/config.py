@@ -83,24 +83,32 @@ class SegmentConfig:
     lead_short: tuple[int, ...] = (2, 3)
     pre_roll: float = 0.15  # start this long before the first event
     post_roll: float = 0.25  # end this long after the closing pen event
-    # Relaxation levels tried per zone until the clip can be filled:
+    # Relaxation levels tried until every clip can reach its minimum length:
     # 0 strict, 1 any lead-in before a long stroke, 2 end after any drawn
     # stroke / start at any event, 3 every event is a cut candidate.
     max_relax: int = 3
     relax_penalty: float = 0.5  # score multiplier per relaxation level
+    # The plot's very last segment may run to the end of the last source and
+    # exceed max_s by up to this much, so the pen's trip home is not cut off.
+    final_extra_s: float = 3.0
 
 
 @dataclass(frozen=True)
 class VideosConfig:
-    # Number of clips; "auto" = the most (up to max_count) whose zones can
-    # all reach min_total_s.
+    # Number of clips; "auto" = the most (up to max_count) that can each reach
+    # min_total_s without reusing footage.
     count: int | str = "auto"
-    max_count: int = 7
-    target_s: float = 17.0  # plotting footage per clip
-    min_total_s: float = 15.0
-    max_total_s: float = 20.0
+    max_count: int = 8
+    # Story parts: the plotting timeline is cut into this many equal time
+    # ranges and every clip takes segments from every one, in order.
+    parts: int = 3
+    # Whole-clip lengths: plotting footage + final photo + outro, minus the
+    # crossfade overlaps.
+    target_s: float = 35.0
+    min_total_s: float = 30.0
+    max_total_s: float = 40.0
     seed: int = 42
-    attempts: int = 200  # random subset draws per zone; best fit wins
+    attempts: int = 24  # seeded draws per (count, relaxation level); best fit wins
 
 
 @dataclass(frozen=True)
@@ -110,8 +118,9 @@ class RenderConfig:
     preset: str = "medium"
     audio_bitrate: str = "160k"
     audio_fade_s: float = 0.02  # fade in/out at every segment cut
-    transition: str = "cut"  # "cut" | "crossfade"
-    crossfade_s: float = 0.25
+    transition: str = "crossfade"  # "cut" | "crossfade"
+    crossfade_s: float = 0.5
+    crossfade_type: str = "fade"  # an xfade transition: fade | dissolve | fadeblack | fadewhite
 
 
 @dataclass(frozen=True)
@@ -167,6 +176,7 @@ def _resolve_sources(patterns: list[str], base: Path) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(found))
 
 
+CROSSFADE_TYPES = ("fade", "dissolve", "fadeblack", "fadewhite")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
 
@@ -247,12 +257,14 @@ def load(path: str | Path) -> Config:
         raise ConfigError("segment: pre_roll and post_roll must be >= 0")
     if not 0 <= segment.max_relax <= 3 or not 0 < segment.relax_penalty <= 1:
         raise ConfigError("segment: max_relax within 0..3, relax_penalty within (0, 1]")
+    if segment.final_extra_s < 0:
+        raise ConfigError("segment: final_extra_s must be >= 0")
 
     videos = _build(VideosConfig, raw.get("videos"), "videos")
     if not (videos.count == "auto" or (isinstance(videos.count, int) and videos.count >= 1)):
         raise ConfigError("videos: count must be a positive integer or 'auto'")
-    if videos.max_count < 1 or videos.attempts < 1:
-        raise ConfigError("videos: max_count and attempts must be >= 1")
+    if videos.max_count < 1 or videos.attempts < 1 or videos.parts < 1:
+        raise ConfigError("videos: max_count, attempts and parts must be >= 1")
     if not 0 < videos.min_total_s <= videos.target_s <= videos.max_total_s:
         raise ConfigError("videos: need 0 < min_total_s <= target_s <= max_total_s")
 
@@ -263,6 +275,8 @@ def load(path: str | Path) -> Config:
         raise ConfigError("render: fps must be > 0 or null")
     if render.crossfade_s <= 0 or render.audio_fade_s < 0:
         raise ConfigError("render: crossfade_s > 0 and audio_fade_s >= 0")
+    if render.crossfade_type not in CROSSFADE_TYPES:
+        raise ConfigError(f"render: crossfade_type must be one of {list(CROSSFADE_TYPES)}")
     if render.transition == "crossfade" and render.crossfade_s * 2 >= segment.min_s:
         raise ConfigError("render: crossfade_s must be under half of segment.min_s")
 
@@ -274,6 +288,10 @@ def load(path: str | Path) -> Config:
         raise ConfigError("final_photo: seconds must be > 0")
     if outro.seconds is not None and outro.seconds <= 0:
         raise ConfigError("outro: seconds must be > 0 or null")
+    if render.transition == "crossfade" and min(
+            final_photo.seconds, outro.seconds or float("inf")) <= render.crossfade_s:
+        raise ConfigError("render: crossfade_s must be shorter than final_photo.seconds "
+                          "and outro.seconds")
     if outro.seconds is None and (outro.path is None or outro.path.suffix.lower() in IMAGE_EXTS):
         raise ConfigError("outro: seconds may be null only for a video")
 

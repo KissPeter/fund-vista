@@ -23,11 +23,11 @@ uv run pytest -q
 
 | File | Content |
 |---|---|
-| `clip_NN.json` | One manifest per clip: source path, each segment's source start and end, its strokes (duration, new ink, drawing/travel, long), ink score, DP weight, relaxation level, the zone, the seed and the final-photo frame |
+| `clip_NN.json` | One manifest per clip: each segment's source, start and end, story part, strokes (duration, new ink, drawing/travel, long), ink score, DP weight and relaxation level; the parts' time ranges and per-part footage, the `story` invariant check, total and footage lengths, the seed and the final-photo frame |
 | `strokes_<source>.csv` | Every stroke with its new-ink count and label, for hand checks |
-| `summary.json` | Per-source label statistics, the clip counts tried and the zones that could not be filled |
+| `summary.json` | Per-source label statistics, the clip counts tried (with the level each needed) and the footage used per part |
 
-Detection and the ink check are cached in `out_dir/cache/`, keyed by path, size, mtime and the `detect` and `ink` configs. Re-planning with other `strokes`, `segment` or `videos` settings is therefore instant.
+Detection and the ink check are cached in `out_dir/cache/`, keyed by path, size, mtime and the `detect` and `ink` configs. Re-planning with other `strokes`, `segment`, `videos` or `render` settings is therefore instant.
 
 `render` reads the manifests and writes `out_dir/clips/clip_NN.mp4`. A hand-edited manifest renders the same way.
 
@@ -81,18 +81,20 @@ At 10 fps the dense 0.1–0.2 s detail strokes cannot be resolved, so their labe
   | 2 | Start at any event; end after any stroke that may be drawn |
   | 3 | Every event may cut |
 
-- **Zones:** the plotting timeline (sources end to end) is split into N equal zones. Clip k only uses segments entirely inside zone k, so footage is never reused.
-- **Per zone:** a weighted-interval DP picks the non-overlapping segments with the most ink. Shorter segment caps are tried before looser rules. A seeded weighted draw then takes a subset of 15–20 s (target 17 s) and plays it in chronological order.
-- **`videos.count: auto`** picks the most clips, up to `max_count`, for which every zone can reach `min_total_s`. Clips are never shortened to fit.
+- **Final segment:** the last source's stretch of the timeline runs to the end of the recording, so the pen's trip home is not cut off. The plot's final segment ends at the source end and may be up to `final_extra_s` (3 s) longer than `max_s`. It always goes to the last clip.
+- **Story parts:** the plotting timeline (sources end to end) is split into `videos.parts` (3) equal time ranges. A part is only a time range on that global timeline, so it can later be backed by another source file. A segment belongs to a part only if it lies wholly inside it.
+- **Every clip covers every part**, in chronological order, so it shows the drawing grow. The first segment always comes from the first part and the last from the last part (checked by `story_ok`, recorded as `story` in each manifest). Footage is never reused.
+- **Length:** a clip is footage + final photo + outro minus the crossfade overlaps (`join_s` for each of the n+1 joins of n segments), within `min_total_s`..`max_total_s` (30–40 s, target 35 s). There are no segment-length caps. Per count and relaxation level the plan draws (seeded, `attempts`) a non-overlapping pool per part (a weighted-interval DP on jittered weights, so pools of varied segment lengths are tried), deals each block of consecutive segments to the clips in a random order (picks are spread through a part), then a local search moves, drops or swaps segments until every clip is in the window and the parts are balanced.
+- **`videos.count: auto`** tries the count from `max_count` down and, per count, relaxation level 0 up to `max_relax`. The first count where every clip reaches `min_total_s` wins; `summary.json` lists the level for each count tried (`null` = none) and the pool and used footage per part. Clips are never shortened to get more of them; if nothing fits, no clips are planned.
 
 ## Rendering
 - **Output:** 9:16 H.264 + AAC MP4 with `+faststart`, at the source frame rate (a phone's 30.013 average snaps to 30).
 - **Size:** the largest 9:16 crop of the source at native resolution, with no upscaling. Too-tall sources lose top and bottom equally; too-wide ones lose left and right.
-- **Audio:** each segment keeps the plotter's own sound, with 20 ms fades at every cut.
+- **Audio:** each segment keeps the plotter's own sound, with 20 ms fades at the cut ends.
 - **Ending:**
   - `final_photo`: silent, 2.5 s. The default is the frame in the source's last 5 s where the arm covers the least paper.
   - `outro`: 2.5 s. The default is a Pillow card with the plot name and `outro.text`. An image is silent; a video keeps its own audio.
-- **Transition:** `cut` (concat) or `crossfade` (`xfade` + `acrossfade`, `crossfade_s`). Everything is one ffmpeg call.
+- **Transition:** `crossfade` (default) joins segments, photo and outro with `xfade` (`crossfade_type`, 0.5 s `crossfade_s`) and `acrossfade`, so the audio fades out into the silent photo. `cut` uses hard concat. Each crossfade shortens the clip by its length; the planner counts that. Everything is one ffmpeg call.
 
 ## Licensing
 NumPy (BSD-3), Pillow (HPND), PyYAML (MIT) and opencv-python-headless (Apache-2.0) are permissive. ffmpeg's licence depends on how it was built; builds with libx264 are GPL, which is fine for rendering our own videos.

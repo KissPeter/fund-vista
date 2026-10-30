@@ -25,6 +25,9 @@ is ``ink gained * relax_penalty ** level``. Ink gained is the summed new
 ink of its strokes; when ink is unknown, the duration of strokes that may
 be drawn stands in for it.
 
+A *final* candidate (see ``candidates``) ends at the end of the last source
+instead of at a pen event, with the start rules of its level.
+
 ``choose`` runs the classic weighted-interval DP (sort by end, binary search
 for the last compatible candidate). The result maximises total weight and
 never overlaps.
@@ -51,6 +54,8 @@ class Segment:
     ink: float  # new ink over the strokes (px at the ink reference width)
     level: int  # relaxation level the rules needed
     weight: float
+    part: int = 0  # story part (set by the assignment)
+    final: bool = False  # runs to the end of the last source (the pen's trip home)
 
     @property
     def duration_s(self) -> float:
@@ -89,8 +94,14 @@ def _end_level(s: Stroke) -> int:
 
 def candidates(strokes: list[Stroke], cfg: SegmentConfig, source: int = 0,
                max_level: int = 3, duration_s: float | None = None,
-               window: tuple[float, float] | None = None) -> list[Segment]:
-    """All segments obeying the rules up to ``max_level``, 3-8 s, inside ``window``."""
+               window: tuple[float, float] | None = None,
+               tail: bool = False) -> list[Segment]:
+    """All segments obeying the rules up to ``max_level``, 3-8 s, inside ``window``.
+
+    ``tail`` (the last source of the plot, needs ``duration_s``) adds the
+    *final* segments: they start by the usual start rules but run to the end
+    of the source, so the pen's trip home is shown whole. They may exceed
+    ``max_s`` by ``final_extra_s``."""
     n = len(strokes)
     if n == 0:
         return []
@@ -136,6 +147,19 @@ def candidates(strokes: list[Stroke], cfg: SegmentConfig, source: int = 0,
             ink = prefix[k + 1] - prefix[a]
             out.append(Segment(source, t0, t1, a, k, ink, level,
                                (ink + _EPS) * cfg.relax_penalty ** level))
+    if tail and duration_s is not None:
+        end = duration_s
+        for a in range(n):
+            t0 = cut_in(a)
+            # Skip a tail that the ordinary last segment already covers.
+            if (starts[a] > max_level or t0 < lo_w - _EPS or end > hi_w + _EPS
+                    or end < cut_out(n) + 0.05):
+                continue
+            if not cfg.min_s - _EPS <= end - t0 <= cfg.max_s + cfg.final_extra_s + _EPS:
+                continue
+            ink = prefix[n] - prefix[a]
+            out.append(Segment(source, t0, end, a, n - 1, ink, starts[a],
+                               (ink + _EPS) * cfg.relax_penalty ** starts[a], final=True))
     return out
 
 

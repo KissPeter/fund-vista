@@ -11,11 +11,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from plotvid import assign
 from plotvid.assign import ClipPlan
 from plotvid.events import Stroke
 from plotvid.segment import Segment
 
-VERSION = 1
+VERSION = 2
 
 
 def _stroke(s: Stroke) -> dict[str, Any]:
@@ -35,25 +36,37 @@ def _segment(seg: Segment, source: Path, strokes: list[Stroke]) -> dict[str, Any
         "ink": round(seg.ink, 1),
         "weight": round(seg.weight, 3),
         "relax_level": seg.level,
+        "part": seg.part,
+        "final": seg.final,
         "strokes": [_stroke(s) for s in strokes[seg.first_stroke:seg.last_stroke + 1]],
     }
 
 
 def clip_manifest(plot: str, clip: ClipPlan, sources: list[Path],
                   strokes: list[list[Stroke]], final_photo: dict[str, Any],
+                  parts: list[tuple[float, float]],
                   extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    n = len(parts)
+    segs = clip.segments
     return {
         "version": VERSION,
         "plot": plot,
         "clip": clip.clip + 1,
-        "zone": {"index": clip.clip, "start_s": round(clip.zone[0], 3),
-                 "end_s": round(clip.zone[1], 3), "timeline": "plotting time, sources end to end"},
+        # Story invariant: first segment from the first part, last from the last.
+        "story": {"parts": n, "first_segment_part": segs[0].part,
+                  "last_segment_part": segs[-1].part,
+                  "ok": assign.story_ok(segs, n)},
+        "parts": [{"index": i, "start_s": round(a, 3), "end_s": round(b, 3),
+                   "timeline": "plotting time, sources end to end",
+                   "segments": sum(s.part == i for s in segs),
+                   "footage_s": round(sum(s.duration_s for s in segs if s.part == i), 3)}
+                  for i, (a, b) in enumerate(parts)],
         "seed": clip.seed,
         "relax_level": clip.level,
-        "segment_cap_s": clip.cap_s,
-        "pool_size": clip.pool,
-        "footage_s": round(clip.total_s, 3),
-        "segments": [_segment(s, sources[s.source], strokes[s.source]) for s in clip.segments],
+        "max_segment_level": max(s.level for s in segs),
+        "footage_s": round(clip.footage_s, 3),
+        "length_s": round(clip.length_s, 3),
+        "segments": [_segment(s, sources[s.source], strokes[s.source]) for s in segs],
         "final_photo": final_photo,
         **(extra or {}),
     }
