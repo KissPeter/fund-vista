@@ -133,7 +133,9 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
         attribution = AIRPORT_ATTRIBUTION
         if isinstance(info, JSONResponse):
             return info
-        svg_text, warnings, cache_hit = info["svg_text"], info["warnings"], info["cache_hit"]
+        # design_id is the hash of the imported (content-cropped) image.
+        svg_text = airports_router.crop_svg_to_content(info["svg_text"])
+        warnings, cache_hit = info["warnings"], info["cache_hit"]
         place = info["icao"]
         group_ink = _airport_mapper(body.inks)
 

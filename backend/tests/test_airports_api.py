@@ -345,3 +345,33 @@ def test_import_upstream_outage_is_502_envelope(live, monkeypatch):
     resp = live.post("/v1/airports/import", json={"icao": "EGLL"})
     assert resp.status_code == 502, resp.text
     assert resp.json()["error"]["code"] == "ourairports_unavailable"
+
+
+def test_import_padding_zero_touches_margin_evenly(live: httpx.Client):
+    """Convert of an imported airport: padding 0 → artwork reaches the margin
+    rect on the limiting axis and the gaps on both axes are equal."""
+    import re
+
+    image_id = live.post("/v1/airports/import", json={"icao": "EGLL"}).json()["image_id"]
+    params = {
+        "method": "contour", "threshold": 128, "blur_radius": 1.0,
+        "hatch_pitch_mm": 1.2, "contour_simplify": 2,
+        "linemerge_tolerance_mm": 0.0, "linesimplify_tolerance_mm": 0.0,
+        "linesort": True, "reloop_tolerance_mm": 0.0,
+        "page": {"size": "A4", "orientation": "portrait", "margin_mm": 10,
+                 "padding_mm": 0},
+        "pen": {"pen_lift_s": 0.3},
+    }
+    resp = live.post("/v1/convert", json={"image_id": image_id, "params": params})
+    assert resp.status_code == 200, resp.text
+    svg = live.get(resp.json()["svg_url"]).text
+    xs, ys = [], []
+    for d in re.findall(r'<path d="([^"]+)"', svg):
+        for x, y in re.findall(r"(-?\d+(?:\.\d+)?)[ ,]+(-?\d+(?:\.\d+)?)", d):
+            xs.append(float(x))
+            ys.append(float(y))
+    gl, gr = min(xs) - 10.0, 200.0 - max(xs)
+    gt, gb = min(ys) - 10.0, 287.0 - max(ys)
+    assert abs(gl - gr) < 0.3 and abs(gt - gb) < 0.3
+    assert min(gl, gt) < 0.3 and min(gr, gb) < 0.3  # limiting axis touches
+    assert min(gl, gr, gt, gb) > -0.3  # no clipping past the margin

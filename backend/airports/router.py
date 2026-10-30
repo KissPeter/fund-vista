@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 import time
 
@@ -302,6 +303,35 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     )
 
 
+_SVG_ROOT_RE = re.compile(r"<svg\b[^>]*>")
+
+
+def crop_svg_to_content(svg_text: str) -> str:
+    """Shrink the root ``width``/``height``/``viewBox`` to the drawn content.
+
+    The draft canvas carries a built-in margin plus a header band, so
+    convert would otherwise fit the canvas (not the artwork) into the sheet
+    and ``page.padding_mm`` 0 could not reach the frame. Bbox comes from the
+    same parser convert uses (text outlined, ``Z`` closed), so the cropped
+    canvas == final artwork bbox under convert's uniform scale + translate.
+    Returns the input unchanged if the bbox is degenerate.
+    """
+    polys, _, _ = imaging.parse_svg_vectors(svg_text.encode("utf-8"))[:3]
+    pts = [p for poly in polys for p in poly]
+    if not pts:
+        return svg_text
+    x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
+    y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return svg_text
+    root = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.3f}" '
+        f'height="{h:.3f}" viewBox="{x0:.3f} {y0:.3f} {w:.3f} {h:.3f}">'
+    )
+    return _SVG_ROOT_RE.sub(lambda _m: root, svg_text, count=1)
+
+
 @router.post("/import", response_model=ImportResponse,
               dependencies=[Depends(require_rate_limit)])
 async def import_diagram(body: RenderRequest, request: Request) -> ImportResponse | JSONResponse:
@@ -334,7 +364,9 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
         imaging.parse_svg_vectors(svg_text.encode("utf-8"))
     except PenPlotError as exc:
         return error_response(exc.status, exc.code, exc.message)
-    image_id = penplot_store.put_image_bytes(svg_text.encode("utf-8"), "svg")
+    # Convert gets the content-cropped canvas; /results keeps the framed draft.
+    image_id = penplot_store.put_image_bytes(
+        crop_svg_to_content(svg_text).encode("utf-8"), "svg")
     log.info(
         "airports.import icao=%r paths=%d image=%s",
         icao, sum(path_counts.values()), image_id[:12],
