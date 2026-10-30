@@ -613,10 +613,10 @@ def render_diagram(
                 mx, my = pts[len(pts) // 2]
                 if not _in_frame(mx, my):
                     continue
-                cx, cy = _taxiway_label_spot(pts, text_h, ref, obstacles, _in_frame)
-                obstacles.extend(_box_edges(_label_box(cx, cy, text_h, ref)))
+                lx, ly = _taxiway_label_spot(pts, text_h, ref, obstacles, _in_frame)
+                obstacles.extend(_box_edges(_label_box(lx, ly, text_h, ref)))
                 parts.append(
-                    f'<text x="{cx:.2f}" y="{cy + text_h * 0.35:.2f}" text-anchor="middle" '
+                    f'<text x="{lx:.2f}" y="{ly + text_h * 0.35:.2f}" text-anchor="middle" '
                     f'font-family="monospace" data-stroke-font="hershey" font-size="{text_h:.1f}" '
                     f'stroke="none" fill="#000000">{_esc(ref)}</text>'
                 )
