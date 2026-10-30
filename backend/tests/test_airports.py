@@ -895,3 +895,22 @@ def test_render_rejects_non_string_icao_with_validation_envelope(http_client):
         resp = http_client.post("/v1/airports/import", json={"icao": bad})
         assert resp.status_code == 422, bad
         assert resp.json()["error"]["code"] == "invalid_params", bad
+
+
+def test_crop_svg_to_content_gives_zero_canvas_margin():
+    from backend.airports.router import crop_svg_to_content
+
+    osm = {"runway": [], "taxiway": [[(19.252, 47.438), (19.259, 47.435)]],
+           "apron": [], "terminal": [], "hangar": []}
+    svg, _, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=[],
+        osm_geoms=osm, width=1000,
+    )
+    cropped = crop_svg_to_content(svg)
+    polys, w, h, _ = imaging.parse_svg_vectors(cropped.encode("utf-8"))
+    xs = [p[0] for poly in polys for p in poly]
+    ys = [p[1] for poly in polys for p in poly]
+    assert min(xs) < 0.01 and min(ys) < 0.01
+    assert abs(max(xs) - w) < 0.01 and abs(max(ys) - h) < 0.01
+    full_w = imaging.parse_svg_vectors(svg.encode("utf-8"))[1]
+    assert w < full_w  # built-in canvas margin is gone
