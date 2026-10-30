@@ -23,29 +23,25 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class DetectConfig:
-    # 32 kHz keeps the click band below Nyquist.
-    sample_rate: int = 32000
-    # STFT hop/window for the click envelope. 5 ms resolves the ~15 ms servo
-    # click and later the 80-100 ms pen-up pause.
+    # 48 kHz: the recordings' native rate; the tuned detector was validated at it.
+    sample_rate: int = 48000
+    # STFT hop/window. 5 ms resolves dense detail trains (~0.17 s apart) and
+    # later the 80-100 ms pen-up pause.
     hop_s: float = 0.005
-    window_s: float = 0.016
-    # Band carrying the servo click. Measured on vid1: clicks stand ~20 dB
-    # over plotting noise at 4-16 kHz but only ~12 dB at 2-4 kHz, where the
-    # steppers are loud. Below click_lo_hz is the motor band.
-    click_lo_hz: float = 4000.0
-    click_hi_hz: float = 14000.0
-    # Global gate: median + max(k_mad * MAD, min_rise_db) of the dB envelope,
-    # per file. On vid1 the MAD is ~4 dB because quiet set-up and busy
-    # plotting share one file, so k_mad stays low and the local gate below
-    # does most of the work.
-    k_mad: float = 3.0
-    min_rise_db: float = 8.0
-    # Local gate: a click is a transient, so it must stand this far above the
-    # median of the envelope within +-prominence_window_s. Robust to the
-    # level change between idle and plotting.
-    min_prominence_db: float = 10.0
-    prominence_window_s: float = 0.25
-    min_gap_s: float = 0.15
+    window_s: float = 0.02133  # 1024 samples at 48 kHz
+    # Servo band. The servo burst is strongest above 8 kHz; stepper tones and
+    # direction changes live below (a 2.5-14 kHz band fired on them).
+    band_lo_hz: float = 8000.0
+    band_hi_hz: float = 15000.0
+    # Running median over the band power; strips 1-2 frame spikes only.
+    tick_s: float = 0.025
+    # Moving average that shapes a burst into one hump.
+    smooth_s: float = 0.04
+    # Baseline: this percentile of the smoothed level within +-baseline_s.
+    baseline_s: float = 0.5
+    baseline_percentile: float = 20.0
+    min_prominence_db: float = 6.0
+    min_gap_s: float = 0.1
     ignore_before_s: float = 0.0
     ignore_after_s: float | None = None
 
@@ -106,12 +102,16 @@ def load(path: str | Path) -> Config:
         raise ConfigError("sources: required (path or glob list)")
 
     detect = _build(DetectConfig, raw.get("detect"), "detect")
-    if detect.k_mad <= 0 or detect.min_gap_s <= 0 or detect.hop_s <= 0:
-        raise ConfigError("detect: k_mad, min_gap_s and hop_s must be > 0")
+    if min(detect.min_gap_s, detect.hop_s, detect.smooth_s, detect.baseline_s) <= 0:
+        raise ConfigError("detect: min_gap_s, hop_s, smooth_s and baseline_s must be > 0")
+    if detect.tick_s < 0:
+        raise ConfigError("detect: tick_s must be >= 0")
     if detect.window_s < detect.hop_s:
         raise ConfigError("detect: window_s must be >= hop_s")
-    if not 0 < detect.click_lo_hz < detect.click_hi_hz <= detect.sample_rate / 2:
-        raise ConfigError("detect: need 0 < click_lo_hz < click_hi_hz <= Nyquist")
+    if not 0 <= detect.baseline_percentile <= 100:
+        raise ConfigError("detect: baseline_percentile must be within 0..100")
+    if not 0 < detect.band_lo_hz < detect.band_hi_hz <= detect.sample_rate / 2:
+        raise ConfigError("detect: need 0 < band_lo_hz < band_hi_hz <= Nyquist")
 
     out_dir = Path(raw.get("out_dir", "out")).expanduser()
     if not out_dir.is_absolute():

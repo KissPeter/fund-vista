@@ -4,16 +4,17 @@ sources: ["../../video/*.mp4"]   # ordered by container creation_time (fallback:
 out_dir: out
 
 detect:
-  sample_rate: 32000
+  sample_rate: 48000
   hop_s: 0.005          # envelope resolution
-  window_s: 0.016
-  click_lo_hz: 4000     # servo click band (~20 dB over plotting noise on vid1)
-  click_hi_hz: 14000
-  k_mad: 3.0            # global gate = median + max(k_mad * MAD, min_rise_db)
-  min_rise_db: 8.0
-  min_prominence_db: 10.0   # local gate: peak over median within +-window
-  prominence_window_s: 0.25
-  min_gap_s: 0.15       # two clicks closer than this count as one
+  window_s: 0.02133     # 1024 samples at 48 kHz
+  band_lo_hz: 8000      # servo burst band; motor tones and direction changes sit below
+  band_hi_hz: 15000
+  tick_s: 0.025         # running median; strips 1-2 frame spikes only
+  smooth_s: 0.04        # moving average shaping a burst into one hump
+  baseline_s: 0.5       # baseline window is +-baseline_s ...
+  baseline_percentile: 20   # ... at this percentile (low keeps dense detail trains visible)
+  min_prominence_db: 6.0
+  min_gap_s: 0.1        # events closer than this count as one
   ignore_before_s: 0.0
   ignore_after_s: null
 

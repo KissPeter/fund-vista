@@ -1,4 +1,4 @@
-"""Hand-check artefacts: envelope strip plot and a click-beep preview track."""
+"""Hand-check artefacts: envelope strip plot and an event-beep preview track."""
 
 from __future__ import annotations
 
@@ -13,15 +13,15 @@ from plotvid.audio import Detection
 ROW_S = 20.0  # seconds per strip row
 PX_PER_S = 100
 ROW_H = 220
-DB_SPAN = 60.0  # vertical range shown, anchored at the threshold
+DB_SPAN = 50.0  # vertical range shown, top anchored near the loudest band level
 
 BG = (255, 255, 255)
 GRID = (225, 225, 225)
-HF = (30, 30, 30)
-LF = (150, 150, 150)
+BAND = (30, 30, 30)
+LF = (170, 170, 170)
 THRESH = (210, 40, 40)
-MEDIAN = (240, 160, 160)
-CLICK = (30, 90, 220)
+BASE = (240, 160, 160)
+EVENT = (30, 90, 220)
 TEXT = (90, 90, 90)
 
 
@@ -37,12 +37,14 @@ def envelope_png(det: Detection, out: Path, title: str) -> None:
     font = ImageFont.load_default()
     draw.text(
         (8, 8),
-        f"{title}  clicks={len(det.clicks)}  median={det.median_db:.1f} dB  "
-        f"MAD={det.mad_db:.2f}  threshold={det.threshold_db:.1f} dB  "
-        f"(black: >cutoff, grey: motor band, blue: clicks)",
+        f"{title}  events={len(det.events)}  min prominence={det.min_prominence_db:.1f} dB  "
+        f"(black: servo band, pink: baseline, red: baseline+min, grey: motor band "
+        f"shifted to fit, blue: events)",
         fill=TEXT, font=font,
     )
-    top_db = det.threshold_db + 0.35 * DB_SPAN
+    top_db = float(np.percentile(env.band_db, 99.5)) + 3 if len(t) else 0.0
+    # Motor band is far louder; shift it so its median sits mid-plot.
+    lf_shift = (top_db - DB_SPAN / 2) - float(np.median(env.lf_db)) if len(t) else 0.0
 
     def y_of(db: np.ndarray | float, y0: int):
         frac = (top_db - np.asarray(db)) / DB_SPAN
@@ -56,32 +58,30 @@ def envelope_png(det: Detection, out: Path, title: str) -> None:
             x = x_of(s)
             draw.line([(x, y0 + 4), (x, y0 + ROW_H - 20)], fill=GRID)
             draw.text((x - 6, y0 + ROW_H - 16), f"{s}s", fill=TEXT, font=font)
-        for db, colour in ((det.median_db, MEDIAN), (det.threshold_db, THRESH)):
-            y = float(y_of(db, y0))
-            draw.line([(50, y), (x_of(t0 + ROW_S), y)], fill=colour)
-
         sel = (t >= t0) & (t < t0 + ROW_S)
         if sel.any():
             xs = x_of(t[sel])
-            for series, colour in ((env.lf_db, LF), (env.hf_db, HF)):
+            thr = env.baseline_db + det.min_prominence_db
+            for series, colour in ((env.lf_db + lf_shift, LF), (env.baseline_db, BASE),
+                                   (thr, THRESH), (env.band_db, BAND)):
                 ys = y_of(series[sel], y0)
                 draw.line(list(zip(xs.tolist(), ys.tolist())), fill=colour)
-        for c in det.clicks:
-            if t0 <= c.time_s < t0 + ROW_S:
-                x = x_of(c.time_s)
-                draw.line([(x, y0 + 4), (x, y0 + 14)], fill=CLICK, width=3)
-                draw.line([(x, y0 + 14), (x, y0 + ROW_H - 20)], fill=CLICK)
+        for ev in det.events:
+            if t0 <= ev.time_s < t0 + ROW_S:
+                x = x_of(ev.time_s)
+                draw.line([(x, y0 + 4), (x, y0 + 14)], fill=EVENT, width=3)
+                draw.line([(x, y0 + 14), (x, y0 + ROW_H - 20)], fill=EVENT)
     img.save(out)
 
 
 def beep_track(x: np.ndarray, sample_rate: int, det: Detection, out: Path) -> None:
-    """Stereo WAV: left = original audio, right = a short beep at each click."""
+    """Stereo WAV: left = original audio, right = a short beep at each event."""
     beep_len = int(0.03 * sample_rate)
     tt = np.arange(beep_len) / sample_rate
     beep = 0.5 * np.sin(2 * np.pi * 1500 * tt) * np.hanning(beep_len)
     right = np.zeros_like(x)
-    for c in det.clicks:
-        i = int(c.time_s * sample_rate)
+    for ev in det.events:
+        i = int(ev.time_s * sample_rate)
         j = min(len(right), i + beep_len)
         if i < j:
             right[i:j] += beep[: j - i]

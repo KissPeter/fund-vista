@@ -39,14 +39,13 @@ def run_detect(cfg: config.Config, preview: bool) -> int:
 
         with (out / "events.csv").open("w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(["index", "time_s", "timecode", "level_db", "rise_db",
-                        "prominence_db", "gap_s"])
+            w.writerow(["index", "time_s", "timecode", "level_db", "prominence_db", "gap_s"])
             prev = None
-            for i, c in enumerate(det.clicks):
-                gap = "" if prev is None else f"{c.time_s - prev:.3f}"
-                w.writerow([i, f"{c.time_s:.3f}", _timecode(c.time_s), f"{c.level_db:.1f}",
-                            f"{c.rise_db:.1f}", f"{c.prominence_db:.1f}", gap])
-                prev = c.time_s
+            for i, ev in enumerate(det.events):
+                gap = "" if prev is None else f"{ev.time_s - prev:.3f}"
+                w.writerow([i, f"{ev.time_s:.3f}", _timecode(ev.time_s), f"{ev.level_db:.1f}",
+                            f"{ev.prominence_db:.1f}", gap])
+                prev = ev.time_s
         debug.envelope_png(det, out / "envelope.png", info.path.name)
         if preview:
             wav = out / "beeps.wav"
@@ -64,18 +63,13 @@ def run_detect(cfg: config.Config, preview: bool) -> int:
             "rotation": info.rotation,
             "fps": info.fps,
             "detect": asdict(cfg.detect),
-            "median_db": det.median_db,
-            "mad_db": det.mad_db,
-            "threshold_db": det.threshold_db,
-            "clicks": len(det.clicks),
-            "first_click_s": det.clicks[0].time_s if det.clicks else None,
-            "last_click_s": det.clicks[-1].time_s if det.clicks else None,
+            "events": len(det.events),
+            "first_event_s": det.events[0].time_s if det.events else None,
+            "last_event_s": det.events[-1].time_s if det.events else None,
         }
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
         overview.append(summary)
-        print(f"[{order}] {info.path.name}: {len(det.clicks)} clicks, "
-              f"threshold {det.threshold_db:.1f} dB (median {det.median_db:.1f}, "
-              f"MAD {det.mad_db:.2f}) -> {out}")
+        print(f"[{order}] {info.path.name}: {len(det.events)} pen events -> {out}")
     (root / "overview.json").write_text(json.dumps(overview, indent=2))
     return 0
 
@@ -83,10 +77,10 @@ def run_detect(cfg: config.Config, preview: bool) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="plotvid", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    d = sub.add_parser("detect", help="detect pen clicks and write hand-check artefacts")
+    d = sub.add_parser("detect", help="detect pen events and write hand-check artefacts")
     d.add_argument("config", type=Path)
     d.add_argument("--preview", action="store_true",
-                   help="also write preview.mp4 with a beep at each detected click")
+                   help="also write preview.mp4 with a beep at each detected event")
     args = ap.parse_args(argv)
 
     for tool in ("ffmpeg", "ffprobe"):

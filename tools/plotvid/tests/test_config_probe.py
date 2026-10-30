@@ -41,7 +41,7 @@ def test_future_sections_kept_raw(tmp_path):
     ("plot: p\nsources: missing*.mp4\n", "nothing matches"),
     ("plot: p\nsources: a.mp4\ndetect: {k_mad: 3, bogus: 1}\n", "unknown keys"),
     ("plot: p\nsources: a.mp4\nwhatever: 1\n", "unknown top-level"),
-    ("plot: p\nsources: a.mp4\ndetect: {click_hi_hz: 20000}\n", "Nyquist"),
+    ("plot: p\nsources: a.mp4\ndetect: {band_hi_hz: 30000}\n", "Nyquist"),
 ])
 def test_invalid_configs(tmp_path, body, msg):
     (tmp_path / "a.mp4").touch()
