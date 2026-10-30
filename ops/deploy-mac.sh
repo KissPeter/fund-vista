@@ -20,7 +20,16 @@
 # uses the same /opt mount, so this is only a safety net).
 set -eu
 
-REPO="${FV_REPO:-/opt/fund-vista}"
+# The container sees the checkout at /opt/fund-vista; on the host it is
+# ~/srv/fund-vista. Pick whichever exists unless FV_REPO is set.
+if [ -z "${FV_REPO:-}" ]; then
+  if [ -d /opt/fund-vista/.git ]; then
+    FV_REPO=/opt/fund-vista
+  else
+    FV_REPO="$HOME/srv/fund-vista"
+  fi
+fi
+REPO="$FV_REPO"
 CONTAINER="fundvista"
 CANDIDATE="fundvista-next"
 IMAGE="fundvista"
