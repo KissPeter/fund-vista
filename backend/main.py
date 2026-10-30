@@ -29,6 +29,7 @@ from backend.jobs.router import router as jobs_router
 from backend.jobs.store import configure_jobs_redis
 from backend.traffic.cache import configure_traffic_redis
 from backend.traffic.router import router as traffic_router
+from backend.penplot.compose_sheet import router as compose_sheet_router
 from backend.penplot.errors import PenPlotError
 from backend.penplot.ratelimit import configure_redis
 from backend.http import tls
@@ -136,6 +137,8 @@ async def _request_id_middleware(request: Request, call_next):  # type: ignore[n
 # below (Starlette matches in registration order). The /penplot demo page
 # rides along here for the same reason.
 app.include_router(penplot_router)
+# Gallery sheet compose (POST /v1/compose-sheet): same /v1 prefix, same rule.
+app.include_router(compose_sheet_router)
 app.include_router(penplot_ui_router)
 # Async jobs (P3): /v1/jobs must win over the catch-all proxy as well.
 app.include_router(jobs_router)

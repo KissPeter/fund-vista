@@ -24,6 +24,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 | CR-006 | change request | Pydantic-owned input validation + tiny ops tools instead of inline python (issue #64) | done | 2026-10-21 |
 | CR-009 | change request | Mac disk-space guard + read-only-docker recovery runbook (issue #111) | done | 2026-10-26 |
 | F-006 | feature | Traffic map: country border on the Map layer, paper-fill viewport aspect, Detail (min. path length) | done | 2026-10-27 |
+| F-007 | feature | Gallery sheet compose on the backend (`POST /v1/compose-sheet`) | in progress | 2026-10-30 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
