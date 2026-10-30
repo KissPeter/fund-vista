@@ -36,6 +36,7 @@ INK_HEX: dict[str, str] = {
     "black": "#1a1a1a",
     "red": "#c0392b",
     "blue": "#2456a6",
+    "green": "#1e7a46",
     "white": "#ffffff",
 }
 
