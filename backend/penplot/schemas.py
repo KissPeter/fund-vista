@@ -20,7 +20,7 @@ Orientation = Literal["portrait", "landscape"]
 
 # Display-only pen color (physical pen). Allowlist enforced by
 # backgrounds.LINE_COLORS at render time; any value here must be a key there.
-LineColorName = Literal["black", "white", "red", "blue"]
+LineColorName = Literal["black", "white", "red", "blue", "green"]
 # Display-only page background (paper texture preview). Vendored files in
 # backend/penplot/backgrounds/ (white e-commerce frames pre-trimmed);
 # "none" is plain paper. Independent of line_color — any combination works.
@@ -399,7 +399,7 @@ class ConvertParams(BaseModel):
     line_color: LineColorName = Field(
         default="black",
         description=(
-            "Display pen color (black/white/red/blue). Preview + SVG stroke "
+            "Display pen color (black/white/red/blue/green). Preview + SVG stroke "
             "only; never affects geometry or stats. Independent of background."
         ),
     )

@@ -188,6 +188,10 @@ class ImportResponse(BaseModel):
     raw_counts: dict[str, int]
     attribution: str = ATTRIBUTION
     warnings: list[str] = Field(default_factory=list)
+    #: Crop box ``[x0, y0, x1, y1]`` of the stored image, in draft/render
+    #: coordinates (same space as ``/results/{token}``). Convert maps it
+    #: onto the final artwork extents. ``None`` when degenerate.
+    content_bbox: list[float] | None = None
 
 
 class SearchCandidate(BaseModel):

@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import math
 
+import pytest
+
 from backend.airports.cache import (
     airports_cache_key,
     cache_get,
@@ -914,3 +916,19 @@ def test_crop_svg_to_content_gives_zero_canvas_margin():
     assert abs(max(xs) - w) < 0.01 and abs(max(ys) - h) < 0.01
     full_w = imaging.parse_svg_vectors(svg.encode("utf-8"))[1]
     assert w < full_w  # built-in canvas margin is gone
+
+
+def test_content_bbox_matches_crop_viewbox():
+    from backend.airports.router import content_bbox, crop_svg_to_content
+
+    osm = {"runway": [], "taxiway": [[(19.252, 47.438), (19.259, 47.435)]],
+           "apron": [], "terminal": [], "hangar": []}
+    svg, _, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=[],
+        osm_geoms=osm, width=1000,
+    )
+    x0, y0, x1, y1 = content_bbox(svg)
+    cropped = crop_svg_to_content(svg)
+    import re
+    vb = [float(v) for v in re.search(r'viewBox="([^"]+)"', cropped).group(1).split()]
+    assert vb == pytest.approx([x0, y0, x1 - x0, y1 - y0], abs=1e-3)
