@@ -147,7 +147,9 @@ def test_healthz_reports_state(monkeypatch: pytest.MonkeyPatch, tmp_path: pathli
 
     readable = _fake_readable_bundle(tmp_path)
     monkeypatch.setattr(tls.certifi, "where", lambda: readable)
-    assert asyncio.run(health()) == {"status": "ok", "outbound_tls": "certifi"}
+    body = asyncio.run(health())
+    body.pop("backend")  # build stamp (test_version.py)
+    assert body == {"status": "ok", "outbound_tls": "certifi"}
 
     unreadable = _fake_unreadable_bundle(tmp_path)
     monkeypatch.setattr(tls.certifi, "where", lambda: unreadable)

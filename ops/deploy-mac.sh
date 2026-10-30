@@ -139,7 +139,10 @@ do_build() {
   if docker image inspect "$tag" >/dev/null 2>&1; then
     log "image $tag already built — reusing"
   else
-    docker build --label "fundvista.commit=$sha" -t "$tag" "$REPO" > "$logf" 2>&1 \
+    docker build --label "fundvista.commit=$sha" \
+      --build-arg "FUNDVISTA_VERSION=$(echo "$sha" | cut -c1-7)" \
+      --build-arg "FUNDVISTA_BUILT=$(date -u +%FT%TZ)" \
+      -t "$tag" "$REPO" > "$logf" 2>&1 \
       || fail "build failed — inspect $logf"
     docker image inspect "$tag" >/dev/null 2>&1 \
       || fail "build finished but $tag missing — inspect $logf"

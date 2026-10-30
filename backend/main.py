@@ -16,6 +16,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
+from backend.version import backend_built, backend_version
 from backend.citymap.cache import configure_citymap_redis
 from backend.citymap.router import router as citymap_router
 from backend.citymap.ui import ui_router as citymap_ui_router
@@ -130,7 +131,17 @@ async def _request_id_middleware(request: Request, call_next):  # type: ignore[n
     request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
     response = await call_next(request)
     response.headers["x-request-id"] = request_id
+    if request.url.path.startswith("/v1/"):
+        response.headers["x-backend-version"] = backend_version()
     return response
+
+
+@app.get("/v1/version")
+async def version(response: Response) -> Dict[str, Optional[str]]:
+    """Which backend build answers (the Mac primary and the cloud fallback
+    each report their own commit)."""
+    response.headers["cache-control"] = "no-store"
+    return {"backend": backend_version(), "built": backend_built()}
 
 
 # v1 pen-plot API first: specific routes must win over the catch-all proxy
@@ -222,15 +233,18 @@ async def _shutdown() -> None:
 async def health() -> Dict[str, str]:
     tls_status = tls.ca_status()
     if tls_status["certifi_readable"] == "yes":
-        return {"status": "ok", "outbound_tls": "certifi"}
+        return {"status": "ok", "outbound_tls": "certifi",
+                "backend": backend_version()}
     fallback = tls_status.get("fallback_bundle")
     if fallback:
         # Fallback keeps outbound HTTPS working; surface it so the image
         # gets rebuilt instead of silently running degraded.
         return {"status": "ok",
-                "outbound_tls": f"fallback:{fallback} (certifi unreadable)"}
+                "outbound_tls": f"fallback:{fallback} (certifi unreadable)",
+                "backend": backend_version()}
     return {"status": "degraded",
-            "outbound_tls": f"unreadable:{tls_status['certifi_path']}"}
+            "outbound_tls": f"unreadable:{tls_status['certifi_path']}",
+            "backend": backend_version()}
 
 
 async def _delete_cache_entry(client: "Redis", cache_key: str) -> None:

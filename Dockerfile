@@ -46,6 +46,13 @@ RUN pip install --upgrade pip && pip install ./backend
 COPY backend ./backend
 COPY main.py ./
 
+# Build stamp for GET /v1/version, X-Backend-Version and /healthz: the image
+# has no .git (.dockerignore), so ops/deploy-mac.sh passes the commit in.
+ARG FUNDVISTA_VERSION=
+ARG FUNDVISTA_BUILT=
+ENV FUNDVISTA_VERSION=${FUNDVISTA_VERSION} \
+    FUNDVISTA_BUILT=${FUNDVISTA_BUILT}
+
 # Overridden at run time via PENPLOT_DATA_DIR=/data (named volume).
 ENV PENPLOT_DATA_DIR=/data
 

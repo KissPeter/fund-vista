@@ -91,3 +91,16 @@ back out before it commits (see `docs/CR-005-mac-only-deployment.md`).
 - Image tags live in the local docker store only: `fundvista:mac`
   (rolling = live), `fundvista:mac-<short>` (per deploy),
   `fundvista:mac-prev` (rollback spare).
+
+## Build stamp (`GET /v1/version`)
+
+`GET /v1/version` returns `{"backend": "<7-char sha>", "built": "<ISO|null>"}`
+(`Cache-Control: no-store`); every `/v1/*` response carries
+`X-Backend-Version`, and `/healthz` includes `backend`. Source: env
+`FUNDVISTA_VERSION`, else `git rev-parse --short=7 HEAD`, else `dev`.
+
+- **Mac primary:** `ops/deploy-mac.sh` passes the commit and build time as
+  Docker build args (`FUNDVISTA_VERSION` / `FUNDVISTA_BUILT`).
+- **FastAPI Cloud fallback:** set `FUNDVISTA_VERSION=<sha>` (and optionally
+  `FUNDVISTA_BUILT`) as an app env var when running `fastapi deploy`; there
+  is no deploy file for it in this repo. Unset, it reports `dev`.
