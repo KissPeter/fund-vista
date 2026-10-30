@@ -490,6 +490,41 @@ def test_taxiway_refs_extract_draw_and_tick():
     assert 'id="taxiway-labels"' not in svg_min
 
 
+def test_label_helpers_clearance():
+    from backend.airports.render import (
+        _box_hits, _label_box, _pick_label_spot, _seg_hits_box,
+    )
+
+    vline = ((50.0, 0.0), (50.0, 100.0))
+    assert _seg_hits_box(vline, (40.0, 40.0, 60.0, 60.0))
+    assert not _seg_hits_box(vline, (51.0, 40.0, 60.0, 60.0))
+    assert not _seg_hits_box(((0.0, 0.0), (10.0, 10.0)), (20.0, 20.0, 30.0, 30.0))
+    # Spot ON the line is rejected in favour of the clear one beside it.
+    spot = _pick_label_spot([(50.0, 50.0), (80.0, 50.0)], 12.0, "B5", [vline])
+    assert spot == (80.0, 50.0)
+    assert _box_hits(_label_box(*spot, 12.0, "B5", 3.0), [vline]) == 0
+
+
+def test_taxiway_label_clear_of_its_taxiway_and_runway_ident_gapped():
+    import re
+
+    lo, la = 19.26, 47.43
+    way = [(lo, la + i * 0.0006) for i in range(8)]  # north-south taxiway
+    refs = [("B5", way)]
+    osm = {"runway": [], "taxiway": [way], "apron": [], "terminal": [], "hangar": []}
+    svg, _, _, _ = render_diagram(
+        airport=_airport(), runways=[], frequencies=[], osm_geoms=osm,
+        width=1000, layers=["taxiway"], taxiway_refs=refs, taxiway_labels=True,
+    )
+    d = re.search(r'id="osm-taxiways".*?<path d="([^"]+)"', svg, re.S).group(1)
+    pts = [tuple(map(float, m)) for m in re.findall(r"([\d.]+) ([\d.]+)", d)]
+    tx = re.search(r'<text x="([\d.]+)" y="([\d.]+)"[^>]*font-size="([\d.]+)"', svg)
+    cx, size = float(tx.group(1)), float(tx.group(3))
+    line_x = pts[0][0]
+    # Label ink starts at least a pad away from the taxiway centerline.
+    assert abs(cx - line_x) - len("B5") * size * 0.62 / 2 > size * 0.2
+
+
 def test_effective_radius_covers_runway_ends():
     """The ARP can sit kilometers from the far threshold (LHBP 13R ~3.7 km
     out) — the fetch radius must expand to cover the ends, never shrink."""
@@ -953,3 +988,26 @@ def test_crop_svg_carries_the_import_revision():
         assert crop_svg_to_content(svg) != cropped
     finally:
         airports_router.IMPORT_REVISION -= 1
+
+
+def test_runway_ident_keeps_gap_to_strip_end_and_off_roads():
+    import re
+
+    base, _, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway_row()], frequencies=[], width=1000,
+        osm_geoms={"runway": [], "taxiway": [], "apron": [], "terminal": [], "hangar": []},
+    )
+    idents = re.findall(
+        r'<text x="([\d.]+)" y="([\d.]+)"[^>]*font-size="([\d.]+)"[^>]*>([^<]+)</text>', base,
+    )
+    assert idents
+    ends = re.findall(r'<path d="M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)"/>',
+                      base.split('id="runways"')[1].split("</g>")[0])
+    mid = ends[len(ends) // 2]  # centerline infill path (frac 0)
+    xs, ys = [float(mid[0]), float(mid[2])], [float(mid[1]), float(mid[3])]
+    for x, y, size, _ in idents:
+        size = float(size)
+        x, y = float(x), float(y) - size * 0.35  # baseline -> centre
+        dist = min(math.hypot(x - ex, y - ey) for ex, ey in zip(xs, ys))
+        # Centre sits a full glyph height past the strip end (was ~0.7).
+        assert dist > size * 1.1

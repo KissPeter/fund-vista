@@ -48,6 +48,40 @@ from backend.http import fnum
 # Version of the rendered output, baked into the SVG cache key so clients
 # never see a stale layout. Derived from this file's own source: EVERY code
 # change busts the cache automatically, no manual bump to forget.
+def _taxiway_label_spot(
+    pts: list[tuple[float, float]], size: float, text: str, segs: list[Seg], in_frame,
+) -> tuple[float, float]:
+    """Centre for a taxiway designator: beside the route, never on it.
+
+    Samples a few spots along the polyline and tries both sides at two
+    distances; the first padded box clear of every drawn line wins.
+    """
+    lens = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:])]
+    total = sum(lens) or 1.0
+    hw = len(text) * size * _LABEL_CHAR_W / 2.0
+    hh = size * _LABEL_HALF_H
+    cands: list[tuple[float, float]] = []
+    for frac in (0.5, 0.35, 0.65, 0.2, 0.8):
+        target, acc = total * frac, 0.0
+        for (a, b), ln in zip(zip(pts, pts[1:]), lens):
+            if acc + ln >= target and ln > 0:
+                t = (target - acc) / ln
+                x, y = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
+                nx, ny = -(b[1] - a[1]) / ln, (b[0] - a[0]) / ln
+                reach = hw * abs(nx) + hh * abs(ny) + size * _LABEL_PAD
+                for dist in (reach + size * 0.25, reach + size * 1.0):
+                    for side in (1.0, -1.0):
+                        c = (x + nx * dist * side, y + ny * dist * side)
+                        if in_frame(*c):
+                            cands.append(c)
+                break
+            acc += ln
+    if not cands:
+        mid = pts[len(pts) // 2]
+        return mid
+    return _pick_label_spot(cands, size, text, segs)
+
+
 @lru_cache(maxsize=1)
 def render_source_version() -> str:
     return hashlib.sha1(
@@ -74,6 +108,74 @@ _PAGE_ASPECT = 297.0 / 210.0  # A4 portrait h/w
 # visible gaps once printed, so the pitch is ~3× finer now.)
 _RUNWAY_WIDTH_EXAGGERATE = 2.0
 _RUNWAY_INFILL_FRACS = tuple(-1.0 + 2.0 * i / 24 for i in range(25))
+
+# Label clearance: a plotted label must not share ink with the geometry
+# around it (the pen would draw the glyphs straight over a road/taxiway and
+# the text becomes unreadable). Boxes are estimated from the monospace
+# advance; padding keeps a hairline of paper between text and lines.
+_LABEL_CHAR_W = 0.62  # monospace advance / font-size
+_LABEL_HALF_H = 0.40  # half the ink height / font-size (centred label)
+_LABEL_PAD = 0.25  # clear paper around a label, in font-sizes
+
+Seg = tuple[tuple[float, float], tuple[float, float]]
+Box = tuple[float, float, float, float]
+
+
+def _label_box(cx: float, cy: float, size: float, text: str, pad: float = 0.0) -> Box:
+    """Axis-aligned ink box of a label centred on (cx, cy), grown by `pad`."""
+    hw = len(text) * size * _LABEL_CHAR_W / 2.0 + pad
+    hh = size * _LABEL_HALF_H + pad
+    return (cx - hw, cy - hh, cx + hw, cy + hh)
+
+
+def _seg_hits_box(seg: Seg, box: Box) -> bool:
+    """Liang-Barsky: does the segment touch the axis-aligned box?"""
+    (x0, y0), (x1, y1) = seg
+    xmin, ymin, xmax, ymax = box
+    if max(x0, x1) < xmin or min(x0, x1) > xmax or max(y0, y1) < ymin or min(y0, y1) > ymax:
+        return False
+    dx, dy = x1 - x0, y1 - y0
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, x0 - xmin), (dx, xmax - x0), (-dy, y0 - ymin), (dy, ymax - y0)):
+        if p == 0.0:
+            if q < 0.0:
+                return False
+            continue
+        t = q / p
+        if p < 0.0:
+            if t > t1:
+                return False
+            t0 = max(t0, t)
+        else:
+            if t < t0:
+                return False
+            t1 = min(t1, t)
+    return True
+
+
+def _box_hits(box: Box, segs: list[Seg]) -> int:
+    return sum(1 for seg in segs if _seg_hits_box(seg, box))
+
+
+def _box_edges(box: Box) -> list[Seg]:
+    xmin, ymin, xmax, ymax = box
+    return [((xmin, ymin), (xmax, ymin)), ((xmax, ymin), (xmax, ymax)),
+            ((xmax, ymax), (xmin, ymax)), ((xmin, ymax), (xmin, ymin))]
+
+
+def _pick_label_spot(
+    cands: list[tuple[float, float]], size: float, text: str, segs: list[Seg],
+) -> tuple[float, float]:
+    """First candidate centre whose padded box is free of `segs`; else the
+    least-crossed one (candidates are ordered best-first)."""
+    best, best_hits = cands[0], None
+    for cx, cy in cands:
+        hits = _box_hits(_label_box(cx, cy, size, text, size * _LABEL_PAD), segs)
+        if hits == 0:
+            return cx, cy
+        if best_hits is None or hits < best_hits:
+            best, best_hits = (cx, cy), hits
+    return best
 
 
 def _esc(text: object) -> str:
@@ -386,6 +488,9 @@ def render_diagram(
     # NOTE: no frequency strip either — frequencies travel in the API
     # responses and page copy; the artwork is pure diagram geometry.
 
+    # Every drawn line segment (SVG space): labels are placed clear of them.
+    obstacles: list[Seg] = []
+
     # -- surrounding context first (faintest, under the airfield) ---------
     def clipped_d(world_poly: list[tuple[float, float]], close: bool) -> list[str]:
         """Map world → SVG, cut at the diagram frame, return path strings."""
@@ -397,6 +502,9 @@ def render_diagram(
             seqs = _clip_open(pts)
         out = []
         for seq in seqs:
+            obstacles.extend(zip(seq, seq[1:]))
+            if close:
+                obstacles.append((seq[-1], seq[0]))
             d = f"M {seq[0][0]:.2f} {seq[0][1]:.2f} " + " ".join(
                 f"L {x:.2f} {y:.2f}" for x, y in seq[1:]
             )
@@ -501,11 +609,14 @@ def render_diagram(
         if best:
             parts.append('<g id="taxiway-labels" fill="none">')
             for ref in sorted(best):
-                mx, my = W2S(*best[ref][1][len(best[ref][1]) // 2])
+                pts = [W2S(*p) for p in best[ref][1]]
+                mx, my = pts[len(pts) // 2]
                 if not _in_frame(mx, my):
                     continue
+                cx, cy = _taxiway_label_spot(pts, text_h, ref, obstacles, _in_frame)
+                obstacles.extend(_box_edges(_label_box(cx, cy, text_h, ref)))
                 parts.append(
-                    f'<text x="{mx:.2f}" y="{my:.2f}" text-anchor="middle" '
+                    f'<text x="{cx:.2f}" y="{cy + text_h * 0.35:.2f}" text-anchor="middle" '
                     f'font-family="monospace" data-stroke-font="hershey" font-size="{text_h:.1f}" '
                     f'stroke="none" fill="#000000">{_esc(ref)}</text>'
                 )
@@ -548,12 +659,25 @@ def render_diagram(
                     parts.append(
                         f"<path d=\"M {ax_:.2f} {ay_:.2f} L {bx_:.2f} {by_:.2f}\"/>"
                     )
-            # Ident label just past the threshold.
-            off_ident = half_band + text_h * 1.2
-            ix, iy = px + ux * end_sign * off_ident, py + uy * end_sign * off_ident
+            # Ident label past the threshold, with a gap to the strip end and
+            # pushed further out / sideways until it is clear of roads.
+            isz = text_h * 1.4
+            hw_t = len(ident) * isz * _LABEL_CHAR_W / 2.0
+            hh_t = isz * _LABEL_HALF_H
+            reach = hw_t * abs(ux) + hh_t * abs(uy)  # half-extent along the axis
+            # Never closer than before (band half-width + 1.2 glyphs), and at
+            # least one glyph of clear paper between strip end and label.
+            base = max(half_band + text_h * 1.2, reach + text_h * 1.0)
+            cands = [
+                (px + ux * end_sign * (base + k * text_h * 0.6) + nx * lat,
+                 py + uy * end_sign * (base + k * text_h * 0.6) + ny * lat)
+                for k in range(6) for lat in (0.0, text_h * 1.2, -text_h * 1.2)
+            ]
+            ix, iy = _pick_label_spot(cands, isz, ident, obstacles)
+            obstacles.extend(_box_edges(_label_box(ix, iy, isz, ident)))
             parts.append(
-                f'<text x="{ix:.2f}" y="{iy + text_h * 0.35:.2f}" text-anchor="middle" '
-                f'font-family="monospace" data-stroke-font="hershey" font-size="{text_h * 1.4:.1f}" '
+                f'<text x="{ix:.2f}" y="{iy + isz * 0.35:.2f}" text-anchor="middle" '
+                f'font-family="monospace" data-stroke-font="hershey" font-size="{isz:.1f}" '
                 f'stroke="none" fill="#000000">{_esc(ident)}</text>'
             )
     if show_runway:
