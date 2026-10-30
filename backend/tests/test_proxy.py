@@ -491,5 +491,7 @@ class TestHealthzContract:
         # certifi readable in the test env → happy shape only; the degraded
         # "fallback:..." / "unreadable:..." variants are unit-covered in
         # test_tls_cabundle.py (they cannot be observed over this socket).
-        assert resp.json() == {"status": "ok", "outbound_tls": "certifi"}
+        body = resp.json()
+        assert isinstance(body.pop("backend"), str)  # build stamp (test_version.py)
+        assert body == {"status": "ok", "outbound_tls": "certifi"}
         assert resp.headers["content-type"] == "application/json"
