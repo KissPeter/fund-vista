@@ -51,8 +51,8 @@ from backend.http import fnum
 # change busts the cache automatically, no manual bump to forget.
 def _taxiway_label_spot(
     pts: list[tuple[float, float]], size: float, text: str, segs: list[Seg], in_frame, pad: float, fits=None, hard: list[Seg] | None = None,
-) -> tuple[float, float]:
-    """Ink centre for a taxiway designator: beside the route, never on it.
+) -> tuple[float, float] | None:
+    """Ink centre for a taxiway designator, or None when nothing is clear: beside the route, never on it.
 
     Samples a few spots along the polyline and tries both sides at two
     distances; the first padded box clear of every drawn line wins.
@@ -78,8 +78,9 @@ def _taxiway_label_spot(
                 break
             acc += ln
     if not cands:
-        return pts[len(pts) // 2]
-    return _place_label(text, size, cands, segs, pad, fits, radius=size * 3.0, hard=hard)
+        return None
+    return _place_label(text, size, cands, segs, pad, fits, radius=size * 3.0, hard=hard,
+                        require_clear=True)
 
 
 @lru_cache(maxsize=1)
@@ -169,29 +170,11 @@ def _label_attrs(cx: float, cy: float, size: float, text: str) -> tuple[float, f
     return cx - dx * size, cy - dy * size
 
 
-# A taxiway way with at least this share of its points inside apron/terminal
-# outlines is an apron lane: its ref is not drawn.
-_APRON_LANE_SHARE = 0.9
-
-
-def _inside_areas_share(
-    poly: list[tuple[float, float]], rings: list[list[tuple[float, float]]],
-) -> float:
-    """Share of `poly`'s vertices and edge midpoints inside any closed ring."""
-    if not rings or not poly:
-        return 0.0
-    probes = list(poly) + [((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
-                           for a, b in zip(poly, poly[1:])]
-
-    def inside(pt: tuple[float, float], ring: list[tuple[float, float]]) -> bool:
-        x, y = pt
-        hit = False
-        for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
-            if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
-                hit = not hit
-        return hit
-
-    return sum(any(inside(p, r) for r in rings) for p in probes) / len(probes)
+def _label_order(lengths: dict[str, float]) -> list[str]:
+    """Placement priority for designators: longest route first (the major
+    taxiways claim clear paper before apron lanes), ties by ref — never by
+    input order, so the output is deterministic."""
+    return sorted(lengths, key=lambda r: (-lengths[r], r))
 
 
 def _seg_hits_box(seg: Seg, box: Box) -> bool:
@@ -232,15 +215,17 @@ def _box_edges(box: Box) -> list[Seg]:
 def _place_label(
     text: str, size: float, cands: list[tuple[float, float]], segs: list[Seg],
     pad: float, fits=None, keepout: Box | None = None, radius: float = 0.0,
-    hard: list[Seg] | None = None,
-) -> tuple[float, float]:
+    hard: list[Seg] | None = None, require_clear: bool = False,
+) -> tuple[float, float] | None:
     """Ink-centre for a label that sits in a white box of `pad` paper around it.
 
     Prefers a spot where the padded box crosses no drawn line (ordered
     `cands`, then a distance-sorted grid within `radius`), relaxing the pad
     to half and none; if every spot crosses something, the first candidate
-    wins and the caller knocks the crossing lines out of the box. Spots
-    must stay in the frame (`fits`) and out of `keepout`.
+    wins and the caller knocks the crossing lines out of the box — unless
+    `require_clear`, which never relaxes below half the pad and returns
+    ``None`` when no spot is clear. Spots must stay in the frame (`fits`)
+    and out of `keepout`.
     """
     x0, y0 = cands[0]
     step = max(size * 0.5, 1.0)
@@ -254,16 +239,22 @@ def _place_label(
             key=lambda c: math.hypot(c[0] - x0, c[1] - y0),
         )
     hw_u, hh_u, _, _ = _ink_metrics(text)
-    reach = max(hw_u, hh_u) * size * 1.3 + radius + pad
-    window = (x0 - reach, y0 - reach, x0 + reach, y0 + reach)
+    # Window covers EVERY spot we may test (far candidates included) plus the
+    # label's own extent and pad: a segment outside it cannot touch any box.
+    reach = max(hw_u, hh_u) * size + pad + 1.0
+    xs = [c[0] for c in cands] + [x0 - radius, x0 + radius]
+    ys = [c[1] for c in cands] + [y0 - radius, y0 + radius]
+    window = (min(xs) - reach, min(ys) - reach, max(xs) + reach, max(ys) + reach)
     near = [sg for sg in segs if _seg_hits_box(sg, window)]
     hard_near = [sg for sg in (hard or []) if _seg_hits_box(sg, window)]
     spots = [c for c in cands + grid if _spot_ok(c, text, size, fits, keepout)
              and _box_hits(_label_box(c[0], c[1], size, text, pad), hard_near) == 0]
-    for pad_f in (pad, pad * 0.5, 0.0):
+    for pad_f in ((pad, pad * 0.5) if require_clear else (pad, pad * 0.5, 0.0)):
         for cx, cy in spots:
             if _box_hits(_label_box(cx, cy, size, text, pad_f), near) == 0:
                 return cx, cy
+    if require_clear:
+        return None
     return next(iter(spots), cands[0])
 
 
@@ -781,44 +772,48 @@ def render_diagram(
     # One label per designator (OSM splits ways arbitrarily): keep the
     # longest surviving way so the ref sits on the major stretch. A ref
     # draws iff its way survives the min-detail filter, the taxiway layer
-    # is selected, and the midpoint lands in frame. Ways lying (almost)
-    # entirely inside an apron/terminal outline are apron lanes (OSM tags
-    # them aeroway=taxiway with gate-like refs such as P1/H2): no label.
+    # is selected, and the midpoint lands in frame. Declutter: longer
+    # routes place first, and a designator that finds no clear paper (its
+    # padded box would cross a line or another label — apron lanes with
+    # gate-like refs such as P1/H2 live in exactly that clutter) is dropped,
+    # never forced. Runway idents are the opposite: always drawn, lines cut.
     if taxiway_labels and "taxiway" in selected and taxiway_refs:
         best: dict[str, tuple[float, list[tuple[float, float]]]] = {}
-        apron_rings = [r for cls in ("apron", "terminal") for r in osm_r.get(cls, [])]
         for ref, lonlat in taxiway_refs:
             kept = _project_polys([lonlat], closed=False)
             if not kept:
                 continue
             poly = kept[0]
-            if _inside_areas_share(poly, apron_rings) >= _APRON_LANE_SHARE:
-                continue  # apron service lane, not a taxiway designator
             length = sum(
                 math.hypot(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1])
                 for i in range(1, len(poly))
             )
             if ref not in best or length > best[ref][0]:
                 best[ref] = (length, poly)
-        if best:
+        lines: list[str] = []
+        for ref in _label_order({r: ln for r, (ln, _) in best.items()}):
+            pts = [W2S(*p) for p in best[ref][1]]
+            mx, my = pts[len(pts) // 2]
+            if not _in_frame(mx, my):
+                continue
+            spot = _taxiway_label_spot(
+                pts, text_h, ref, obstacles, _in_frame, label_pad, _box_in_frame,
+                runway_hard)
+            if spot is None:
+                continue  # no clear paper: decluttered
+            lx, ly = spot
+            lsz = text_h
+            label_boxes.append(_label_box(lx, ly, lsz, ref, label_pad))
+            obstacles.extend(_box_edges(_label_box(lx, ly, lsz, ref)))
+            tx, ty = _label_attrs(lx, ly, lsz, ref)
+            lines.append(
+                f'<text x="{tx:.2f}" y="{ty:.2f}" text-anchor="middle" '
+                f'font-family="monospace" data-stroke-font="hershey" font-size="{lsz:.1f}" '
+                f'stroke="none" fill="#000000">{_esc(ref)}</text>'
+            )
+        if lines:
             parts.append('<g id="taxiway-labels" fill="none">')
-            for ref in sorted(best):
-                pts = [W2S(*p) for p in best[ref][1]]
-                mx, my = pts[len(pts) // 2]
-                if not _in_frame(mx, my):
-                    continue
-                lx, ly = _taxiway_label_spot(
-                    pts, text_h, ref, obstacles, _in_frame, label_pad, _box_in_frame,
-                    runway_hard)
-                lsz = text_h
-                label_boxes.append(_label_box(lx, ly, lsz, ref, label_pad))
-                obstacles.extend(_box_edges(_label_box(lx, ly, lsz, ref)))
-                tx, ty = _label_attrs(lx, ly, lsz, ref)
-                parts.append(
-                    f'<text x="{tx:.2f}" y="{ty:.2f}" text-anchor="middle" '
-                    f'font-family="monospace" data-stroke-font="hershey" font-size="{lsz:.1f}" '
-                    f'stroke="none" fill="#000000">{_esc(ref)}</text>'
-                )
+            parts.extend(lines)
             parts.append("</g>")
 
     # -- badges (ident) + displaced-threshold ticks -------------------------

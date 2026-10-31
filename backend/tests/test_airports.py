@@ -1020,3 +1020,39 @@ def test_runway_ident_keeps_gap_to_strip_end_and_off_roads():
         dist = min(math.hypot(x - ex, y - ey) for ex, ey in zip(xs, ys))
         # Centre sits a full glyph height past the strip end (was ~0.7).
         assert dist > size * 1.1
+
+
+def test_place_label_far_candidates_are_checked_against_every_line():
+    """Regression: the nearby-segment prefilter was centred on the first
+    candidate, so a far candidate looked clear. Every spot is tested."""
+    from backend.airports.render import _place_label
+
+    blocked_first = ((-50.0, 0.0), (50.0, 0.0))
+    blocked_far = ((450.0, 0.0), (550.0, 0.0))
+    cands = [(0.0, 0.0), (500.0, 0.0)]
+    assert _place_label("B5", 12.0, cands, [blocked_first, blocked_far], pad=4.0,
+                        require_clear=True) is None
+    # Without the far line the far spot is the answer.
+    assert _place_label("B5", 12.0, cands, [blocked_first], pad=4.0,
+                        require_clear=True) == (500.0, 0.0)
+    # Not require_clear: first candidate wins when everything is crossed.
+    assert _place_label("B5", 12.0, cands, [blocked_first, blocked_far], pad=4.0) == (0.0, 0.0)
+
+
+def test_ink_metrics_match_the_real_hershey_converter():
+    """The label box must be the ink the plotter really draws (y = glyph top,
+    cap height == font-size, ~0.69 font-size per char)."""
+    from backend.airports.render import _ink_metrics
+    from backend.penplot.svg_vector import parse_svg_vectors
+
+    for text in ("13L", "31R", "B5", "M30", "A8", "P"):
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400"><text x="200" '
+               f'y="100" text-anchor="middle" data-stroke-font="hershey" font-size="20">{text}</text></svg>')
+        polys, _, _, _ = parse_svg_vectors(svg.encode())
+        xs = [x for p in polys for x, _ in p]
+        ys = [y for p in polys for _, y in p]
+        hw, hh, dx, dy = _ink_metrics(text)
+        assert abs((max(xs) - min(xs)) / 2 - hw * 20) < 0.5, text
+        assert abs((max(ys) - min(ys)) / 2 - hh * 20) < 0.5, text
+        assert abs((max(xs) + min(xs)) / 2 - (200 + dx * 20)) < 0.5, text
+        assert abs((max(ys) + min(ys)) / 2 - (100 + dy * 20)) < 0.5, text

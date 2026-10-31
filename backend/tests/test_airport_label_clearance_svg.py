@@ -150,8 +150,8 @@ def test_runway_ident_gap_to_strip_end():
 
 def test_dense_clutter_labels_get_a_white_box():
     """Airport-independent: even where a mesh of roads covers every possible
-    spot, the labels stay readable — lines are cut out of a padded box around
-    each label (a 'white background'), and only there."""
+    spot, the runway idents stay readable — lines are cut out of a padded box
+    around each (a 'white background'), and only there."""
     mesh = []
     for i in range(-40, 41):
         mesh.append([_offset(LE, -300, i * 12.0), _offset(HE, 300, i * 12.0)])  # along
@@ -167,7 +167,9 @@ def test_dense_clutter_labels_get_a_white_box():
     svg, _, _, _ = render_diagram(**kw, context_geoms={"roads": mesh})
     geo, labels = _analyse(svg)
     pad = 1000 * 2.5 / 210.0
-    assert {"13L", "31R", "B5"} <= set(labels)
+    # Runway idents are never dropped; the taxiway ref finds no clear paper in
+    # a mesh this dense and is decluttered instead of being forced.
+    assert {"13L", "31R"} <= set(labels) and "B5" not in labels, set(labels)
     strip = svg.split('id="runways"')[1].split("</g>")[0]
     n_strip = len(re.findall(r"<path", strip))
     assert n_strip == len(re.findall(r"<path", plain.split('id="runways"')[1].split("</g>")[0]))
@@ -189,24 +191,123 @@ def _runway_segs(svg):
     return out
 
 
-def test_apron_lane_refs_are_not_labelled():
-    """Gate-like refs (P1, H2…) on ways lying inside an apron outline are apron
-    lanes, not taxiways: no label. A real taxiway crossing/outside keeps its ref;
-    a ref that also has a way outside the apron is labelled on that way."""
-    apron = [_offset(LE, 100, -150), _offset(LE, 100, 150), _offset(LE, 500, 150),
-             _offset(LE, 500, -150), _offset(LE, 100, -150)]
-    lane = [_offset(LE, 200, -100), _offset(LE, 400, -100)]        # fully inside
-    lane2 = [_offset(LE, 220, 60), _offset(LE, 420, 60)]           # fully inside
-    twy = [_offset(LE, -200, -400), _offset(LE, 700, -400)]        # outside
-    mixed_in = [_offset(LE, 250, 0), _offset(LE, 350, 0)]          # inside…
-    mixed_out = [_offset(LE, 600, -300), _offset(LE, 900, -300)]   # …and outside
-    osm = {"runway": [], "taxiway": [lane, lane2, twy, mixed_in, mixed_out],
-           "apron": [apron], "terminal": [], "hangar": []}
-    refs = [("P1", lane), ("H2", lane2), ("B5", twy), ("A1", mixed_in), ("A1", mixed_out)]
+def _taxi_render(osm_taxiways, refs, *, ctx=None, extra_osm=None, **kw):
+    """Render taxiways (+optional context roads) with labels on; return svg."""
+    osm = {"runway": [], "taxiway": osm_taxiways, "apron": [], "terminal": [], "hangar": []}
+    osm.update(extra_osm or {})
     svg, _, _, _ = render_diagram(
-        airport=_airport(), runways=[_runway()], frequencies=[], osm_geoms=osm, width=1000,
-        layers=["taxiway", "apron"], taxiway_refs=refs, taxiway_labels=True,
+        airport=_airport(), runways=[_runway()], frequencies=[], osm_geoms=osm,
+        context_geoms=ctx, width=1000, layers=kw.pop("layers", [*AIRFIELD_LAYERS, *CONTEXT_CLASSES]),
+        taxiway_refs=refs, taxiway_labels=True, **kw,
     )
+    return svg
+
+
+def _frame_of(svg):
+    m = re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
+    return float(m.group(1)), float(m.group(2))
+
+
+def _outer():
+    # Long outer taxiway (unlabelled: no ref entry) so runway ends have frame margin.
+    return [_offset(LE, -250, 250), _offset(HE, 250, 250)]
+
+
+def test_open_space_labels_all_drawn_with_clear_paper():
+    ways = {"B1": [_offset(LE, 150, -60), _offset(LE, 700, -60)],
+            "C2": [_offset(LE, 380, -250), _offset(LE, 380, -80)],
+            "D3": [_offset(LE, 100, 120), _offset(LE, 600, 120)]}
+    svg = _taxi_render([*ways.values(), _outer()], list(ways.items()))
+    geo, labels = _analyse(svg)
+    pad = 1000 * 2.5 / 210.0
+    assert set(ways) <= set(labels), set(labels)
+    for ref in ways:
+        # Taxiway refs are only ever placed on clear paper: >= half the pad,
+        # never needing a knock-out, from every drawn line (runway included).
+        assert _clearance(labels[ref], geo) >= pad * 0.45, ref
+    w, h = _frame_of(svg)
+    for name, segs in labels.items():
+        x0, y0, x1, y1 = _bbox(segs)
+        assert x0 >= 0 and y0 >= 0 and x1 <= w and y1 <= h, name
+
+
+def test_cluttered_refs_are_dropped_not_forced():
+    """A ref whose every candidate spot would cross a line (apron-lane clutter)
+    is decluttered; the clear taxiway keeps its label."""
+    clear = [_offset(LE, 150, -60), _offset(LE, 700, -60)]
+    lane = [_offset(LE, 300, 100), _offset(LE, 500, 100)]
+    # Closely spaced parallel lanes (a stand field) all around the lane.
+    field = [[_offset(LE, 250, 20 + i * 6.0), _offset(LE, 560, 20 + i * 6.0)] for i in range(0, 60)]
+    svg = _taxi_render([clear, lane, *field, _outer()], [("B1", clear), ("P1", lane)])
     _, labels = _analyse(svg)
-    names = set(labels) - {"13L", "31R"}
-    assert names == {"B5", "A1"}, names
+    assert "B1" in labels
+    assert "P1" not in labels
+    # No knock-out scar either: a dropped label leaves the lane field intact.
+    field_only = _taxi_render([clear, lane, *field, _outer()], [("B1", clear)])
+    assert svg.count("<path") == field_only.count("<path")
+
+
+def test_isolated_apron_lane_keeps_its_label():
+    """The overlay check is per-label, not a blanket rule on 'apron-looking'
+    refs: a lane with clear paper around it is still labelled."""
+    lane = [_offset(LE, 300, 100), _offset(LE, 500, 100)]
+    apron = [_offset(LE, 200, 0), _offset(LE, 200, 250), _offset(LE, 600, 250),
+             _offset(LE, 600, 0), _offset(LE, 200, 0)]
+    svg = _taxi_render([lane, _outer()], [("P1", lane)], extra_osm={"apron": [apron]})
+    _, labels = _analyse(svg)
+    assert "P1" in labels
+
+
+ROUTE_Y = -200  # metres off the runway axis: free paper on both sides of the route
+
+
+def _pocket_walls(gap_lo, gap_hi, step=5):
+    """Cross-lines filling both sides of a route except one 'pocket' beside it."""
+    walls = []
+    for a in range(150, 701, step):
+        walls.append([_offset(LE, a, ROUTE_Y - 3), _offset(LE, a, ROUTE_Y - 160)])
+        if not gap_lo <= a <= gap_hi:
+            walls.append([_offset(LE, a, ROUTE_Y + 3), _offset(LE, a, ROUTE_Y + 120)])
+    return walls
+
+def test_label_priority_is_longest_route_then_ref():
+    from backend.airports.render import _label_order
+
+    assert _label_order({"S9": 40.0, "L1": 500.0, "M2": 40.0, "A1": 200.0}) == ["L1", "A1", "M2", "S9"]
+    assert _label_order({"B": 1.0, "A": 1.0}) == ["A", "B"]
+
+
+def test_contested_pocket_gets_exactly_one_label_deterministically():
+    """Two designators on the same route share the only free pocket: exactly
+    one is drawn (never both stacked, never a forced overlap), the same one
+    whatever order the refs arrive in."""
+    way = [_offset(LE, 150, ROUTE_Y), _offset(LE, 700, ROUTE_Y)]
+    geo = [way, *_pocket_walls(385, 465), _outer()]
+    runs = [
+        _taxi_render(geo, [("L3", way), ("L2", way)]),
+        _taxi_render(geo, [("L2", way), ("L3", way)]),
+    ]
+    assert runs[0] == runs[1]
+    _, labels = _analyse(runs[0])
+    drawn = set(labels) - {"13L", "31R"}
+    assert drawn == {"L2"}, drawn  # tie on length -> the smaller ref, once
+    geo_segs, _ = _analyse(runs[0])
+    assert _clearance(labels["L2"], geo_segs) >= 1000 * 2.5 / 210.0 * 0.45
+
+def test_longer_route_beats_a_shorter_one_for_the_only_pocket():
+    long_way = [_offset(LE, 150, ROUTE_Y), _offset(LE, 700, ROUTE_Y)]
+    short_way = [_offset(LE, 300, ROUTE_Y), _offset(LE, 550, ROUTE_Y)]
+    geo = [long_way, short_way, *_pocket_walls(385, 465), _outer()]
+    for refs in ([("L3", long_way), ("L2", short_way)], [("L2", short_way), ("L3", long_way)]):
+        _, labels = _analyse(_taxi_render(geo, refs))
+        # L2 would win the tie-break by name; L3 wins because its route is longer.
+        assert set(labels) - {"13L", "31R"} == {"L3"}, set(labels)
+
+
+def test_runway_idents_always_drawn_even_in_total_clutter():
+    mesh = [[_offset(LE, -400, i * 5.0), _offset(HE, 400, i * 5.0)] for i in range(-120, 121)]
+    mesh += [[_offset(LE, j * 5.0 - 400, -600), _offset(LE, j * 5.0 - 400, 600)] for j in range(0, 400)]
+    svg = _taxi_render([_outer()], [], ctx={"roads": mesh})
+    _, labels = _analyse(svg)
+    assert {"13L", "31R"} <= set(labels)
+
