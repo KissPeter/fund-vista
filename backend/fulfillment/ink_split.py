@@ -13,9 +13,13 @@ filtering by documented group ids** — no renderer changes (shop #1079):
 - empty layers (no drawn children) produce **nothing**.
 
 The splitter is byte-preserving: kept groups are carried verbatim, only the
-``stroke=`` of a carried group's open tag is re-pointed at the pass's ink hex
-(``RUNWAY_INK_HEX`` in the shop's ``src/lib/runway.ts`` is the canonical
-palette — mirrored here as ``INK_HEX`` so a pass is internally consistent).
+``stroke=`` of a carried group's open tag is re-pointed at ``ARTIFACT_STROKE``.
+The ink lives in the pass's **name** only (``ink``, the file name the shop
+stores): every pass file is drawn in black, whatever its ink, so a white-ink
+pass on blue/black paper is not invisible on a white screen or printout. The
+owner swaps the pen per file; the plotter takes the pen from the file, not the
+stroke color (``INK_HEX`` mirrors the shop's ``RUNWAY_INK_HEX`` palette and
+names the valid inks; it is no longer written into the files).
 Unknown group ids default to the Pen ink, so a renderer that grows a new
 layer can never strand ink outside a pass.
 
@@ -31,7 +35,9 @@ import hashlib
 from dataclasses import dataclass, field
 
 #: Plotter ink hexes — the shop's ``RUNWAY_INK_HEX`` (issue #938) plus white
-#: (electric-blue paper's single ink). The pass files are re-stroked to these.
+#: (electric-blue paper's single ink). The keys are the valid ink names; the
+#: hexes are the buyer-facing display palette and are NOT written into the
+#: pass files (see ``ARTIFACT_STROKE``).
 INK_HEX: dict[str, str] = {
     "black": "#1a1a1a",
     "red": "#c0392b",
@@ -39,6 +45,11 @@ INK_HEX: dict[str, str] = {
     "green": "#1e7a46",
     "white": "#ffffff",
 }
+
+#: The stroke every pass file is drawn in, whatever its ink. Only the file name
+#: carries the pen color (owner decision): white-pen files would otherwise be
+#: invisible when opened on a white background.
+ARTIFACT_STROKE = "#000000"
 
 #: Airport draft groups that belong to the runway layer — the shop's
 #: ``RUNWAY_GROUP_IDS`` (``src/lib/airportSvgTint.ts``, "live backend shape";
@@ -77,8 +88,9 @@ class InkFile:
 
     @property
     def hex(self) -> str:
-        """The pass's stroke color (``INK_HEX``; empty ink = unstyled)."""
-        return INK_HEX.get(self.ink, "")
+        """The pass's stroke color: always ``ARTIFACT_STROKE`` (the ink is
+        the name); empty for an unknown ink = unstyled."""
+        return ARTIFACT_STROKE if self.ink in INK_HEX else ""
 
 
 def airport_group_ink(group_id: str, pen_ink: str, runway_ink: str | None) -> str:
@@ -188,12 +200,12 @@ def _group_id(open_tag: str) -> str:
 
 
 def _restroke(open_tag: str, hex_color: str) -> str:
-    """Point a group open tag's ``stroke=`` at the pass's ink hex.
+    """Point a group open tag's ``stroke=`` at the pass's stroke hex
+    (``ARTIFACT_STROKE``: black for every ink).
 
     Every renderer group carries ``stroke="..."``; a group without one gets
     the attribute injected right after ``<g`` so the pass stays internally
-    consistent (the plotter reads one file per pen, the convert tints by
-    ``line_color``).
+    consistent (the plotter reads one file per pen, named by its ink).
     """
     marker = 'stroke="'
     at = open_tag.find(marker)
@@ -236,7 +248,7 @@ def split_by_ink(svg_text: str, group_ink) -> list[InkFile]:
 
     files: list[InkFile] = []
     for ink in order:
-        hex_color = INK_HEX.get(ink, "")
+        hex_color = ARTIFACT_STROKE  # the ink is the file name, never the stroke
         parts: list[str] = [root]
         layers: list[str] = []
         for open_tag, maybe_body in passes[ink]:

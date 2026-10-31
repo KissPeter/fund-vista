@@ -19,6 +19,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import re
 import socket
 import tempfile
 import threading
@@ -228,11 +229,17 @@ def test_groups_merge_in_source_order_and_files_carry_root():
     assert len(files[0].layers) == 8
 
 
-def test_carried_groups_are_restroked_to_the_pass_hex():
-    files = ink_split.split_by_ink(FULL_TRAFFIC, lambda gid: "blue")
-    body = files[0].svg
-    assert 'stroke="#2456a6"' in body
-    assert 'stroke="#8a6d3b"' not in body  # the old pen default is gone
+def test_carried_groups_are_restroked_black_whatever_the_ink():
+    """Only the file name carries the pen color: every pass is stroked
+    #000000 (a white pass would be invisible on a white background)."""
+    for ink in ("blue", "white", "red", "green", "black"):
+        files = ink_split.split_by_ink(FULL_TRAFFIC, lambda gid, ink=ink: ink)
+        assert [f.ink for f in files] == [ink]
+        body = files[0].svg
+        assert 'stroke="#000000"' in body
+        strokes = set(re.findall(r'stroke="([^"]*)"', body))
+        assert strokes == {"#000000"}, (ink, strokes)
+        assert files[0].hex == "#000000"
     # Group attributes otherwise verbatim (inkscape labels survive).
     assert 'inkscape:label="Motorways"' in body
 
@@ -559,7 +566,7 @@ def test_ink_split_refuses_an_unplottable_pass(live, monkeypatch):
 def test_green_is_an_accepted_ink_everywhere():
     """Green is the fourth ink of the shop's white-paper pen matrix (shop
     #923/#1078): a green runway, layer pick or Pen is a valid order, and the
-    pass is re-stroked to the shop's green hex."""
+    pass keeps the ink name (the file is stroked black)."""
     from backend.fulfillment.schemas import InkAssignment
 
     inks = InkAssignment(pen="green", runway="green")
