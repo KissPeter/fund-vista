@@ -169,6 +169,31 @@ def _label_attrs(cx: float, cy: float, size: float, text: str) -> tuple[float, f
     return cx - dx * size, cy - dy * size
 
 
+# A taxiway way with at least this share of its points inside apron/terminal
+# outlines is an apron lane: its ref is not drawn.
+_APRON_LANE_SHARE = 0.9
+
+
+def _inside_areas_share(
+    poly: list[tuple[float, float]], rings: list[list[tuple[float, float]]],
+) -> float:
+    """Share of `poly`'s vertices and edge midpoints inside any closed ring."""
+    if not rings or not poly:
+        return 0.0
+    probes = list(poly) + [((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+                           for a, b in zip(poly, poly[1:])]
+
+    def inside(pt: tuple[float, float], ring: list[tuple[float, float]]) -> bool:
+        x, y = pt
+        hit = False
+        for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
+            if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+                hit = not hit
+        return hit
+
+    return sum(any(inside(p, r) for r in rings) for p in probes) / len(probes)
+
+
 def _seg_hits_box(seg: Seg, box: Box) -> bool:
     """Liang-Barsky: does the segment touch the axis-aligned box?"""
     (x0, y0), (x1, y1) = seg
@@ -756,14 +781,19 @@ def render_diagram(
     # One label per designator (OSM splits ways arbitrarily): keep the
     # longest surviving way so the ref sits on the major stretch. A ref
     # draws iff its way survives the min-detail filter, the taxiway layer
-    # is selected, and the midpoint lands in frame.
+    # is selected, and the midpoint lands in frame. Ways lying (almost)
+    # entirely inside an apron/terminal outline are apron lanes (OSM tags
+    # them aeroway=taxiway with gate-like refs such as P1/H2): no label.
     if taxiway_labels and "taxiway" in selected and taxiway_refs:
         best: dict[str, tuple[float, list[tuple[float, float]]]] = {}
+        apron_rings = [r for cls in ("apron", "terminal") for r in osm_r.get(cls, [])]
         for ref, lonlat in taxiway_refs:
             kept = _project_polys([lonlat], closed=False)
             if not kept:
                 continue
             poly = kept[0]
+            if _inside_areas_share(poly, apron_rings) >= _APRON_LANE_SHARE:
+                continue  # apron service lane, not a taxiway designator
             length = sum(
                 math.hypot(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1])
                 for i in range(1, len(poly))

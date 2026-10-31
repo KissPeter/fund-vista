@@ -187,3 +187,26 @@ def _runway_segs(svg):
     for m in re.findall(r'<path d="M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)"/>', strip):
         out.add(((float(m[0]), float(m[1])), (float(m[2]), float(m[3]))))
     return out
+
+
+def test_apron_lane_refs_are_not_labelled():
+    """Gate-like refs (P1, H2…) on ways lying inside an apron outline are apron
+    lanes, not taxiways: no label. A real taxiway crossing/outside keeps its ref;
+    a ref that also has a way outside the apron is labelled on that way."""
+    apron = [_offset(LE, 100, -150), _offset(LE, 100, 150), _offset(LE, 500, 150),
+             _offset(LE, 500, -150), _offset(LE, 100, -150)]
+    lane = [_offset(LE, 200, -100), _offset(LE, 400, -100)]        # fully inside
+    lane2 = [_offset(LE, 220, 60), _offset(LE, 420, 60)]           # fully inside
+    twy = [_offset(LE, -200, -400), _offset(LE, 700, -400)]        # outside
+    mixed_in = [_offset(LE, 250, 0), _offset(LE, 350, 0)]          # inside…
+    mixed_out = [_offset(LE, 600, -300), _offset(LE, 900, -300)]   # …and outside
+    osm = {"runway": [], "taxiway": [lane, lane2, twy, mixed_in, mixed_out],
+           "apron": [apron], "terminal": [], "hangar": []}
+    refs = [("P1", lane), ("H2", lane2), ("B5", twy), ("A1", mixed_in), ("A1", mixed_out)]
+    svg, _, _, _ = render_diagram(
+        airport=_airport(), runways=[_runway()], frequencies=[], osm_geoms=osm, width=1000,
+        layers=["taxiway", "apron"], taxiway_refs=refs, taxiway_labels=True,
+    )
+    _, labels = _analyse(svg)
+    names = set(labels) - {"13L", "31R"}
+    assert names == {"B5", "A1"}, names
