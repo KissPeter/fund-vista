@@ -73,7 +73,9 @@ jobs:
           # trigger any workflow run.
           GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
           AUTOMERGE_TOKEN_SOURCE: ${{ secrets.AUTOMERGE_TOKEN && 'pat' || 'bot' }}
-          AUTOMERGE_MERGE_METHOD: merge
+          # `main` requires linear history (branch protection), so a merge
+          # commit is refused by GitHub: squash is the linear method.
+          AUTOMERGE_MERGE_METHOD: squash
           # The gate workflows and the jobs that must be green in each of
           # them. A workflow with a path filter that did not run for a PR is
           # not counted.
