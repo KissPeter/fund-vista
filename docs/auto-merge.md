@@ -111,7 +111,10 @@ run. That has two consequences:
 - the other PRs do not get their new CI run against the new `main`.
 
 The sweep handles both by dispatching the gate workflows by hand
-whenever it merged with the `GITHUB_TOKEN`. A dispatch **cannot** target a
+whenever it merged with the `GITHUB_TOKEN`. It also dispatches the gate for a
+PR that has no green run against the current `main` (a green run on the head
+against an older `main` does not count), and skips that PR in this sweep; a
+later sweep merges it once the verdict is in. A dispatch **cannot** target a
 PR merge ref (`--ref refs/pull/<n>/merge` answers `No ref found`), so the
 gate workflows take the input `pr_number=<n>`:
 

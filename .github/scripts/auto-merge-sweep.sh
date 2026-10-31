@@ -438,17 +438,23 @@ decide_pr() {
     required="$(gate_workflow_jobs "$entry")"
     run_id="$(fresh_ci_run "$workflow" "$head_sha" "$ref_sha")"
     if [ -z "$run_id" ]; then
-      # No native run against the current main. With a PAT the runs come
-      # back on their own; with the GITHUB_TOKEN the sweep asks for them
-      # (dispatch_ci_for_pr) and reads the verdict from the commit status.
+      # No native run against the current main (a green run on the head
+      # against an older main does not count). The sweep dispatches the gate
+      # for the current merge ref itself and merges on a later sweep, once
+      # the verdict is in.
       verdict="$(merge_ref_verdict "$(merge_ref_status "$head_sha" "automerge/merge-ref/$workflow")" "$ref_sha")"
       case "$verdict" in
         green)
           gate_found=1
           gate_detail="the dispatched $workflow gate is green on the current merge ref"
           ;;
-        stale)
-          echo "skip|the dispatched $workflow gate tested another merge ref"
+        none | stale)
+          if active_run_for_sha "$ref_sha" || active_run_for_sha "$head_sha"; then
+            echo "skip|the $workflow gate is still running"
+            return 0
+          fi
+          dispatch_ci_for_pr "$workflow" "$number" || true
+          echo "skip|dispatched the $workflow gate on the current merge ref; a later sweep merges"
           return 0
           ;;
         red)
