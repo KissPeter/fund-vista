@@ -10,13 +10,13 @@ import re
 from backend.airports.overpass import CONTEXT_CLASSES
 from backend.airports.render import render_diagram
 from backend.airports.schemas import AIRFIELD_LAYERS
+from backend.penplot.svg_vector import parse_svg_vectors
 
 LAT0, LON0 = 47.4369, 19.2556
 M_LAT = 1 / 111_000.0
 M_LON = 1 / (111_000.0 * math.cos(math.radians(LAT0)))
 LE = (19.2510, 47.4395)
 HE = (19.2602, 47.4342)
-CHAR_W, HALF_H, PAD = 0.62, 0.40, 0.25  # same label model as the renderer
 
 
 def _airport():
@@ -63,78 +63,86 @@ def _mock_render():
     )
 
 
-def _parse(svg):
-    """(segments of every drawn path, [(text, cx, cy, size)])."""
-    segs = []
-    for d in re.findall(r'<path d="([^"]+)"', svg):
-        pts = [(float(x), float(y)) for x, y in re.findall(r"(-?[\d.]+) (-?[\d.]+)", d)]
-        segs += list(zip(pts, pts[1:]))
-        if d.rstrip().endswith("Z"):
-            segs.append((pts[-1], pts[0]))
-    labels = []
-    for x, y, size, text in re.findall(
-        r'<text x="(-?[\d.]+)" y="(-?[\d.]+)"[^>]*font-size="([\d.]+)"[^>]*>([^<]+)</text>', svg
-    ):
-        size = float(size)
-        labels.append((text, float(x), float(y) - size * 0.35, size))  # baseline → centre
-    return segs, labels
+TEXT_RE = re.compile(r"<text\b[^>]*>[^<]*</text>")
 
 
-def _hits(seg, box):
-    (x0, y0), (x1, y1) = seg
-    xmin, ymin, xmax, ymax = box
-    t0, t1 = 0.0, 1.0
-    for p, q in ((-(x1 - x0), x0 - xmin), (x1 - x0, xmax - x0),
-                 (-(y1 - y0), y0 - ymin), (y1 - y0, ymax - y0)):
-        if p == 0:
-            if q < 0:
-                return False
-            continue
-        t = q / p
-        if p < 0:
-            t0 = max(t0, t)
-        else:
-            t1 = min(t1, t)
-        if t0 > t1:
-            return False
-    return True
+def _strokes(svg_body, head):
+    """Real plotter strokes (Hershey text included) for an SVG fragment."""
+    polys, _, _, _ = parse_svg_vectors((head + svg_body + "</svg>").encode())
+    return polys
 
 
-def _box(text, cx, cy, size, pad=0.0):
-    hw = len(text) * size * CHAR_W / 2 + pad
-    hh = size * HALF_H + pad
-    return (cx - hw, cy - hh, cx + hw, cy + hh)
+def _analyse(svg):
+    """(geometry segments, {label: its single-stroke segments}) from the SVG
+    text itself, run through the same vectorizer the plotter pipeline uses."""
+    head = svg[: svg.index(">") + 1]
+    geometry = TEXT_RE.sub("", svg)
+    geo_polys, _, _, _ = parse_svg_vectors(geometry.encode())
+    geo = [seg for poly in geo_polys for seg in zip(poly, poly[1:])]
+    labels = {}
+    for t in TEXT_RE.findall(svg):
+        name = re.search(r">([^<]*)<", t).group(1)
+        polys = _strokes(t, head)
+        labels[name] = [seg for poly in polys for seg in zip(poly, poly[1:])]
+    return geo, labels
+
+
+def _seg_dist(a, b):
+    """Min distance between two segments (touching/crossing → 0)."""
+    def cross(o, p, q):
+        return (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+
+    (p1, p2), (p3, p4) = a, b
+    if cross(p1, p2, p3) * cross(p1, p2, p4) < 0 and cross(p3, p4, p1) * cross(p3, p4, p2) < 0:
+        return 0.0
+
+    def pt_seg(pt, s0, s1):
+        dx, dy = s1[0] - s0[0], s1[1] - s0[1]
+        n = dx * dx + dy * dy
+        t = 0.0 if n == 0 else max(0.0, min(1.0, ((pt[0] - s0[0]) * dx + (pt[1] - s0[1]) * dy) / n))
+        return math.hypot(pt[0] - (s0[0] + t * dx), pt[1] - (s0[1] + t * dy))
+
+    return min(pt_seg(p1, *b), pt_seg(p2, *b), pt_seg(p3, *a), pt_seg(p4, *a))
+
+
+def _clearance(label_segs, geo):
+    return min(_seg_dist(l, g) for l in label_segs for g in geo)
+
+
+def _bbox(segs):
+    xs = [x for s in segs for x, _ in s]
+    ys = [y for s in segs for _, y in s]
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def test_no_label_touches_any_drawn_line():
     svg, _, _, _ = _mock_render()
-    segs, labels = _parse(svg)
-    texts = {t for t, *_ in labels}
-    assert {"13L", "31R", "B5", "C1"} <= texts, texts
-    for text, cx, cy, size in labels:
-        box = _box(text, cx, cy, size, pad=size * 0.1)  # very minor padding
-        crossed = [s for s in segs if _hits(s, box)]
-        assert not crossed, f"{text} ink box overlaps {len(crossed)} drawn segment(s): {crossed[:2]}"
+    geo, labels = _analyse(svg)
+    assert {"13L", "31R", "B5", "C1"} <= set(labels), set(labels)
+    for name, segs in labels.items():
+        # Pen-width scale paper gap between glyph strokes and any drawn line.
+        assert _clearance(segs, geo) >= 2.0, f"{name} is {_clearance(segs, geo):.2f} units from a drawn line"
 
 
 def test_labels_do_not_overlap_each_other():
     svg, _, _, _ = _mock_render()
-    _, labels = _parse(svg)
-    boxes = [(t, _box(t, cx, cy, s)) for t, cx, cy, s in labels]
-    for i, (ta, a) in enumerate(boxes):
-        for tb, b in boxes[i + 1:]:
-            assert a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1], (ta, tb)
+    _, labels = _analyse(svg)
+    names = sorted(labels)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            assert _clearance(labels[a], labels[b]) >= 2.0, (a, b)
 
 
 def test_runway_ident_gap_to_strip_end():
     svg, _, _, _ = _mock_render()
-    _, labels = _parse(svg)
+    geo, labels = _analyse(svg)
     strip = svg.split('id="runways"')[1].split("</g>")[0]
     paths = re.findall(r'<path d="M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)"/>', strip)
-    centre = paths[len(paths) // 2]  # centerline infill path
-    ends = [(float(centre[0]), float(centre[1])), (float(centre[2]), float(centre[3]))]
-    idents = [(t, cx, cy, s) for t, cx, cy, s in labels if t in ("13L", "31R")]
-    assert len(idents) == 2
-    for text, cx, cy, size in idents:
-        gap = min(math.hypot(cx - ex, cy - ey) for ex, ey in ends) - size * HALF_H
-        assert gap >= size * 0.5, f"{text}: only {gap:.1f} units between strip end and ink"
+    xs = [float(p[0]) for p in paths] + [float(p[2]) for p in paths]
+    ys = [float(p[1]) for p in paths] + [float(p[3]) for p in paths]
+    band = [((min(xs), min(ys)), (max(xs), min(ys))), ((min(xs), min(ys)), (min(xs), max(ys))),
+            ((max(xs), min(ys)), (max(xs), max(ys))), ((min(xs), max(ys)), (max(xs), max(ys)))]
+    for name in ("13L", "31R"):
+        size = float(re.search(r'font-size="([\d.]+)"[^>]*>%s<' % name, svg).group(1))
+        # At least a glyph's worth of paper between runway band and ident ink.
+        assert _clearance(labels[name], band) >= size * 0.5, name

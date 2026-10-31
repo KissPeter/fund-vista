@@ -49,7 +49,7 @@ from backend.http import fnum
 # never see a stale layout. Derived from this file's own source: EVERY code
 # change busts the cache automatically, no manual bump to forget.
 def _taxiway_label_spot(
-    pts: list[tuple[float, float]], size: float, text: str, segs: list[Seg], in_frame,
+    pts: list[tuple[float, float]], size: float, text: str, segs: list[Seg], in_frame, fits=None,
 ) -> tuple[float, float]:
     """Centre for a taxiway designator: beside the route, never on it.
 
@@ -58,8 +58,8 @@ def _taxiway_label_spot(
     """
     lens = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:])]
     total = sum(lens) or 1.0
-    hw = len(text) * size * _LABEL_CHAR_W / 2.0
-    hh = size * _LABEL_HALF_H
+    hw_u, hh_u, _, _ = _ink_metrics(text)
+    hw, hh = hw_u * size, hh_u * size
     cands: list[tuple[float, float]] = []
     for frac in (0.5, 0.35, 0.65, 0.2, 0.8):
         target, acc = total * frac, 0.0
@@ -77,9 +77,8 @@ def _taxiway_label_spot(
                 break
             acc += ln
     if not cands:
-        mid = pts[len(pts) // 2]
-        return mid
-    return _pick_label_spot(cands, size, text, segs)
+        return pts[len(pts) // 2]
+    return _pick_label_spot(cands, size, text, segs, fits)
 
 
 @lru_cache(maxsize=1)
@@ -113,19 +112,59 @@ _RUNWAY_INFILL_FRACS = tuple(-1.0 + 2.0 * i / 24 for i in range(25))
 # around it (the pen would draw the glyphs straight over a road/taxiway and
 # the text becomes unreadable). Boxes are estimated from the monospace
 # advance; padding keeps a hairline of paper between text and lines.
-_LABEL_CHAR_W = 0.62  # monospace advance / font-size
-_LABEL_HALF_H = 0.40  # half the ink height / font-size (centred label)
 _LABEL_PAD = 0.25  # clear paper around a label, in font-sizes
 
 Seg = tuple[tuple[float, float], tuple[float, float]]
 Box = tuple[float, float, float, float]
 
 
+@lru_cache(maxsize=256)
+def _ink_metrics(text: str) -> tuple[float, float, float, float]:
+    """True ink extents of `text` in the plotter's Hershey face, in
+    font-sizes, for ``text-anchor="middle"`` at the (x, y) attributes:
+    ``(half_w, half_h, centre_dx, centre_dy)`` — the ink centre sits at
+    (x + centre_dx*size, y + centre_dy*size). Mirrors the layout of
+    ``svg_vector._hershey_text_to_polylines`` (y is the TOP of the glyphs,
+    cap height == font-size), so boxes match what the pen draws.
+    """
+    from backend.penplot.labels import _resolve_face
+
+    cap, space_adv, glyphs = _resolve_face("futural", list(text))
+    unit = max(cap, 1e-9)
+    adv = sum(space_adv if ch == " " else (glyphs.get(ch) or {"advance": 0.0})["advance"]
+              for ch in text)
+    cursor = -adv / 2.0
+    xs: list[float] = []
+    ys: list[float] = []
+    for ch in text:
+        if ch == " ":
+            cursor += space_adv
+            continue
+        g = glyphs.get(ch)
+        if g is None:
+            continue
+        for stroke in g["lines"]:
+            for gx, gy in stroke:
+                xs.append((cursor + gx) / unit)
+                ys.append(gy / unit)
+        cursor += g["advance"]
+    if not xs:
+        return (0.3 * max(len(text), 1), 0.5, 0.0, 0.5)
+    return ((max(xs) - min(xs)) / 2.0, (max(ys) - min(ys)) / 2.0,
+            (max(xs) + min(xs)) / 2.0, (max(ys) + min(ys)) / 2.0)
+
+
 def _label_box(cx: float, cy: float, size: float, text: str, pad: float = 0.0) -> Box:
-    """Axis-aligned ink box of a label centred on (cx, cy), grown by `pad`."""
-    hw = len(text) * size * _LABEL_CHAR_W / 2.0 + pad
-    hh = size * _LABEL_HALF_H + pad
-    return (cx - hw, cy - hh, cx + hw, cy + hh)
+    """Ink box of a label whose ink is centred on (cx, cy), grown by `pad`."""
+    hw, hh, _, _ = _ink_metrics(text)
+    return (cx - hw * size - pad, cy - hh * size - pad,
+            cx + hw * size + pad, cy + hh * size + pad)
+
+
+def _label_attrs(cx: float, cy: float, size: float, text: str) -> tuple[float, float]:
+    """SVG (x, y) attributes that put the label's ink centre on (cx, cy)."""
+    _, _, dx, dy = _ink_metrics(text)
+    return cx - dx * size, cy - dy * size
 
 
 def _seg_hits_box(seg: Seg, box: Box) -> bool:
@@ -165,16 +204,21 @@ def _box_edges(box: Box) -> list[Seg]:
 
 def _pick_label_spot(
     cands: list[tuple[float, float]], size: float, text: str, segs: list[Seg],
+    fits=None,
 ) -> tuple[float, float]:
-    """First candidate centre whose padded box is free of `segs`; else the
-    least-crossed one (candidates are ordered best-first)."""
-    best, best_hits = cands[0], None
+    """First candidate centre whose padded box is free of `segs` (and inside
+    the frame when `fits` says so); else the least-crossed one, preferring
+    in-frame spots. Candidates are ordered best-first."""
+    best, best_cost = cands[0], None
     for cx, cy in cands:
-        hits = _box_hits(_label_box(cx, cy, size, text, size * _LABEL_PAD), segs)
-        if hits == 0:
+        box = _label_box(cx, cy, size, text, size * _LABEL_PAD)
+        inside = fits is None or fits(_label_box(cx, cy, size, text))
+        hits = _box_hits(box, segs)
+        if hits == 0 and inside:
             return cx, cy
-        if best_hits is None or hits < best_hits:
-            best, best_hits = (cx, cy), hits
+        cost = hits + (0 if inside else 1000)
+        if best_cost is None or cost < best_cost:
+            best, best_cost = (cx, cy), cost
     return best
 
 
@@ -466,6 +510,9 @@ def render_diagram(
     def _in_frame(x: float, y: float) -> bool:
         return _CX0 <= x <= _CX1 and _CY0 <= y <= _CY1
 
+    def _box_in_frame(box: Box) -> bool:
+        return _CX0 <= box[0] and box[2] <= _CX1 and _CY0 <= box[1] and box[3] <= _CY1
+
     # -- stroke weights (preview only; hierarchy survives via geometry) ----
     runway_w = max(6.0, width / 130.0)
     taxi_w = max(1.2, width / 700.0)
@@ -613,10 +660,12 @@ def render_diagram(
                 mx, my = pts[len(pts) // 2]
                 if not _in_frame(mx, my):
                     continue
-                lx, ly = _taxiway_label_spot(pts, text_h, ref, obstacles, _in_frame)
+                lx, ly = _taxiway_label_spot(
+                    pts, text_h, ref, obstacles, _in_frame, _box_in_frame)
                 obstacles.extend(_box_edges(_label_box(lx, ly, text_h, ref)))
+                tx, ty = _label_attrs(lx, ly, text_h, ref)
                 parts.append(
-                    f'<text x="{lx:.2f}" y="{ly + text_h * 0.35:.2f}" text-anchor="middle" '
+                    f'<text x="{tx:.2f}" y="{ty:.2f}" text-anchor="middle" '
                     f'font-family="monospace" data-stroke-font="hershey" font-size="{text_h:.1f}" '
                     f'stroke="none" fill="#000000">{_esc(ref)}</text>'
                 )
@@ -662,21 +711,21 @@ def render_diagram(
             # Ident label past the threshold, with a gap to the strip end and
             # pushed further out / sideways until it is clear of roads.
             isz = text_h * 1.4
-            hw_t = len(ident) * isz * _LABEL_CHAR_W / 2.0
-            hh_t = isz * _LABEL_HALF_H
-            reach = hw_t * abs(ux) + hh_t * abs(uy)  # half-extent along the axis
+            hw_u, hh_u, _, _ = _ink_metrics(ident)
+            reach = hw_u * isz * abs(ux) + hh_u * isz * abs(uy)  # half-extent along the axis
             # Never closer than before (band half-width + 1.2 glyphs), and at
             # least one glyph of clear paper between strip end and label.
             base = max(half_band + text_h * 1.2, reach + text_h * 1.0)
             cands = [
-                (px + ux * end_sign * (base + k * text_h * 0.6) + nx * lat,
-                 py + uy * end_sign * (base + k * text_h * 0.6) + ny * lat)
-                for k in range(6) for lat in (0.0, text_h * 1.2, -text_h * 1.2)
+                (px + ux * end_sign * (base + k * text_h * 0.6) + nx * lat * text_h,
+                 py + uy * end_sign * (base + k * text_h * 0.6) + ny * lat * text_h)
+                for k in range(10) for lat in (0.0, 1.2, -1.2, 2.4, -2.4)
             ]
-            ix, iy = _pick_label_spot(cands, isz, ident, obstacles)
+            ix, iy = _pick_label_spot(cands, isz, ident, obstacles, _box_in_frame)
             obstacles.extend(_box_edges(_label_box(ix, iy, isz, ident)))
+            tx, ty = _label_attrs(ix, iy, isz, ident)
             parts.append(
-                f'<text x="{ix:.2f}" y="{iy + isz * 0.35:.2f}" text-anchor="middle" '
+                f'<text x="{tx:.2f}" y="{ty:.2f}" text-anchor="middle" '
                 f'font-family="monospace" data-stroke-font="hershey" font-size="{isz:.1f}" '
                 f'stroke="none" fill="#000000">{_esc(ident)}</text>'
             )
