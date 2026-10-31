@@ -51,6 +51,7 @@ from backend.http import fnum
 # change busts the cache automatically, no manual bump to forget.
 def _taxiway_label_spot(
     pts: list[tuple[float, float]], size: float, text: str, segs: list[Seg], in_frame, pad: float, fits=None, hard: list[Seg] | None = None,
+    apart: list[tuple[float, float]] | None = None, min_apart: float = 0.0,
 ) -> tuple[float, float] | None:
     """Ink centre for a taxiway designator, or None when nothing is clear: beside the route, never on it.
 
@@ -80,7 +81,7 @@ def _taxiway_label_spot(
     if not cands:
         return None
     return _place_label(text, size, cands, segs, pad, fits, radius=size * 3.0, hard=hard,
-                        require_clear=True)
+                        require_clear=True, tiers=_TAXI_PAD_TIERS, apart=apart, min_apart=min_apart)
 
 
 @lru_cache(maxsize=1)
@@ -116,6 +117,12 @@ _RUNWAY_INFILL_FRACS = tuple(-1.0 + 2.0 * i / 24 for i in range(25))
 # advance; padding keeps a hairline of paper between text and lines.
 _LABEL_PAD_MM = 2.5  # white margin around a label box (page mm); lines are cut here
 _PAGE_MM_W = 210.0  # A4 portrait width the 1000-unit canvas maps to
+# Taxiway designators are decluttered harder than idents (which are always drawn):
+# a ref needs this much clear paper (never relaxed) and this gap to other labels.
+_TAXI_PAD_MM = 2.5
+_LABEL_GAP_MM = 0.0
+_LABEL_SPACING_MM = 12.0  # min centre-to-centre distance between two taxiway designators
+_TAXI_PAD_TIERS = (1.0,)  # no half-pad fallback for designators
 
 Seg = tuple[tuple[float, float], tuple[float, float]]
 Box = tuple[float, float, float, float]
@@ -216,6 +223,8 @@ def _place_label(
     text: str, size: float, cands: list[tuple[float, float]], segs: list[Seg],
     pad: float, fits=None, keepout: Box | None = None, radius: float = 0.0,
     hard: list[Seg] | None = None, require_clear: bool = False,
+    tiers: tuple[float, ...] = (1.0, 0.5),
+    apart: list[tuple[float, float]] | None = None, min_apart: float = 0.0,
 ) -> tuple[float, float] | None:
     """Ink-centre for a label that sits in a white box of `pad` paper around it.
 
@@ -248,8 +257,9 @@ def _place_label(
     near = [sg for sg in segs if _seg_hits_box(sg, window)]
     hard_near = [sg for sg in (hard or []) if _seg_hits_box(sg, window)]
     spots = [c for c in cands + grid if _spot_ok(c, text, size, fits, keepout)
+             and all(math.hypot(c[0] - ax, c[1] - ay) >= min_apart for ax, ay in (apart or []))
              and _box_hits(_label_box(c[0], c[1], size, text, pad), hard_near) == 0]
-    for pad_f in ((pad, pad * 0.5) if require_clear else (pad, pad * 0.5, 0.0)):
+    for pad_f in ([pad * f for f in tiers] if require_clear else (pad, pad * 0.5, 0.0)):
         for cx, cy in spots:
             if _box_hits(_label_box(cx, cy, size, text, pad_f), near) == 0:
                 return cx, cy
@@ -667,6 +677,10 @@ def render_diagram(
     runway_hard: list[Seg] = []  # strip infill lines: labels may never touch these
     label_boxes: list[Box] = []  # padded label boxes: lines are cut out of them
     label_pad = width * _LABEL_PAD_MM / _PAGE_MM_W
+    taxi_pad = width * _TAXI_PAD_MM / _PAGE_MM_W
+    label_gap = width * _LABEL_GAP_MM / _PAGE_MM_W
+    label_spacing = width * _LABEL_SPACING_MM / _PAGE_MM_W
+    placed_centres: list[tuple[float, float]] = []
 
     # -- surrounding context first (faintest, under the airfield) ---------
     def clipped_d(world_poly: list[tuple[float, float]], close: bool,
@@ -797,14 +811,15 @@ def render_diagram(
             if not _in_frame(mx, my):
                 continue
             spot = _taxiway_label_spot(
-                pts, text_h, ref, obstacles, _in_frame, label_pad, _box_in_frame,
-                runway_hard)
+                pts, text_h, ref, obstacles, _in_frame, taxi_pad, _box_in_frame,
+                runway_hard, placed_centres, label_spacing)
             if spot is None:
                 continue  # no clear paper: decluttered
             lx, ly = spot
             lsz = text_h
             label_boxes.append(_label_box(lx, ly, lsz, ref, label_pad))
-            obstacles.extend(_box_edges(_label_box(lx, ly, lsz, ref)))
+            placed_centres.append((lx, ly))
+            obstacles.extend(_box_edges(_label_box(lx, ly, lsz, ref, label_gap)))
             tx, ty = _label_attrs(lx, ly, lsz, ref)
             lines.append(
                 f'<text x="{tx:.2f}" y="{ty:.2f}" text-anchor="middle" '

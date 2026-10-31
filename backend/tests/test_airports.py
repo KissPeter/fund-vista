@@ -1056,3 +1056,27 @@ def test_ink_metrics_match_the_real_hershey_converter():
         assert abs((max(ys) - min(ys)) / 2 - hh * 20) < 0.5, text
         assert abs((max(xs) + min(xs)) / 2 - (200 + dx * 20)) < 0.5, text
         assert abs((max(ys) + min(ys)) / 2 - (100 + dy * 20)) < 0.5, text
+
+
+def test_place_label_tiers_and_spacing_rules():
+    from backend.airports import render as R
+    from backend.airports.render import _label_box, _place_label
+
+    # A line that is farther than half the pad from the label ink but inside the full pad.
+    cx, cy, size, pad = 100.0, 100.0, 14.0, 12.0
+    box = _label_box(cx, cy, size, "B5")
+    near_line = ((box[0] - 8.0, box[1] - 50.0), (box[0] - 8.0, box[3] + 50.0))  # 8 units off the ink
+    # Full-pad-only (the designator default): not clear, nothing else offered -> dropped.
+    assert _place_label("B5", size, [(cx, cy)], [near_line], pad, require_clear=True,
+                        tiers=(1.0,)) is None
+    # Allowing the half-pad fallback accepts it (the old, softer behaviour).
+    assert _place_label("B5", size, [(cx, cy)], [near_line], pad, require_clear=True,
+                        tiers=(1.0, 0.5)) == (cx, cy)
+    # Spacing: a spot within `min_apart` of an already-placed label is refused.
+    assert _place_label("B5", size, [(cx, cy)], [], pad, require_clear=True,
+                        apart=[(cx + 30.0, cy)], min_apart=57.0) is None
+    assert _place_label("B5", size, [(cx, cy), (cx + 100.0, cy)], [], pad, require_clear=True,
+                        apart=[(cx + 30.0, cy)], min_apart=57.0) == (cx + 100.0, cy)
+    # The shipped defaults: designators are strict (no half-pad fallback) and spaced.
+    assert R._TAXI_PAD_TIERS == (1.0,)
+    assert R._LABEL_SPACING_MM >= 10.0
