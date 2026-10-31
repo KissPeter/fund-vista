@@ -227,6 +227,44 @@ def test_render_request_phase5_validation():
             RenderRequest(**dict(base, alt_max_agl_ft=bad_alt))
 
 
+# Cache-correctness: list-field validation + normalisation at the schema ------
+
+def _rreq(**kw):
+    return RenderRequest(**dict({"icao": "LHBP", "date": "2026-10-10"}, **kw))
+
+
+def test_render_request_defaults_exclude_military_and_privacy():
+    r = _rreq()
+    assert r.exclude_military is True and r.exclude_privacy is True  # owner default on
+
+
+def test_render_request_uppercases_types_and_airlines():
+    r = _rreq(types=["a320", " b738 "], airlines=["wzz"])
+    assert r.types == ["A320", "B738"]
+    assert r.airlines == ["WZZ"]
+
+
+def test_render_request_empty_type_list_is_absent_filter():
+    assert _rreq(types=[]).types == []  # [] is "no filter", distinct from [""] below
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "A320,B738", "A 320", "A-320", "A320;", "é"])
+def test_render_request_rejects_bad_type_elements(bad):
+    with pytest.raises(Exception, match="types must be"):
+        _rreq(types=[bad])
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "WZZ,RYR", "WZZ RYR", "W-Z"])
+def test_render_request_rejects_bad_airline_elements(bad):
+    with pytest.raises(Exception, match="airlines must be"):
+        _rreq(airlines=[bad])
+
+
+def test_render_request_rejects_one_bad_element_among_good():
+    with pytest.raises(Exception, match="types must be"):
+        _rreq(types=["A320", "B738,A320"])
+
+
 # TC-D49: window stats ---------------------------------------------------------
 
 def _ts(hh: int, mm: int) -> float:
