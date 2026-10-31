@@ -1080,3 +1080,18 @@ def test_place_label_tiers_and_spacing_rules():
     # The shipped defaults: designators are strict (no half-pad fallback) and spaced.
     assert R._TAXI_PAD_TIERS == (1.0,)
     assert R._LABEL_SPACING_MM >= 10.0
+
+
+def test_terminal_distance_helpers_and_default():
+    from backend.airports import render as R
+    from backend.airports.render import _place_label, _pt_seg_dist
+
+    seg = ((0.0, 0.0), (10.0, 0.0))
+    assert _pt_seg_dist((5.0, 3.0), seg) == 3.0
+    assert _pt_seg_dist((13.0, 4.0), seg) == 5.0   # beyond the end: distance to the endpoint
+    # A spot closer than min_far to a terminal edge is refused; a farther one is taken.
+    assert _place_label("B5", 12.0, [(5.0, 20.0)], [], 4.0, require_clear=True,
+                        far_from=[seg], min_far=40.0) is None
+    assert _place_label("B5", 12.0, [(5.0, 20.0), (5.0, 80.0)], [], 4.0, require_clear=True,
+                        far_from=[seg], min_far=40.0) == (5.0, 80.0)
+    assert R._TERMINAL_CLEAR_MM >= 15.0

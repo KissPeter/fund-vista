@@ -52,6 +52,7 @@ from backend.http import fnum
 def _taxiway_label_spot(
     pts: list[tuple[float, float]], size: float, text: str, segs: list[Seg], in_frame, pad: float, fits=None, hard: list[Seg] | None = None,
     apart: list[tuple[float, float]] | None = None, min_apart: float = 0.0,
+    far_from: list[Seg] | None = None, min_far: float = 0.0,
 ) -> tuple[float, float] | None:
     """Ink centre for a taxiway designator, or None when nothing is clear: beside the route, never on it.
 
@@ -81,7 +82,8 @@ def _taxiway_label_spot(
     if not cands:
         return None
     return _place_label(text, size, cands, segs, pad, fits, radius=size * 3.0, hard=hard,
-                        require_clear=True, tiers=_TAXI_PAD_TIERS, apart=apart, min_apart=min_apart)
+                        require_clear=True, tiers=_TAXI_PAD_TIERS, apart=apart, min_apart=min_apart,
+                        far_from=far_from, min_far=min_far)
 
 
 @lru_cache(maxsize=1)
@@ -121,6 +123,10 @@ _PAGE_MM_W = 210.0  # A4 portrait width the 1000-unit canvas maps to
 # a ref needs this much clear paper (never relaxed) and this gap to other labels.
 _TAXI_PAD_MM = 2.5
 _LABEL_GAP_MM = 0.0
+# No designator within this distance of a terminal outline: that is the apron-lane
+# / gate zone, where OSM refs are not told apart from taxiways by tag (LHBP: G and Z
+# sit at 11-13 mm, the nearest kept label at 23 mm).
+_TERMINAL_CLEAR_MM = 18.0
 _LABEL_SPACING_MM = 12.0  # min centre-to-centre distance between two taxiway designators
 _TAXI_PAD_TIERS = (1.0,)  # no half-pad fallback for designators
 
@@ -177,6 +183,14 @@ def _label_attrs(cx: float, cy: float, size: float, text: str) -> tuple[float, f
     return cx - dx * size, cy - dy * size
 
 
+def _pt_seg_dist(pt: tuple[float, float], seg: Seg) -> float:
+    (x0, y0), (x1, y1) = seg
+    dx, dy = x1 - x0, y1 - y0
+    n = dx * dx + dy * dy
+    t = 0.0 if n == 0 else max(0.0, min(1.0, ((pt[0] - x0) * dx + (pt[1] - y0) * dy) / n))
+    return math.hypot(pt[0] - (x0 + t * dx), pt[1] - (y0 + t * dy))
+
+
 def _label_order(lengths: dict[str, float]) -> list[str]:
     """Placement priority for designators: longest route first (the major
     taxiways claim clear paper before apron lanes), ties by ref — never by
@@ -225,6 +239,7 @@ def _place_label(
     hard: list[Seg] | None = None, require_clear: bool = False,
     tiers: tuple[float, ...] = (1.0, 0.5),
     apart: list[tuple[float, float]] | None = None, min_apart: float = 0.0,
+    far_from: list[Seg] | None = None, min_far: float = 0.0,
 ) -> tuple[float, float] | None:
     """Ink-centre for a label that sits in a white box of `pad` paper around it.
 
@@ -258,6 +273,7 @@ def _place_label(
     hard_near = [sg for sg in (hard or []) if _seg_hits_box(sg, window)]
     spots = [c for c in cands + grid if _spot_ok(c, text, size, fits, keepout)
              and all(math.hypot(c[0] - ax, c[1] - ay) >= min_apart for ax, ay in (apart or []))
+             and all(_pt_seg_dist(c, sg) >= min_far for sg in (far_from or []))
              and _box_hits(_label_box(c[0], c[1], size, text, pad), hard_near) == 0]
     for pad_f in ([pad * f for f in tiers] if require_clear else (pad, pad * 0.5, 0.0)):
         for cx, cy in spots:
@@ -681,6 +697,11 @@ def render_diagram(
     label_gap = width * _LABEL_GAP_MM / _PAGE_MM_W
     label_spacing = width * _LABEL_SPACING_MM / _PAGE_MM_W
     placed_centres: list[tuple[float, float]] = []
+    terminal_clear = width * _TERMINAL_CLEAR_MM / _PAGE_MM_W
+    terminal_segs: list[Seg] = []
+    for ring in osm_r.get("terminal", []):
+        tp = [W2S(*q) for q in ring]
+        terminal_segs += list(zip(tp, tp[1:])) + ([(tp[-1], tp[0])] if len(tp) > 2 else [])
 
     # -- surrounding context first (faintest, under the airfield) ---------
     def clipped_d(world_poly: list[tuple[float, float]], close: bool,
@@ -812,7 +833,7 @@ def render_diagram(
                 continue
             spot = _taxiway_label_spot(
                 pts, text_h, ref, obstacles, _in_frame, taxi_pad, _box_in_frame,
-                runway_hard, placed_centres, label_spacing)
+                runway_hard, placed_centres, label_spacing, terminal_segs, terminal_clear)
             if spot is None:
                 continue  # no clear paper: decluttered
             lx, ly = spot

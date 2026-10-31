@@ -311,3 +311,65 @@ def test_runway_idents_always_drawn_even_in_total_clutter():
     _, labels = _analyse(svg)
     assert {"13L", "31R"} <= set(labels)
 
+
+
+def _terminal_scene():
+    # Terminal block off the runway; one route hugging it, one far away.
+    term = [_offset(LE, 300, 150), _offset(LE, 300, 350), _offset(LE, 600, 350),
+            _offset(LE, 600, 150), _offset(LE, 300, 150)]
+    near = [_offset(LE, 250, 100), _offset(LE, 650, 100)]     # ~50 m from the outline
+    far = [_offset(LE, 100, -300), _offset(LE, 700, -300)]    # hundreds of metres away
+    return term, near, far
+
+
+def _terminal_segments(svg):
+    group = svg.split('id="osm-terminals"')[1].split("</g>")[0]
+    segs = []
+    for d in re.findall(r'<path d="([^"]+)"', group):
+        pts = [(float(x), float(y)) for x, y in re.findall(r"(-?[\d.]+) (-?[\d.]+)", d)]
+        segs += list(zip(pts, pts[1:]))
+        if d.rstrip().endswith("Z"):
+            segs.append((pts[-1], pts[0]))
+    return segs
+
+
+def test_no_designator_near_a_terminal_outline():
+    term, near, far = _terminal_scene()
+    svg = _taxi_render([near, far, _outer()], [("L3", near), ("B1", far)],
+                       extra_osm={"terminal": [term]})
+    _, labels = _analyse(svg)
+    assert "B1" in labels                    # far from the terminal: kept
+    assert "L3" not in labels, "designator within the terminal zone must be dropped"
+    # Every drawn designator keeps >= 18 mm from every terminal segment.
+    tsegs = _terminal_segments(svg)
+    min_units = 1000 * 18.0 / 210.0
+    for name, segs in labels.items():
+        if name in ("13L", "31R"):
+            continue
+        cx = sum(x for s in segs for x, _ in s) / (2 * len(segs))
+        cy = sum(y for s in segs for _, y in s) / (2 * len(segs))
+        assert min(_seg_dist(((cx, cy), (cx, cy)), t) for t in tsegs) >= min_units * 0.98, name
+
+
+def test_designator_moves_away_from_terminal_when_it_can():
+    """The distance applies to the label, not the way: a route passing near a
+    terminal is still labelled where it is far enough."""
+    term, _, _ = _terminal_scene()
+    long_route = [_offset(LE, -200, 120), _offset(LE, 900, 120)]  # runs past the terminal
+    svg = _taxi_render([long_route, _outer()], [("L3", long_route)], extra_osm={"terminal": [term]})
+    _, labels = _analyse(svg)
+    assert "L3" in labels
+    tsegs = _terminal_segments(svg)
+    cx = sum(x for s in labels["L3"] for x, _ in s) / (2 * len(labels["L3"]))
+    cy = sum(y for s in labels["L3"] for _, y in s) / (2 * len(labels["L3"]))
+    assert min(_seg_dist(((cx, cy), (cx, cy)), t) for t in tsegs) >= 1000 * 18.0 / 210.0 * 0.98
+
+
+def test_terminal_rule_ignores_other_outlines():
+    """Only terminals: an apron outline next to a route does not suppress its ref."""
+    apron = [_offset(LE, 300, 150), _offset(LE, 300, 350), _offset(LE, 600, 350),
+             _offset(LE, 600, 150), _offset(LE, 300, 150)]
+    _, near, _ = _terminal_scene()
+    svg = _taxi_render([near, _outer()], [("L3", near)], extra_osm={"apron": [apron]})
+    _, labels = _analyse(svg)
+    assert "L3" in labels
