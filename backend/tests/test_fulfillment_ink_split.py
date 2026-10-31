@@ -113,10 +113,11 @@ def test_airport_runway_groups_take_the_runway_ink():
 
     files = _inks_of(ink_split.split_by_ink(airport_draft(), mapper))
     assert sorted(files) == ["black", "red"]
-    # The runway layer is exactly the shop's RUNWAY_GROUP_IDS members present
-    # in the draft; everything else (context, osm buildings, labels) is Pen.
-    assert sorted(files["red"].layers) == ["osm-runways", "runway-marks", "runways"]
+    # The runway layer is the runway path groups present in the draft;
+    # everything else (context, osm buildings, labels, runway labels) is Pen.
+    assert sorted(files["red"].layers) == ["osm-runways", "runways"]
     assert "taxiway-labels" in files["black"].layers
+    assert "runway-marks" in files["black"].layers
 
 
 def test_airport_auto_runway_is_a_single_pen_file():
@@ -434,9 +435,9 @@ def test_ink_split_airport_two_passes_over_http(live, monkeypatch):
     # Every runway group the mock data emitted went to the runway ink; the
     # Pen file carries everything else (context, osm buildings, labels).
     assert files["red"]["layers"]  # the mock airport has drawn runways
-    assert set(files["red"]["layers"]) <= {"osm-runways", "runway-marks", "runways"}
+    assert set(files["red"]["layers"]) <= {"osm-runways", "runways"}
     assert files["black"]["layers"]
-    assert not (set(files["black"]["layers"]) & {"osm-runways", "runway-marks", "runways"})
+    assert not (set(files["black"]["layers"]) & {"osm-runways", "runways"})
 
 
 def test_ink_split_serves_the_cached_draft(live, monkeypatch, tmp_path):
