@@ -490,9 +490,9 @@ def test_taxiway_refs_extract_draw_and_tick():
     assert 'id="taxiway-labels"' not in svg_min
 
 
-def test_label_helpers_clearance():
+def test_label_helpers_clearance_and_cut():
     from backend.airports.render import (
-        _box_hits, _label_box, _pick_label_spot, _seg_hits_box,
+        _box_hits, _cut_polyline, _label_box, _place_label, _seg_hits_box,
     )
 
     vline = ((50.0, 0.0), (50.0, 100.0))
@@ -500,9 +500,15 @@ def test_label_helpers_clearance():
     assert not _seg_hits_box(vline, (51.0, 40.0, 60.0, 60.0))
     assert not _seg_hits_box(((0.0, 0.0), (10.0, 10.0)), (20.0, 20.0, 30.0, 30.0))
     # Spot ON the line is rejected in favour of the clear one beside it.
-    spot = _pick_label_spot([(50.0, 50.0), (80.0, 50.0)], 12.0, "B5", [vline])
-    assert spot == (80.0, 50.0)
-    assert _box_hits(_label_box(*spot, 12.0, "B5", 3.0), [vline]) == 0
+    cx, cy = _place_label("B5", 12.0, [(50.0, 50.0), (90.0, 50.0)], [vline], pad=3.0)
+    assert (cx, cy) == (90.0, 50.0)
+    assert _box_hits(_label_box(cx, cy, 12.0, "B5", 3.0), [vline]) == 0
+    # Knock-out: a line through the box is cut, the rest survives, ends meet the box edge.
+    box = (40.0, 40.0, 60.0, 60.0)
+    parts = _cut_polyline([(50.0, 0.0), (50.0, 100.0)], [box])
+    assert parts == [[(50.0, 0.0), (50.0, 40.0)], [(50.0, 60.0), (50.0, 100.0)]]
+    assert _cut_polyline([(0.0, 0.0), (10.0, 0.0)], [box]) == [[(0.0, 0.0), (10.0, 0.0)]]
+    assert _cut_polyline([(45.0, 45.0), (55.0, 55.0)], [box]) == []
 
 
 def test_taxiway_label_clear_of_its_taxiway_and_runway_ident_gapped():

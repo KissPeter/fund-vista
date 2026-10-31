@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import math
+import re
 import sys
 from functools import lru_cache
 from xml.sax.saxutils import escape as _xml_escape
@@ -49,9 +50,9 @@ from backend.http import fnum
 # never see a stale layout. Derived from this file's own source: EVERY code
 # change busts the cache automatically, no manual bump to forget.
 def _taxiway_label_spot(
-    pts: list[tuple[float, float]], size: float, text: str, segs: list[Seg], in_frame, fits=None,
+    pts: list[tuple[float, float]], size: float, text: str, segs: list[Seg], in_frame, pad: float, fits=None, hard: list[Seg] | None = None,
 ) -> tuple[float, float]:
-    """Centre for a taxiway designator: beside the route, never on it.
+    """Ink centre for a taxiway designator: beside the route, never on it.
 
     Samples a few spots along the polyline and tries both sides at two
     distances; the first padded box clear of every drawn line wins.
@@ -68,8 +69,8 @@ def _taxiway_label_spot(
                 t = (target - acc) / ln
                 x, y = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
                 nx, ny = -(b[1] - a[1]) / ln, (b[0] - a[0]) / ln
-                reach = hw * abs(nx) + hh * abs(ny) + size * _LABEL_PAD
-                for dist in (reach + size * 0.25, reach + size * 1.0):
+                reach = hw * abs(nx) + hh * abs(ny) + pad
+                for dist in (reach + size * 0.15, reach + size * 0.9):
                     for side in (1.0, -1.0):
                         c = (x + nx * dist * side, y + ny * dist * side)
                         if in_frame(*c):
@@ -78,7 +79,7 @@ def _taxiway_label_spot(
             acc += ln
     if not cands:
         return pts[len(pts) // 2]
-    return _pick_label_spot(cands, size, text, segs, fits)
+    return _place_label(text, size, cands, segs, pad, fits, radius=size * 3.0, hard=hard)
 
 
 @lru_cache(maxsize=1)
@@ -112,7 +113,8 @@ _RUNWAY_INFILL_FRACS = tuple(-1.0 + 2.0 * i / 24 for i in range(25))
 # around it (the pen would draw the glyphs straight over a road/taxiway and
 # the text becomes unreadable). Boxes are estimated from the monospace
 # advance; padding keeps a hairline of paper between text and lines.
-_LABEL_PAD = 0.25  # clear paper around a label, in font-sizes
+_LABEL_PAD_MM = 2.5  # white margin around a label box (page mm); lines are cut here
+_PAGE_MM_W = 210.0  # A4 portrait width the 1000-unit canvas maps to
 
 Seg = tuple[tuple[float, float], tuple[float, float]]
 Box = tuple[float, float, float, float]
@@ -202,24 +204,133 @@ def _box_edges(box: Box) -> list[Seg]:
             ((xmax, ymax), (xmin, ymax)), ((xmin, ymax), (xmin, ymin))]
 
 
-def _pick_label_spot(
-    cands: list[tuple[float, float]], size: float, text: str, segs: list[Seg],
-    fits=None,
+def _place_label(
+    text: str, size: float, cands: list[tuple[float, float]], segs: list[Seg],
+    pad: float, fits=None, keepout: Box | None = None, radius: float = 0.0,
+    hard: list[Seg] | None = None,
 ) -> tuple[float, float]:
-    """First candidate centre whose padded box is free of `segs` (and inside
-    the frame when `fits` says so); else the least-crossed one, preferring
-    in-frame spots. Candidates are ordered best-first."""
-    best, best_cost = cands[0], None
-    for cx, cy in cands:
-        box = _label_box(cx, cy, size, text, size * _LABEL_PAD)
-        inside = fits is None or fits(_label_box(cx, cy, size, text))
-        hits = _box_hits(box, segs)
-        if hits == 0 and inside:
-            return cx, cy
-        cost = hits + (0 if inside else 1000)
-        if best_cost is None or cost < best_cost:
-            best, best_cost = (cx, cy), cost
-    return best
+    """Ink-centre for a label that sits in a white box of `pad` paper around it.
+
+    Prefers a spot where the padded box crosses no drawn line (ordered
+    `cands`, then a distance-sorted grid within `radius`), relaxing the pad
+    to half and none; if every spot crosses something, the first candidate
+    wins and the caller knocks the crossing lines out of the box. Spots
+    must stay in the frame (`fits`) and out of `keepout`.
+    """
+    x0, y0 = cands[0]
+    step = max(size * 0.5, 1.0)
+    grid: list[tuple[float, float]] = []
+    if radius > 0:
+        n = int(radius / step)
+        grid = sorted(
+            ((x0 + i * step, y0 + j * step)
+             for i in range(-n, n + 1) for j in range(-n, n + 1)
+             if math.hypot(i, j) * step <= radius),
+            key=lambda c: math.hypot(c[0] - x0, c[1] - y0),
+        )
+    hw_u, hh_u, _, _ = _ink_metrics(text)
+    reach = max(hw_u, hh_u) * size * 1.3 + radius + pad
+    window = (x0 - reach, y0 - reach, x0 + reach, y0 + reach)
+    near = [sg for sg in segs if _seg_hits_box(sg, window)]
+    hard_near = [sg for sg in (hard or []) if _seg_hits_box(sg, window)]
+    spots = [c for c in cands + grid if _spot_ok(c, text, size, fits, keepout)
+             and _box_hits(_label_box(c[0], c[1], size, text, pad), hard_near) == 0]
+    for pad_f in (pad, pad * 0.5, 0.0):
+        for cx, cy in spots:
+            if _box_hits(_label_box(cx, cy, size, text, pad_f), near) == 0:
+                return cx, cy
+    return next(iter(spots), cands[0])
+
+
+def _spot_ok(c, text, size, fits, keepout) -> bool:
+    bare = _label_box(c[0], c[1], size, text)
+    if keepout is not None and not (
+        bare[2] < keepout[0] or keepout[2] < bare[0]
+        or bare[3] < keepout[1] or keepout[3] < bare[1]
+    ):
+        return False
+    return fits is None or fits(bare)
+
+
+def _cut_polyline(pts: list[tuple[float, float]], boxes: list[Box]) -> list[list[tuple[float, float]]]:
+    """Cut a polyline against label boxes: the parts inside any box vanish
+    (the label's white background); the rest stay as separate polylines."""
+    out: list[list[tuple[float, float]]] = []
+    cur: list[tuple[float, float]] = []
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        cuts: list[tuple[float, float]] = []
+        for xmin, ymin, xmax, ymax in boxes:
+            if max(x0, x1) < xmin or min(x0, x1) > xmax or max(y0, y1) < ymin or min(y0, y1) > ymax:
+                continue
+            t0, t1, dx, dy, ok = 0.0, 1.0, x1 - x0, y1 - y0, True
+            for pp, qq in ((-dx, x0 - xmin), (dx, xmax - x0), (-dy, y0 - ymin), (dy, ymax - y0)):
+                if pp == 0.0:
+                    if qq < 0.0:
+                        ok = False
+                        break
+                    continue
+                t = qq / pp
+                if pp < 0.0:
+                    t0 = max(t0, t)
+                else:
+                    t1 = min(t1, t)
+                if t0 > t1:
+                    ok = False
+                    break
+            if ok:
+                cuts.append((t0, t1))
+        pos = 0.0
+        if not cur:
+            cur = [(x0, y0)]
+        for t0, t1 in sorted(cuts):
+            if t0 > pos:
+                cur.append((x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0))
+            if len(cur) > 1:
+                out.append(cur)
+            cur = []
+            pos = max(pos, t1)
+            if pos < 1.0:
+                cur = [(x0 + (x1 - x0) * pos, y0 + (y1 - y0) * pos)]
+        if pos < 1.0:
+            cur.append((x1, y1))
+        else:
+            cur = []
+    if len(cur) > 1:
+        out.append(cur)
+    return out
+
+
+_PATH_RE = re.compile(r'^<path d="([^"]+)"/>$')
+_NUM_RE = re.compile(r"(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)")
+# Groups never knocked out: the authoritative runway strips and their marks.
+_KNOCKOUT_EXEMPT = ("runways", "runway-marks")
+
+
+def _knock_out_labels(parts: list[str], boxes: list[Box]) -> list[str]:
+    """Rewrite every drawn <path> so nothing runs through a label box."""
+    if not boxes:
+        return parts
+    out: list[str] = []
+    group = ""
+    for part in parts:
+        gm = re.match(r'<g id="([^"]+)"', part)
+        if gm:
+            group = gm.group(1)
+        pm = _PATH_RE.match(part)
+        if not pm or group in _KNOCKOUT_EXEMPT:
+            out.append(part)
+            continue
+        d = pm.group(1)
+        pts = [(float(x), float(y)) for x, y in _NUM_RE.findall(d)]
+        if d.rstrip().endswith("Z"):
+            pts.append(pts[0])
+        pieces = _cut_polyline(pts, boxes)
+        if len(pieces) == 1 and pieces[0] == pts:
+            out.append(part)
+            continue
+        for piece in pieces:
+            out.append('<path d="M ' + " L ".join(f"{x:.2f} {y:.2f}" for x, y in piece) + '"/>')
+    return out
 
 
 def _esc(text: object) -> str:
@@ -537,9 +648,13 @@ def render_diagram(
 
     # Every drawn line segment (SVG space): labels are placed clear of them.
     obstacles: list[Seg] = []
+    runway_hard: list[Seg] = []  # strip infill lines: labels may never touch these
+    label_boxes: list[Box] = []  # padded label boxes: lines are cut out of them
+    label_pad = width * _LABEL_PAD_MM / _PAGE_MM_W
 
     # -- surrounding context first (faintest, under the airfield) ---------
-    def clipped_d(world_poly: list[tuple[float, float]], close: bool) -> list[str]:
+    def clipped_d(world_poly: list[tuple[float, float]], close: bool,
+                  sink: list[Seg] | None = None) -> list[str]:
         """Map world → SVG, cut at the diagram frame, return path strings."""
         pts = [W2S(x, y) for x, y in world_poly]
         if close:
@@ -550,6 +665,8 @@ def render_diagram(
         out = []
         for seq in seqs:
             obstacles.extend(zip(seq, seq[1:]))
+            if sink is not None:
+                sink.extend(zip(seq, seq[1:]))
             if close:
                 obstacles.append((seq[-1], seq[0]))
             d = f"M {seq[0][0]:.2f} {seq[0][1]:.2f} " + " ".join(
@@ -630,7 +747,7 @@ def render_diagram(
                 for frac in _RUNWAY_INFILL_FRACS
             ]
             for world_seg in strips_world:
-                for d in clipped_d(world_seg, False):
+                for d in clipped_d(world_seg, False, runway_hard):
                     parts.append(f"<path d=\"{d}\"/>")
                     counts["runway"] += 1
         parts.append("</g>")
@@ -661,12 +778,15 @@ def render_diagram(
                 if not _in_frame(mx, my):
                     continue
                 lx, ly = _taxiway_label_spot(
-                    pts, text_h, ref, obstacles, _in_frame, _box_in_frame)
-                obstacles.extend(_box_edges(_label_box(lx, ly, text_h, ref)))
-                tx, ty = _label_attrs(lx, ly, text_h, ref)
+                    pts, text_h, ref, obstacles, _in_frame, label_pad, _box_in_frame,
+                    runway_hard)
+                lsz = text_h
+                label_boxes.append(_label_box(lx, ly, lsz, ref, label_pad))
+                obstacles.extend(_box_edges(_label_box(lx, ly, lsz, ref)))
+                tx, ty = _label_attrs(lx, ly, lsz, ref)
                 parts.append(
                     f'<text x="{tx:.2f}" y="{ty:.2f}" text-anchor="middle" '
-                    f'font-family="monospace" data-stroke-font="hershey" font-size="{text_h:.1f}" '
+                    f'font-family="monospace" data-stroke-font="hershey" font-size="{lsz:.1f}" '
                     f'stroke="none" fill="#000000">{_esc(ref)}</text>'
                 )
             parts.append("</g>")
@@ -715,18 +835,30 @@ def render_diagram(
             reach = hw_u * isz * abs(ux) + hh_u * isz * abs(uy)  # half-extent along the axis
             # Never closer than before (band half-width + 1.2 glyphs), and at
             # least one glyph of clear paper between strip end and label.
-            base = max(half_band + text_h * 1.2, reach + text_h * 1.0)
+            base = max(half_band + text_h * 1.2, reach + label_pad + text_h * 0.3)
             cands = [
                 (px + ux * end_sign * (base + k * text_h * 0.6) + nx * lat * text_h,
                  py + uy * end_sign * (base + k * text_h * 0.6) + ny * lat * text_h)
                 for k in range(10) for lat in (0.0, 1.2, -1.2, 2.4, -2.4)
             ]
-            ix, iy = _pick_label_spot(cands, isz, ident, obstacles, _box_in_frame)
-            obstacles.extend(_box_edges(_label_box(ix, iy, isz, ident)))
-            tx, ty = _label_attrs(ix, iy, isz, ident)
+            # Keep-out: the strip end plus one glyph of paper beyond it.
+            ex0, ey0 = px - nx * half_band, py - ny * half_band
+            ex1, ey1 = (px + ux * end_sign * text_h * 1.0 + nx * half_band,
+                        py + uy * end_sign * (label_pad + text_h * 0.3) + ny * half_band)
+            keep = (min(ex0, ex1, px - nx * half_band, px + nx * half_band) - 1.0,
+                    min(ey0, ey1, py - ny * half_band, py + ny * half_band) - 1.0,
+                    max(ex0, ex1, px - nx * half_band, px + nx * half_band) + 1.0,
+                    max(ey0, ey1, py - ny * half_band, py + ny * half_band) + 1.0)
+            ix, iy = _place_label(
+                ident, isz, cands, obstacles, label_pad, _box_in_frame,
+                keepout=keep, radius=text_h * 5.0, hard=runway_hard)
+            isz_used = isz
+            label_boxes.append(_label_box(ix, iy, isz, ident, label_pad))
+            obstacles.extend(_box_edges(_label_box(ix, iy, isz_used, ident)))
+            tx, ty = _label_attrs(ix, iy, isz_used, ident)
             parts.append(
                 f'<text x="{tx:.2f}" y="{ty:.2f}" text-anchor="middle" '
-                f'font-family="monospace" data-stroke-font="hershey" font-size="{isz:.1f}" '
+                f'font-family="monospace" data-stroke-font="hershey" font-size="{isz_used:.1f}" '
                 f'stroke="none" fill="#000000">{_esc(ident)}</text>'
             )
     if show_runway:
@@ -735,6 +867,7 @@ def render_diagram(
     # NOTE: no compass — client decision, removed from the artwork.
 
     parts.append("</svg>")
+    parts = _knock_out_labels(parts, label_boxes)
     return "\n".join(parts) + "\n", counts, rotation, warnings
 
 

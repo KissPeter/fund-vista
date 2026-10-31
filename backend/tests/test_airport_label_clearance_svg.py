@@ -146,3 +146,44 @@ def test_runway_ident_gap_to_strip_end():
         size = float(re.search(r'font-size="([\d.]+)"[^>]*>%s<' % name, svg).group(1))
         # At least a glyph's worth of paper between runway band and ident ink.
         assert _clearance(labels[name], band) >= size * 0.5, name
+
+
+def test_dense_clutter_labels_get_a_white_box():
+    """Airport-independent: even where a mesh of roads covers every possible
+    spot, the labels stay readable — lines are cut out of a padded box around
+    each label (a 'white background'), and only there."""
+    mesh = []
+    for i in range(-40, 41):
+        mesh.append([_offset(LE, -300, i * 12.0), _offset(HE, 300, i * 12.0)])  # along
+    for j in range(-30, 120):
+        mesh.append([_offset(LE, j * 12.0 - 400, -480), _offset(LE, j * 12.0 - 400, 480)])  # across
+    base = {"runway": [], "taxiway": [[_offset(LE, -250, 250), _offset(HE, 250, 250)]],
+            "apron": [], "terminal": [], "hangar": []}
+    kw = dict(airport=_airport(), runways=[_runway()], frequencies=[], osm_geoms=base,
+              width=1000, layers=[*AIRFIELD_LAYERS, *CONTEXT_CLASSES],
+              taxiway_refs=[("B5", [_offset(LE, 150, -60), _offset(LE, 600, -60)])],
+              taxiway_labels=True)
+    plain, _, _, _ = render_diagram(**kw, context_geoms={"roads": []})
+    svg, _, _, _ = render_diagram(**kw, context_geoms={"roads": mesh})
+    geo, labels = _analyse(svg)
+    pad = 1000 * 2.5 / 210.0
+    assert {"13L", "31R", "B5"} <= set(labels)
+    strip = svg.split('id="runways"')[1].split("</g>")[0]
+    n_strip = len(re.findall(r"<path", strip))
+    assert n_strip == len(re.findall(r"<path", plain.split('id="runways"')[1].split("</g>")[0]))
+    for name, segs in labels.items():
+        # Every road piece stays >= ~pad away from the glyph strokes (box cut),
+        # runway strip excepted (never cut; the ident keeps its own gap).
+        road_geo = [g for g in geo if g not in _runway_segs(svg)]
+        assert _clearance(segs, road_geo) >= pad * 0.9, name
+    # ...and the mesh is still there away from the labels.
+    road_group = svg.split('id="context-roads"')[1].split("</g>")[0]
+    assert road_group.count("<path") > 50
+
+
+def _runway_segs(svg):
+    strip = svg.split('id="runways"')[1].split("</g>")[0]
+    out = set()
+    for m in re.findall(r'<path d="M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)"/>', strip):
+        out.add(((float(m[0]), float(m[1])), (float(m[2]), float(m[3]))))
+    return out
