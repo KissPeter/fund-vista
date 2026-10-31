@@ -452,15 +452,18 @@ def test_taxiway_refs_extract_draw_and_tick():
     elements = [
         {"type": "way", "id": 1, "tags": {"aeroway": "taxiway", "ref": "A1"},
          "geometry": [{"lon": lo, "lat": la} for lo, la in long_way]},
-        {"type": "way", "id": 2, "tags": {"aeroway": "taxilane", "ref": "A1"},
+        {"type": "way", "id": 2, "tags": {"aeroway": "taxiway", "ref": "A1"},
          "geometry": [{"lon": lo, "lat": la} for lo, la in short_way]},
         {"type": "way", "id": 3, "tags": {"aeroway": "taxiway"},
          "geometry": [{"lon": lo, "lat": la} for lo, la in long_way]},
         {"type": "way", "id": 4, "tags": {"aeroway": "apron", "ref": "A2"},
          "geometry": [{"lon": lo, "lat": la} for lo, la in long_way]},
+        {"type": "way", "id": 5, "tags": {"aeroway": "taxilane", "ref": "P1"},
+         "geometry": [{"lon": lo, "lat": la} for lo, la in short_way]},
     ]
     refs = extract_taxiway_refs(elements)
-    assert sorted(r for r, _ in refs) == ["A1", "A1"]  # ref-less + apron skipped
+    # ref-less, apron and taxilane (apron lane) ways are never designators
+    assert sorted(r for r, _ in refs) == ["A1", "A1"]
 
     osm = {"runway": [], "taxiway": [long_way, short_way],
            "apron": [], "terminal": [], "hangar": []}

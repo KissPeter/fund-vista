@@ -245,9 +245,10 @@ def extract_taxiway_refs(
 ) -> list[tuple[str, list[tuple[float, float]]]]:
     """Taxiway designators for optional labels: ``[(ref, [(lon, lat), ...])]``.
 
-    Only ways tagged ``aeroway=taxiway`` (or the folded ``taxilane``) that
-    carry a ``ref`` (``A1``, ``B3``, …). Relations skipped — their member
-    geometry has no single representative point.
+    Only ways tagged ``aeroway=taxiway`` that carry a ``ref`` (``A1``,
+    ``B3``, …). ``aeroway=taxilane`` is OSM's apron-lane tag (stand access
+    lanes, gate-like refs): drawn as a line, never labelled. Relations
+    skipped — their member geometry has no single representative point.
     """
     refs: list[tuple[str, list[tuple[float, float]]]] = []
     for el in elements:
@@ -255,7 +256,7 @@ def extract_taxiway_refs(
             continue
         tags = el.get("tags", {}) or {}
         raw_cls = (tags.get("aeroway") or "").strip()
-        if _AEROWAY_TO_CLASS.get(raw_cls, raw_cls) != "taxiway":
+        if raw_cls != "taxiway":
             continue
         ref = (tags.get("ref") or "").strip()
         if not ref:
