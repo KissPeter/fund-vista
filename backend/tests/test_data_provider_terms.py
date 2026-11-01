@@ -249,6 +249,50 @@ def test_citymap_overpass_falls_over_in_configured_order(monkeypatch):
         assert headers["User-Agent"] == citymap_settings.user_agent
 
 
+def test_citymap_overpass_remark_retries_then_fails_over(monkeypatch):
+    """HTTP 200 + runtime-error remark is a truncated answer, not a result."""
+    async def scenario():
+        monkeypatch.setattr(citymap_settings, "overpass_retries", 1)
+        monkeypatch.setattr(citymap_settings, "overpass_max_concurrent", 2)
+        city_overpass._reset_overpass_semaphore()
+
+        async def no_sleep(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_sleep)
+        bad = {"elements": [], "remark": "runtime error: Query timed out in \"query\""}
+        good = [{"type": "node", "id": 9}]
+        client = _OverpassClient([
+            _OverpassResp(200, bad),
+            _OverpassResp(200, bad),
+            _OverpassResp(200, {"elements": good}),
+        ])
+        out = await city_overpass.fetch_overpass("data", client=client)  # type: ignore[arg-type]
+        return out, client
+
+    out, client = asyncio.run(scenario())
+    assert out == [{"type": "node", "id": 9}]
+    # Same mirror retried once, then the next mirror answered.
+    urls = [url for url, _ in client.calls]
+    assert urls == [citymap_settings.overpass_urls[0]] * 2 + [citymap_settings.overpass_urls[1]]
+
+
+def test_citymap_overpass_remark_on_every_mirror_raises(monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(citymap_settings, "overpass_retries", 0)
+        monkeypatch.setattr(citymap_settings, "overpass_max_concurrent", 2)
+        city_overpass._reset_overpass_semaphore()
+        client = _OverpassClient([
+            _OverpassResp(200, {"elements": [], "remark": "runtime error: out of memory"}),
+        ])
+        with pytest.raises(city_overpass.OverpassError) as ei:
+            await city_overpass.fetch_overpass("data", client=client)  # type: ignore[arg-type]
+        return ei.value
+
+    err = asyncio.run(scenario())
+    assert "out of memory" in err.detail
+
+
 def test_citymap_overpass_fail_fast_on_403_no_same_mirror_retry(monkeypatch):
     """403 (blocked) must not be retried on the same mirror — fail over."""
     async def scenario():

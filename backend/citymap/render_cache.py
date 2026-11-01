@@ -23,8 +23,14 @@ from backend.citymap.schemas import RenderRequest
 from backend.citymap.tiles import tile_ref
 
 
+# Bump when raw tile payloads may be wrong: v2 retires tiles cached from
+# Overpass answers that carried a ``remark`` (timeout/out-of-memory) and so
+# were truncated or empty.
+TILE_VERSION = "tile-v2"
+
+
 def _tile_key(tile: tuple[int, int], deg: float, layer: str) -> str:
-    return citymap_cache_key("tile", tile_ref(tile, deg), layer)
+    return citymap_cache_key("tile", TILE_VERSION, tile_ref(tile, deg), layer)
 
 
 # P5: split_elements output is cached separately from the rendered SVG. The
