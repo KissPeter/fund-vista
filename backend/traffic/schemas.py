@@ -27,6 +27,29 @@ ATTRIBUTION = (
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$|^24:00$")
 _FLOW_RE = re.compile(r"^(0[1-9]|[12]\d|3[0-6])$")  # runway numbers 01..36
+_CODE_RE = re.compile(r"[A-Za-z0-9]+")  # ICAO type designators / callsign prefixes
+
+
+def _upper_codes(field: str, values: list[str], what: str) -> list[str]:
+    """Strip + upper-case each element; every element must be letters/digits.
+
+    Normalising here matters: ``pen()`` matches ``types`` case-sensitively, so
+    a lower-case request would otherwise hide every movement. The character
+    rule keeps ``""`` and comma-joined elements out of the render-cache key
+    (``render_cache._filter_fingerprint``), where they used to alias a
+    different filter and serve the wrong SVG.
+    """
+    out: list[str] = []
+    bad: list[str] = []
+    for raw in values:
+        token = (raw or "").strip()
+        if _CODE_RE.fullmatch(token):
+            out.append(token.upper())
+        else:
+            bad.append(raw)
+    if bad:
+        raise ValueError(f"{field} must be {what} (letters and digits only): {bad}")
+    return out
 
 
 def _normalize_icao(v: str) -> str:
@@ -215,6 +238,16 @@ class RenderRequest(BaseModel):
     @classmethod
     def _valid_date(cls, v: str) -> str:
         return _valid_day(v)
+
+    @field_validator("types")
+    @classmethod
+    def _valid_types(cls, v: list[str]) -> list[str]:
+        return _upper_codes("types", v, "ICAO type codes")
+
+    @field_validator("airlines")
+    @classmethod
+    def _valid_airlines(cls, v: list[str]) -> list[str]:
+        return _upper_codes("airlines", v, "airline callsign prefixes")
 
     @field_validator("type_categories")
     @classmethod

@@ -343,6 +343,118 @@ def test_cache_fingerprint_covers_framing_knobs():
     assert "minlen=0.0" in _filter_fingerprint(a) and "aspect=0.0000" in _filter_fingerprint(a)
 
 
+# RenderRequest fields that the L4 key already carries outside the fingerprint.
+_KEYED_ELSEWHERE = {"icao", "date", "t_from", "t_to", "view_south", "view_north",
+                    "view_west", "view_east", "width"}
+
+# One non-default value per filter field that changes the drawn SVG.
+_FILTER_VARIANTS = {
+    "arrivals": dict(arrivals=False),
+    "departures": dict(departures=False),
+    "holding": dict(holding=False),
+    "go_around": dict(go_around=False),
+    "map": dict(map=False),
+    "highways": dict(highways=False),
+    "airport": dict(airport=False),
+    "types": dict(types=["A320"]),
+    "airlines": dict(airlines=["WZZ"]),
+    "callsign": dict(callsign="WZZ"),
+    "type_categories": dict(type_categories=["wide"]),
+    "flows": dict(flows=["13"]),
+    "alt_max_agl_ft": dict(alt_max_agl_ft=3000.0),
+    "pen_mode": dict(pen_mode="category"),
+    "exclude_military": dict(exclude_military=False),
+    "exclude_privacy": dict(exclude_privacy=False),
+    "min_path_len_m": dict(min_path_len_m=10.0),
+    "viewport_aspect": dict(viewport_aspect=1.414),
+}
+
+
+def test_cache_fingerprint_covers_every_filter_field():
+    """Every field that changes the drawing changes the L4 fingerprint.
+
+    The guard half: a NEW RenderRequest field must be added to
+    ``_FILTER_VARIANTS`` (or ``_KEYED_ELSEWHERE``) or this test fails, so no
+    filter can reach the drawing without a cache-key change.
+    """
+    from backend.traffic.render_cache import _filter_fingerprint
+
+    assert set(_FILTER_VARIANTS) | _KEYED_ELSEWHERE == set(RenderRequest.model_fields)
+    base = _filter_fingerprint(_req())
+    fps = {}
+    for field, kw in _FILTER_VARIANTS.items():
+        fps[field] = _filter_fingerprint(_req(**kw))
+        assert fps[field] != base, f"{field} does not change the fingerprint"
+    assert len(set(fps.values())) == len(fps)  # and no two fields collide
+
+
+def test_fingerprint_distinguishes_empty_absent_and_comma_types():
+    """Regression for the wrong-SVG-from-cache bug (types).
+
+    The schema now rejects ``[""]`` and ``["A320,B738"]``; ``model_copy``
+    skips validation, so this pins the fingerprint layer itself: the four
+    meanings must never share a key.
+    """
+    from backend.traffic.render_cache import _filter_fingerprint
+
+    absent = _req()
+    variants = [absent,
+                absent.model_copy(update={"types": [""]}),
+                absent.model_copy(update={"types": ["A320,B738"]}),
+                absent.model_copy(update={"types": ["A320", "B738"]})]
+    assert len({_filter_fingerprint(x) for x in variants}) == 4
+    with pytest.raises(Exception):
+        _req(types=[""])
+    with pytest.raises(Exception):
+        _req(types=["A320,B738"])
+
+
+def test_fingerprint_distinguishes_empty_absent_and_comma_airlines():
+    """Regression for the same bug on airlines."""
+    from backend.traffic.render_cache import _filter_fingerprint
+
+    absent = _req()
+    variants = [absent,
+                absent.model_copy(update={"airlines": [""]}),
+                absent.model_copy(update={"airlines": ["WZZ,RYR"]}),
+                absent.model_copy(update={"airlines": ["WZZ", "RYR"]})]
+    assert len({_filter_fingerprint(x) for x in variants}) == 4
+    with pytest.raises(Exception):
+        _req(airlines=["WZZ,RYR"])
+
+
+def test_fingerprint_layout_cannot_equal_a_pre_fix_key():
+    """Every pre-fix fingerprint began ``arr=``; the layout tag rules them out."""
+    from backend.traffic.render_cache import _filter_fingerprint
+
+    fp = _filter_fingerprint(_req())
+    assert fp.startswith("fpv=2|") and not fp.startswith("arr=")
+
+
+def test_category_pen_mode_counts_keys_and_values():
+    """pen_mode="category" swaps the kind layers for the size layers (shop UI shape)."""
+    moves = [
+        dict(_movement("arr"), type="A320"),                    # narrow
+        dict(_movement("dep"), type="A333"),                    # wide
+        dict(_movement("arr"), type="E190"),                    # regional
+        dict(_movement("arr"), type="H60"),                     # other (unknown)
+        dict(_movement("arr", holding=True), type="A320"),      # highlight beats size
+    ]
+    base = {"motorways": [], "waterways": [], "water": [], "airfield": []}
+    flt = Filters(t_from=0, t_to=24 * 3600, pen_mode="category")
+    _svg, counts = R.render_svg(moves, base, _BBOX, flt, AP)
+    assert counts == {"wide": 1, "narrow": 1, "regional": 1, "other": 1,
+                      "holding": 1, "go_around": 0}
+    assert "arrivals" not in counts and "departures" not in counts
+
+
+def test_kind_pen_mode_counts_keys_unchanged():
+    """The default kind mode keeps its arrivals/departures keys (no size layers)."""
+    base = {"motorways": [], "waterways": [], "water": [], "airfield": []}
+    _svg, counts = R.render_svg([], base, _BBOX, Filters(t_from=0, t_to=24 * 3600), AP)
+    assert set(counts) == {"arrivals", "departures", "holding", "go_around"}
+
+
 def test_highways_query_and_big_water_filter():
     q = bm.motorway_query((1, 2, 3, 4))
     assert "motorway|trunk" in q and "_link" not in q

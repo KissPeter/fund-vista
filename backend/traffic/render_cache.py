@@ -22,8 +22,22 @@ from backend.traffic.classify import CLASSIFIER_VERSION
 from backend.traffic.render import RENDER_VERSION
 
 
+#: Layout tag of the fingerprint string. Every pre-fix fingerprint began
+#: ``arr=``, so no new fingerprint can equal an old one: entries written by the
+#: bare ``",".join`` layout become unreachable (one-time L4 misses, never a
+#: stale hit). Bump it if the encoding changes again.
+_FINGERPRINT_LAYOUT = "fpv=2"
+
+
+def _enc_list(values) -> str:
+    """Sorted, de-duplicated JSON array: self-delimiting, so no element (an
+    empty string, a comma, a bracket) can alias a different list."""
+    return json.dumps(sorted(set(values)), separators=(",", ":"))
+
+
 def _filter_fingerprint(body) -> str:
     return "|".join([
+        _FINGERPRINT_LAYOUT,
         f"arr={int(body.arrivals)}", f"dep={int(body.departures)}",
         f"hold={int(body.holding)}", f"ga={int(body.go_around)}",
         # The Map / Airport layer switches (issue #1080) belong here too:
@@ -32,11 +46,13 @@ def _filter_fingerprint(body) -> str:
         # Paper-fill knobs (r4): the framing and the detail filter change
         # the drawn SVG, so both belong in the key.
         f"minlen={body.min_path_len_m}", f"aspect={(body.viewport_aspect or 0.0):.4f}",
-        "types=" + ",".join(sorted(body.types)),
-        "airlines=" + ",".join(sorted(a.upper() for a in body.airlines)),
-        "cs=" + body.callsign.upper(),
-        "cats=" + ",".join(sorted(body.type_categories)),
-        "flows=" + ",".join(sorted(body.flows)),
+        # types stay case-exact (pen() matches them exactly); airlines and the
+        # callsign are upper-cased exactly as Filters/pen() compare them.
+        "types=" + _enc_list(body.types),
+        "airlines=" + _enc_list(a.upper() for a in body.airlines),
+        "cs=" + json.dumps(body.callsign.upper()),
+        "cats=" + _enc_list(body.type_categories),
+        "flows=" + _enc_list(body.flows),
         f"alt={body.alt_max_agl_ft}", f"penmode={body.pen_mode}",
         f"mil={int(body.exclude_military)}", f"priv={int(body.exclude_privacy)}",
     ])

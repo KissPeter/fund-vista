@@ -141,6 +141,39 @@ def test_filter_semantics():
     assert [pen(f, _flt(airlines={"wzz"})) for f in m] == ["arrivals", None, "holding", None]
 
 
+def test_callsign_is_case_insensitive_substring():
+    """Callsign is a substring match (any position), case-insensitive."""
+    m = _movs()  # WZZ1 (arr), RYR2 (dep), WZZ3 (arr, holding), DLH4 (arr, go-around)
+    assert [pen(f, _flt(callsign="zz")) for f in m] == ["arrivals", None, "holding", None]
+    assert [pen(f, _flt(callsign="wzz1")) for f in m] == ["arrivals", None, None, None]
+    assert [pen(f, _flt(callsign="ZZ1")) for f in m] == ["arrivals", None, None, None]  # middle/end
+    assert [pen(f, _flt(callsign="RYR")) for f in m] == [None, "departures", None, None]
+    assert [pen(f, _flt(callsign="")) for f in m] == [pen(f, _flt()) for f in m]  # empty = no filter
+    assert pen(dict(m[0], flight=None), _flt(callsign="W")) is None  # no callsign never matches
+    assert pen(dict(m[0], flight=None), _flt()) == "arrivals"
+
+
+def test_callsign_is_not_the_airline_prefix_match():
+    """Contract pin: airlines match the callsign START, callsign matches anywhere."""
+    m = _movs()
+    assert [pen(f, _flt(airlines={"ZZ"})) for f in m] == [None, None, None, None]
+    assert [pen(f, _flt(callsign="ZZ")) for f in m] == ["arrivals", None, "holding", None]
+
+
+def test_pen_type_match_is_case_sensitive():
+    """pen() compares types exactly; the request schema is what normalises case."""
+    m = _movs()[0]  # type A320
+    assert pen(m, _flt(types={"A320"})) == "arrivals"
+    assert pen(m, _flt(types={"a320"})) is None
+
+
+def test_empty_type_element_hides_everything_absent_types_show_all():
+    """The bug's two meanings: {""} hides every movement, an absent filter shows all."""
+    m = _movs()
+    assert [pen(f, _flt(types={""})) for f in m] == [None, None, None, None]
+    assert [pen(f, _flt()) for f in m] == ["arrivals", "departures", "holding", "go_around"]
+
+
 def test_military_and_privacy_excluded_by_default():
     m = dict(_movs()[0])
     assert pen(dict(m, db_flags=1), _flt()) is None  # military
