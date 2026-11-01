@@ -57,9 +57,6 @@ router = APIRouter(prefix="/v1/fulfill", tags=["fulfillment-v1"])
 
 _settings = Settings()
 
-#: Pen colours the convert can draw in (``LineColorName``).
-LINE_COLORS = frozenset({"black", "white", "red", "blue", "green"})
-
 
 def _verify(body: InkSplitRequest) -> JSONResponse | None:
     """Enforce the design token: 410 expired, 403 otherwise-invalid."""
@@ -217,12 +214,13 @@ def _compose_pass(
     The pass keeps the draft's root tag, so its source size — and with it the
     placement — is identical for every pass and for the preview convert. Only
     the Pen pass draws the furniture; the others reserve the same title strip
-    so the artwork registers across pens. The pass is drawn in its own ink on
-    a plain page: the display background of the preview never reaches the file.
+    so the artwork registers across pens. Every stroke is black on a plain page
+    (the ink is carried by the file name, shop D0): the display colour and
+    background of the preview never reach the file.
     """
     params = convert.model_copy(deep=True)
     params.background = "none"
-    params.line_color = pass_file.ink if pass_file.ink in LINE_COLORS else "black"
+    params.line_color = "black"
     data = pass_file.svg.encode("utf-8")
     result = run_convert(
         image_id=hashlib.sha256(data).hexdigest(),
