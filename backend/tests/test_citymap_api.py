@@ -419,3 +419,37 @@ def test_validation_failures_never_rate_limit_confusion(live):
         assert r.status_code == 422 and r.json()["error"]["code"] == "invalid_params", r.text
         r = live.post("/v1/citymap/render", json={"bogus": True})
         assert r.status_code == 422, r.text
+
+
+def test_render_overpass_remark_caches_no_tiles(live, monkeypatch):
+    # Overpass answers 200 + a timeout remark with no elements; the render
+    # must fail over (here: OSM API dead too → 502) and must not pin the
+    # blank result as "covered, empty" tiles in Redis.
+    from backend.citymap import fetching, overpass
+    from backend.citymap.config import settings
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"elements": [], "remark": "runtime error: Query timed out"}
+
+    class _Client:
+        async def post(self, *a, **k):
+            return _Resp()
+
+        async def aclose(self):
+            return None
+
+    async def _remark_overpass(query, client=None):
+        return await overpass.fetch_overpass(query, client=_Client())
+
+    async def _dead_osm_api(*a, **k):
+        raise OsmApiError("mock osm api outage")
+
+    monkeypatch.setattr(settings, "overpass_retries", 0)
+    monkeypatch.setattr(fetching, "fetch_overpass", _remark_overpass)
+    monkeypatch.setattr(fetching, "fetch_osm_api", _dead_osm_api)
+    resp = live.post("/v1/citymap/render", json=_bbox_body(BBOX_RENDER, ["roads"]))
+    assert resp.status_code == 502, resp.text
+    assert not redis_harness.cached_values("fund-vista:citymap:v1:tile:")
