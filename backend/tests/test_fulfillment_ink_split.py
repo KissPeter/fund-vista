@@ -440,6 +440,52 @@ def test_ink_split_airport_two_passes_over_http(live, monkeypatch):
     assert not (set(files["black"]["layers"]) & {"osm-runways", "runways"})
 
 
+def test_ink_split_with_convert_params_draws_the_furniture_once(live):
+    """The buyer's framed preview params ride the split: the Pen pass carries
+    the page frame and the title strokes, the runway pass only the artwork,
+    and both are laid out on the same A4 sheet."""
+    imported = live.post("/v1/airports/import", json={"icao": "LHBP"})
+    assert imported.status_code == 200, imported.text
+    design_id = imported.json()["image_id"]
+    request = {
+        "design": _mint(design_id),
+        "kind": "airport",
+        "params": {"icao": "LHBP"},
+        "inks": {"pen": "black", "runway": "red"},
+    }
+    plain = live.post("/v1/fulfill/ink-split", json=request)
+    framed = live.post("/v1/fulfill/ink-split", json={
+        **request,
+        "convert": {
+            "methods": ["contour"],
+            "page": {"frame": True, "margin_mm": 10},
+            "label": {"enabled": True, "text": "BUDAPEST\nLHBP", "border": True},
+        },
+    })
+    assert plain.status_code == 200 and framed.status_code == 200, framed.text
+    files = {f["ink"]: f for f in framed.json()["files"]}
+    assert sorted(files) == ["black", "red"]
+    base = {f["ink"]: f for f in plain.json()["files"]}
+    # Laid out on the A4 sheet, not the draft's own canvas.
+    assert 'width="210' in files["black"]["svg"] and 'height="297' in files["black"]["svg"]
+    # Furniture strokes are extra geometry only on the Pen pass.
+    def strokes(svg: str) -> int:
+        return svg.count("<path") + svg.count("<polyline") + svg.count("<line")
+    assert strokes(files["black"]["svg"]) > 0 and strokes(files["red"]["svg"]) > 0
+    again = live.post("/v1/fulfill/ink-split", json={
+        **request,
+        "convert": {
+            "methods": ["contour"],
+            "page": {"frame": False},
+            "label": {"enabled": False},
+        },
+    })
+    bare = {f["ink"]: f for f in again.json()["files"]}
+    assert strokes(files["black"]["svg"]) > strokes(bare["black"]["svg"])
+    assert strokes(files["red"]["svg"]) == strokes(bare["red"]["svg"])
+    assert base["black"]["svg"] != files["black"]["svg"]
+
+
 def test_ink_split_serves_the_cached_draft(live, monkeypatch, tmp_path):
     """Cache-first: the second call hits the L4 draft cache and splits the
     byte-identical draft (cache_hit=True, same digests)."""

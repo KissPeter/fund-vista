@@ -15,6 +15,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from backend.penplot.schemas import ConvertParams
+
 #: The buyer-pickable inks (the runway ink set, issues #923/#1078) — every
 #: assignment is one of these, or the Pen.
 #: Green is the fourth ink of ``PAPER_PEN_MATRIX.white`` in the shop
@@ -75,6 +77,12 @@ class InkSplitRequest(BaseModel):
     #: own ``kind`` marker key is tolerated and must agree.
     params: dict[str, object]
     inks: InkAssignment
+    #: The convert params of the buyer's framed preview (page, title label,
+    #: tables). When set, every pass is laid out on the sheet exactly like the
+    #: preview and the Pen pass carries the frame, title band and tables, so
+    #: the printable file matches what the buyer saw. Absent = the raw draft
+    #: groups (legacy behaviour).
+    convert: ConvertParams | None = None
 
     @field_validator("params")
     @classmethod
