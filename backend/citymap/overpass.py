@@ -276,6 +276,25 @@ async def fetch_overpass(query: str, client: httpx.AsyncClient | None = None) ->
                         failures.append(f"{url} returned an invalid payload")
                         log.warning("overpass.fail mirror=%s invalid_payload", url)
                         break
+                    # Overpass answers HTTP 200 with a partial/empty element
+                    # list plus a ``remark`` ("runtime error: Query timed
+                    # out", "out of memory") when it gave up mid-query.
+                    # That is not a complete answer: retry, then fail over.
+                    remark = payload.get("remark")
+                    if remark:
+                        detail = f"{url} reported a remark ({str(remark)[:_BODY_SNIPPET_LEN]})"
+                        if attempt + 1 < max_attempts:
+                            log.warning(
+                                "overpass.retry mirror=%s remark=%r attempt=%d/%d",
+                                url, remark, attempt + 1, max_attempts,
+                            )
+                            await asyncio.sleep(
+                                _backoff(settings.overpass_retry_backoff_s, attempt)
+                            )
+                            continue
+                        failures.append(detail)
+                        log.warning("overpass.fail mirror=%s remark=%r", url, remark)
+                        break
                     log.info("overpass.ok mirror=%s elements=%d", url, len(payload["elements"]))
                     return payload["elements"]
                 except (httpx.HTTPError, ValueError) as exc:
