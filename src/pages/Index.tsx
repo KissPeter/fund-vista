@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { InvestmentsTab } from "@/components/InvestmentsTab";
 import { useFunds, type Provider } from "@/hooks/useFunds";
@@ -18,9 +19,18 @@ import { ChartPanel } from "@/components/dashboard/ChartPanel";
  * useFundChart; the tab bodies are dashboard components. InvestmentApi
  * shapes are untouched (services/investmentApi.ts is out of scope).
  */
+const TAB_IDS = ["funds", "analysis", "investments"] as const;
+type TabId = (typeof TAB_IDS)[number];
+
 const Index = () => {
   const [provider, setProvider] = useState<Provider>("KH");
-  const [activeTab, setActiveTab] = useState("funds");
+  // The active tab lives in the URL (`?tab=`), so each switch adds a history entry and Back returns to the previous tab.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const activeTab: TabId = TAB_IDS.find((id) => id === tabParam) ?? "funds";
+  const setActiveTab = (tab: string): void => {
+    setSearchParams(tab === "funds" ? {} : { tab });
+  };
 
   const yields = useYields();
   const { toast } = useToast();
