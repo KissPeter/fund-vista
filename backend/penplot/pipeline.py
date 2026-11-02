@@ -298,8 +298,14 @@ def run_convert(
     params: ConvertParams,
     settings: Settings,
     cancelled: object = None,
+    draw_furniture: bool = True,
 ) -> ConvertResult:
     """Convert an image to plotter SVG.
+
+    ``draw_furniture=False`` keeps the layout identical (the title band still
+    reserves its strip and the tables still knock out the artwork) but leaves
+    the frame, label and table strokes out of the result. Fulfilment uses it
+    for the secondary ink passes so the furniture is drawn exactly once.
 
     ``cancelled`` is an optional ``() -> bool`` polled between stages — after
     decode, before each method pass (``contour``/``centerline``/``hatch``/
@@ -568,7 +574,9 @@ def run_convert(
         # eat the 2 mm frame-radius arcs (0.04 mm chord sagitta < 0.1 mm
         # tolerance) and leave lathe chamfers, so it only ever sees artwork.
         # OCR text and exact circles keep their drawn shape like labels do.
-        static_lines = lab_lines + frame_lines + table_lines + extra_laid
+        static_lines = (
+            lab_lines + frame_lines + table_lines if draw_furniture else []
+        ) + extra_laid
         static_merged: list = (
             linemerge(quantize(static_lines, q), tol) if static_lines else []
         )

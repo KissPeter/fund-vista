@@ -20,6 +20,8 @@ Guard rails:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import time
 
@@ -38,9 +40,12 @@ from backend.fulfillment.schemas import (
 )
 from backend.http import error_response
 from backend.penplot import imaging
+from backend.penplot.errors import PenPlotError
 from backend.penplot import tokens as design_tokens
 from backend.penplot.config import Settings
+from backend.penplot.pipeline import run_convert
 from backend.penplot.router import require_rate_limit
+from backend.penplot.schemas import ConvertParams
 from backend.penplot.svgmeta import stamp as svgmeta_stamp
 from backend.traffic import router as traffic_router
 from backend.traffic.schemas import ATTRIBUTION as TRAFFIC_ATTRIBUTION
@@ -151,8 +156,26 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
         )
 
     files: list[InkFileOut] = []
-    for pass_file in splitter.split_by_ink(svg_text, group_ink):
-        stamped = svgmeta_stamp(pass_file.svg, _settings, title=f"{place} — {pass_file.ink} pass")
+    passes = splitter.split_by_ink(svg_text, group_ink)
+    # The page furniture (frame, title band, tables) is drawn once: on the Pen
+    # pass, or on the first pass when the Pen has no layer of its own.
+    furniture_ink = (
+        body.inks.pen if any(p.ink == body.inks.pen for p in passes)
+        else (passes[0].ink if passes else "")
+    )
+    for pass_file in passes:
+        pass_svg = pass_file.svg
+        if body.convert is not None:
+            try:
+                pass_svg = await asyncio.to_thread(
+                    _compose_pass, pass_file, body.convert,
+                    draw_furniture=pass_file.ink == furniture_ink, warnings=warnings,
+                )
+            except PenPlotError as exc:
+                log.warning("fulfill.ink-split design=%s pass=%s compose failed: %s",
+                            body.design.design_id[:12], pass_file.ink, exc.code)
+                return error_response(exc.status, exc.code, exc.message)
+        stamped = svgmeta_stamp(pass_svg, _settings, title=f"{place} — {pass_file.ink} pass")
         try:
             imaging.parse_svg_vectors(stamped.encode("utf-8"))
         except Exception as exc:  # unplottable pass: refuse the whole split
@@ -177,6 +200,37 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
         kind=body.kind, cache_hit=cache_hit,
         files=files, attribution=attribution, warnings=warnings,
     )
+
+
+def _compose_pass(
+    pass_file: splitter.InkFile,
+    convert: ConvertParams,
+    *,
+    draw_furniture: bool,
+    warnings: list[str],
+) -> str:
+    """Lay one ink pass out on the buyer's sheet (page, margins, title strip).
+
+    The pass keeps the draft's root tag, so its source size — and with it the
+    placement — is identical for every pass and for the preview convert. Only
+    the Pen pass draws the furniture; the others reserve the same title strip
+    so the artwork registers across pens. Every stroke is black on a plain page
+    (the ink is carried by the file name, shop D0): the display colour and
+    background of the preview never reach the file.
+    """
+    params = convert.model_copy(deep=True)
+    params.background = "none"
+    params.line_color = "black"
+    data = pass_file.svg.encode("utf-8")
+    result = run_convert(
+        image_id=hashlib.sha256(data).hexdigest(),
+        image_bytes=data, is_vector=True, src_w=0.0, src_h=0.0,
+        params=params, settings=_settings, draw_furniture=draw_furniture,
+    )
+    for warning in result.warnings:
+        if warning not in warnings:
+            warnings.append(warning)
+    return result.svg_text
 
 
 def _airport_mapper(inks):
