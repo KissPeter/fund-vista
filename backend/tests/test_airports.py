@@ -1095,3 +1095,29 @@ def test_terminal_distance_helpers_and_default():
     assert _place_label("B5", 12.0, [(5.0, 20.0), (5.0, 80.0)], [], 4.0, require_clear=True,
                         far_from=[seg], min_far=40.0) == (5.0, 80.0)
     assert R._TERMINAL_CLEAR_MM >= 15.0
+
+
+def test_polygon_cut_handles_rotated_bands_and_both_windings():
+    import math as _m
+    from backend.airports.render import _cut_polyline, _shape_interval
+
+    # A square rotated 45° (diamond) around the origin, radius 10, in both windings.
+    ccw = [(10.0, 0.0), (0.0, 10.0), (-10.0, 0.0), (0.0, -10.0)]
+    cw = list(reversed(ccw))
+    for diamond in (ccw, cw):
+        t0, t1 = _shape_interval(-20.0, 0.0, 20.0, 0.0, diamond)
+        assert abs(t0 - 0.25) < 1e-9 and abs(t1 - 0.75) < 1e-9
+        assert _shape_interval(-20.0, 15.0, 20.0, 15.0, diamond) is None           # misses
+        assert _shape_interval(-20.0, 10.0, 20.0, 10.0, diamond) is None or \
+            _shape_interval(-20.0, 10.0, 20.0, 10.0, diamond)[1] - \
+            _shape_interval(-20.0, 10.0, 20.0, 10.0, diamond)[0] < 1e-9              # grazes the tip
+        pieces = _cut_polyline([(-20.0, 0.0), (20.0, 0.0)], [diamond])
+        assert pieces == [[(-20.0, 0.0), (-10.0, 0.0)], [(10.0, 0.0), (20.0, 0.0)]]
+        assert _cut_polyline([(-3.0, 0.0), (3.0, 0.0)], [diamond]) == []           # fully inside
+        assert _cut_polyline([(-20.0, 30.0), (20.0, 30.0)], [diamond]) == [[(-20.0, 30.0), (20.0, 30.0)]]
+    # Polyline spanning several segments and two shapes (box + polygon) at once.
+    pts = [(-30.0, 0.0), (0.0, 0.0), (30.0, 0.0), (30.0, 30.0)]
+    cut = _cut_polyline(pts, [ccw, (25.0, -5.0, 35.0, 5.0)])
+    assert cut[0] == [(-30.0, 0.0), (-10.0, 0.0)]
+    assert cut[1] == [(10.0, 0.0), (25.0, 0.0)]
+    assert cut[2] == [(30.0, 5.0), (30.0, 30.0)]

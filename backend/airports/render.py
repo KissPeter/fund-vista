@@ -294,33 +294,53 @@ def _spot_ok(c, text, size, fits, keepout) -> bool:
     return fits is None or fits(bare)
 
 
-def _cut_polyline(pts: list[tuple[float, float]], boxes: list[Box]) -> list[list[tuple[float, float]]]:
-    """Cut a polyline against label boxes: the parts inside any box vanish
-    (the label's white background); the rest stay as separate polylines."""
+def _shape_interval(
+    x0: float, y0: float, x1: float, y1: float, shape,
+) -> tuple[float, float] | None:
+    """Parameter interval of segment (p0→p1) inside `shape`: an axis-aligned
+    ``Box`` (4 floats) or a convex polygon (list of points); None if outside."""
+    dx, dy = x1 - x0, y1 - y0
+    if len(shape) == 4 and not isinstance(shape[0], (tuple, list)):
+        xmin, ymin, xmax, ymax = shape
+        if max(x0, x1) < xmin or min(x0, x1) > xmax or max(y0, y1) < ymin or min(y0, y1) > ymax:
+            return None
+        planes = ((-dx, x0 - xmin), (dx, xmax - x0), (-dy, y0 - ymin), (dy, ymax - y0))
+    else:
+        xs = [q[0] for q in shape]
+        ys = [q[1] for q in shape]
+        if max(x0, x1) < min(xs) or min(x0, x1) > max(xs) or max(y0, y1) < min(ys) or min(y0, y1) > max(ys):
+            return None
+        area = sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(shape, shape[1:] + shape[:1]))
+        sgn = 1.0 if area >= 0 else -1.0
+        planes = []
+        for a, b in zip(shape, shape[1:] + shape[:1]):
+            ex, ey = b[0] - a[0], b[1] - a[1]
+            # inside: sgn * cross(e, p - a) >= 0, linear in t
+            planes.append((-sgn * (ex * dy - ey * dx), sgn * (ex * (y0 - a[1]) - ey * (x0 - a[0]))))
+    t0, t1 = 0.0, 1.0
+    for pp, qq in planes:
+        if pp == 0.0:
+            if qq < 0.0:
+                return None
+            continue
+        t = qq / pp
+        if pp < 0.0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 > t1:
+            return None
+    return t0, t1
+
+
+def _cut_polyline(pts: list[tuple[float, float]], shapes: list) -> list[list[tuple[float, float]]]:
+    """Cut a polyline against shapes (label boxes, runway bands): the parts
+    inside any shape vanish (a white background / ink priority); the rest
+    stay as separate polylines."""
     out: list[list[tuple[float, float]]] = []
     cur: list[tuple[float, float]] = []
     for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-        cuts: list[tuple[float, float]] = []
-        for xmin, ymin, xmax, ymax in boxes:
-            if max(x0, x1) < xmin or min(x0, x1) > xmax or max(y0, y1) < ymin or min(y0, y1) > ymax:
-                continue
-            t0, t1, dx, dy, ok = 0.0, 1.0, x1 - x0, y1 - y0, True
-            for pp, qq in ((-dx, x0 - xmin), (dx, xmax - x0), (-dy, y0 - ymin), (dy, ymax - y0)):
-                if pp == 0.0:
-                    if qq < 0.0:
-                        ok = False
-                        break
-                    continue
-                t = qq / pp
-                if pp < 0.0:
-                    t0 = max(t0, t)
-                else:
-                    t1 = min(t1, t)
-                if t0 > t1:
-                    ok = False
-                    break
-            if ok:
-                cuts.append((t0, t1))
+        cuts = [iv for shp in shapes if (iv := _shape_interval(x0, y0, x1, y1, shp)) is not None]
         pos = 0.0
         if not cur:
             cur = [(x0, y0)]
@@ -344,13 +364,18 @@ def _cut_polyline(pts: list[tuple[float, float]], boxes: list[Box]) -> list[list
 
 _PATH_RE = re.compile(r'^<path d="([^"]+)"/>$')
 _NUM_RE = re.compile(r"(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)")
-# Groups never knocked out: the authoritative runway strips and their marks.
+# Groups never knocked out by a label box: the authoritative runway strips and marks.
 _KNOCKOUT_EXEMPT = ("runways", "runway-marks")
+# The runway ink: nothing else is ever cut for it, and it cuts everything else.
+_RUNWAY_INK = ("runways", "runway-marks", "osm-runways")
+# Clear paper between a runway band and the other lines cut back from it.
+_RUNWAY_CLEAR_MM = 0.5
 
 
-def _knock_out_labels(parts: list[str], boxes: list[Box]) -> list[str]:
-    """Rewrite every drawn <path> so nothing runs through a label box."""
-    if not boxes:
+def _knock_out(parts: list[str], shapes: list, exempt: tuple[str, ...]) -> list[str]:
+    """Rewrite every drawn <path> (outside `exempt` groups) so nothing runs
+    through any of `shapes`."""
+    if not shapes:
         return parts
     out: list[str] = []
     group = ""
@@ -359,20 +384,31 @@ def _knock_out_labels(parts: list[str], boxes: list[Box]) -> list[str]:
         if gm:
             group = gm.group(1)
         pm = _PATH_RE.match(part)
-        if not pm or group in _KNOCKOUT_EXEMPT:
+        if not pm or group in exempt:
             out.append(part)
             continue
         d = pm.group(1)
         pts = [(float(x), float(y)) for x, y in _NUM_RE.findall(d)]
         if d.rstrip().endswith("Z"):
             pts.append(pts[0])
-        pieces = _cut_polyline(pts, boxes)
+        pieces = _cut_polyline(pts, shapes)
         if len(pieces) == 1 and pieces[0] == pts:
             out.append(part)
             continue
         for piece in pieces:
             out.append('<path d="M ' + " L ".join(f"{x:.2f} {y:.2f}" for x, y in piece) + '"/>')
     return out
+
+
+def _knock_out_labels(parts: list[str], boxes: list[Box]) -> list[str]:
+    """Rewrite every drawn <path> so nothing runs through a label box."""
+    return _knock_out(parts, boxes, _KNOCKOUT_EXEMPT)
+
+
+def _knock_out_runway_bands(parts: list[str], bands: list[list[tuple[float, float]]]) -> list[str]:
+    """Runway priority: no other ink under a runway band, so a differently
+    inked runway (red) is never overprinted by taxiway/road lines (black)."""
+    return _knock_out(parts, bands, _RUNWAY_INK)
 
 
 def _esc(text: object) -> str:
@@ -690,6 +726,7 @@ def render_diagram(
 
     # Every drawn line segment (SVG space): labels are placed clear of them.
     obstacles: list[Seg] = []
+    runway_bands: list[list[tuple[float, float]]] = []  # convex quads, cut other ink
     runway_hard: list[Seg] = []  # strip infill lines: labels may never touch these
     label_boxes: list[Box] = []  # padded label boxes: lines are cut out of them
     label_pad = width * _LABEL_PAD_MM / _PAGE_MM_W
@@ -792,6 +829,16 @@ def render_diagram(
             seg = math.hypot(dx, dy) or 1.0
             nx, ny = -dy / seg, dx / seg  # world-space normal
             hw = s["width_m"] / 2.0 * _RUNWAY_WIDTH_EXAGGERATE
+            # Runway priority band: the strip plus a hairline of clear paper.
+            pad_m = (width * _RUNWAY_CLEAR_MM / _PAGE_MM_W) / scale
+            ux_w, uy_w = dx / seg, dy / seg
+            le_p = (s["le"][0] - ux_w * pad_m, s["le"][1] - uy_w * pad_m)
+            he_p = (s["he"][0] + ux_w * pad_m, s["he"][1] + uy_w * pad_m)
+            hwp = hw + pad_m
+            runway_bands.append([
+                W2S(le_p[0] + nx * hwp, le_p[1] + ny * hwp), W2S(he_p[0] + nx * hwp, he_p[1] + ny * hwp),
+                W2S(he_p[0] - nx * hwp, he_p[1] - ny * hwp), W2S(le_p[0] - nx * hwp, le_p[1] - ny * hwp),
+            ])
             strips_world = [
                 [(s["le"][0] + nx * hw * frac, s["le"][1] + ny * hw * frac),
                  (s["he"][0] + nx * hw * frac, s["he"][1] + ny * hw * frac)]
@@ -928,6 +975,7 @@ def render_diagram(
     # NOTE: no compass — client decision, removed from the artwork.
 
     parts.append("</svg>")
+    parts = _knock_out_runway_bands(parts, runway_bands)
     parts = _knock_out_labels(parts, label_boxes)
     return "\n".join(parts) + "\n", counts, rotation, warnings
 
