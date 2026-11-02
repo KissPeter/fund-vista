@@ -31,6 +31,10 @@
 #   AUTOMERGE_BLOCKED_PATHS  paths a PR may not touch to be auto-merged
 #                             (default: empty - the owner decides)
 #   AUTOMERGE_REQUIRE_MAIN_GREEN true | false                (default: true)
+#   AUTOMERGE_MAIN_WAIT_SECONDS  how long a pending gate on main is waited for
+#                             before the sweep gives up   (default: 900)
+#   AUTOMERGE_MAIN_POLL_SECONDS  pause between two checks of a pending main
+#                             gate                          (default: 30)
 #   AUTOMERGE_DISPATCH_CI    auto | never                   (default: auto)
 #   AUTOMERGE_MAX_DISPATCH   merge-ref CI runs one sweep may start   (default: 3)
 #                             A merge moves `main`, so every other PR must be
@@ -49,6 +53,8 @@ ADVISORY_CHECKS="${AUTOMERGE_ADVISORY_CHECKS:-live-e2e}"
 BLOCKED_PATHS="${AUTOMERGE_BLOCKED_PATHS:-}"
 BLOCK_LABELS="${AUTOMERGE_BLOCK_LABELS:-automerge:block,needs-human}"
 REQUIRE_MAIN_GREEN="${AUTOMERGE_REQUIRE_MAIN_GREEN:-true}"
+MAIN_WAIT_SECONDS="${AUTOMERGE_MAIN_WAIT_SECONDS:-900}"
+MAIN_POLL_SECONDS="${AUTOMERGE_MAIN_POLL_SECONDS:-30}"
 DISPATCH_CI="${AUTOMERGE_DISPATCH_CI:-auto}"
 MAX_DISPATCH="${AUTOMERGE_MAX_DISPATCH:-3}"
 DRY_RUN="${AUTOMERGE_DRY_RUN:-false}"
@@ -78,14 +84,16 @@ SKIPPED_COUNT=0
 FAILED_COUNT=0
 MAIN_SHA=""
 
+# log and fail write to stderr: several helpers run inside $(...) and their
+# result is read from stdout, so a log line there would corrupt the result.
 log() {
-  printf '%s %s\n' "$(date -u '+%H:%M:%S')" "$*"
+  printf '%s %s\n' "$(date -u '+%H:%M:%S')" "$*" >&2
 }
 
 # fail <message> - a broken sweep must turn the job red: a sweep that could
 # not do its work is not a sweep that found nothing to merge.
 fail() {
-  printf '::error::%s\n' "$*"
+  printf '::error::%s\n' "$*" >&2
   exit 1
 }
 
@@ -305,13 +313,13 @@ pr_touches_blocked_path() {
   return 1
 }
 
-# main_is_green -> 0 when the CI gate on the current main commit is green.
-# Every gate workflow that ran on this main commit must be green. A gate
-# workflow that did not run on it (path filter: a docs-only merge) is not
+# main_gate_state -> green | pending | red, the CI gate on the current main
+# commit. Every gate workflow that ran on this main commit must be green. A
+# gate workflow that did not run on it (path filter: a docs-only merge) is not
 # counted, and a main commit without any gate run is not a blocker: nothing
-# is known to be broken there.
-main_is_green() {
-  local entry workflow run_id state
+# is known to be broken there. A red gate wins over a pending one.
+main_gate_state() {
+  local entry workflow run_id state verdict="green"
   refresh_main_sha
   if [ -z "$MAIN_SHA" ]; then
     # An unreadable `main` is a broken sweep, not a red `main`.
@@ -325,11 +333,31 @@ main_is_green() {
     [ -n "$run_id" ] || continue
     state="$(ci_run_jobs_state "$run_id" "$(gate_workflow_jobs "$entry")")"
     log "main gate $workflow ($MAIN_SHA, run $run_id): $state"
-    if [ "$state" != "green" ]; then
-      return 1
-    fi
+    case "$state" in
+      green) ;;
+      pending) verdict="pending" ;;
+      *) echo "red"; return 0 ;;
+    esac
   done
-  return 0
+  echo "$verdict"
+}
+
+# wait_for_main -> green | red | pending. Polls the main gate while it is
+# pending, up to MAIN_WAIT_SECONDS. `pending` as the result means the wait ran
+# out. A new main commit during the wait is checked as well: the rule is about
+# the commit that is current when the merge happens.
+wait_for_main() {
+  local waited=0 state
+  while :; do
+    state="$(main_gate_state)"
+    if [ "$state" != "pending" ] || [ "$waited" -ge "$MAIN_WAIT_SECONDS" ]; then
+      echo "$state"
+      return 0
+    fi
+    log "main gate still pending: checking again in ${MAIN_POLL_SECONDS}s (waited ${waited}s of ${MAIN_WAIT_SECONDS}s)"
+    sleep "$MAIN_POLL_SECONDS"
+    waited=$((waited + MAIN_POLL_SECONDS))
+  done
 }
 
 # active_run_for_sha <sha> -> 0 when a CI run for that SHA is queued or running
@@ -603,12 +631,22 @@ main() {
   log "sweep start: repo=$REPO token=$TOKEN_SOURCE method=$MERGE_METHOD gates=$GATE_WORKFLOWS dry_run=$DRY_RUN"
   preflight
 
-  if [ "$REQUIRE_MAIN_GREEN" = "true" ] && ! main_is_green; then
-    log "main is not green: no PR is merged in this run"
-    printf '::warning::main is not green: the sweep merged nothing\n'
-    add_row "-" "-" "skipped" "main is not green"
-    write_summary
-    exit 0
+  if [ "$REQUIRE_MAIN_GREEN" = "true" ]; then
+    main_state="$(main_gate_state)"
+    if [ "$main_state" = "pending" ]; then
+      log "main gate is pending: waiting up to ${MAIN_WAIT_SECONDS}s for it"
+      main_state="$(wait_for_main)"
+      if [ "$main_state" = "pending" ]; then
+        printf '::notice::the sweep timed out waiting for main after %ss: the gate on main is still running, so nothing was merged; the next sweep merges\n' "$MAIN_WAIT_SECONDS"
+      fi
+    fi
+    if [ "$main_state" != "green" ]; then
+      log "main is not green ($main_state): no PR is merged in this run"
+      printf '::warning::main is not green (%s): the sweep merged nothing\n' "$main_state"
+      add_row "-" "-" "skipped" "main is not green ($main_state)"
+      write_summary
+      exit 0
+    fi
   fi
 
   local prs pr number title decision detail

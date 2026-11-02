@@ -166,6 +166,75 @@ add_row "#1" "t" "failed" "d"
 add_row "#2" "t" "skipped" "d"
 expect "a failed row is counted as failed" "1/1" "$FAILED_COUNT/$SKIPPED_COUNT"
 
+# --- the main gate: pending is not red -------------------------------------
+# A shim gh answers the main gate: SHIM_STATE is success, failure or pending;
+# a pending-once flag file makes the first job check pending and the next green.
+main_shim="$(mktemp -d)"
+cat >"$main_shim/gh" <<'SHIM'
+#!/usr/bin/env bash
+case "$*" in
+  *"--jq .full_name"* | *"--jq '.full_name'"*) echo "o/r" ;;
+  *"commits/main"*) echo "abc123" ;;
+  *"actions/runs/777/jobs"*)
+    state="${SHIM_STATE:-success}"
+    if [ -f "$SHIM_DIR/pending-once" ]; then
+      rm -f "$SHIM_DIR/pending-once"
+      state=pending
+    fi
+    case "$state" in
+      pending) printf 'gate\tin_progress\tnone\n' ;;
+      *) printf 'gate\tcompleted\t%s\n' "$state" ;;
+    esac
+    ;;
+  *"actions/runs?head_sha"*) echo '{"workflow_runs":[{"id":777,"name":"CI","run_number":1}]}' ;;
+  "pr list"*) echo '[]' ;;
+  *) echo '{}' ;;
+esac
+SHIM
+chmod +x "$main_shim/gh"
+export SHIM_DIR="$main_shim"
+export GITHUB_REPOSITORY=o/r REPO=o/r
+GATE_WORKFLOW_LIST="CI=gate"
+
+expect "a green main gate is green" "green" \
+  "$(PATH="$main_shim:$PATH" SHIM_STATE=success main_gate_state 2>/dev/null)"
+
+expect "a red main gate is red" "red" \
+  "$(PATH="$main_shim:$PATH" SHIM_STATE=failure main_gate_state 2>/dev/null)"
+
+expect "a running main gate is pending, not red" "pending" \
+  "$(PATH="$main_shim:$PATH" SHIM_STATE=pending main_gate_state 2>/dev/null)"
+
+expect "a pending main gate that turns green is waited for" "green" \
+  "$(touch "$main_shim/pending-once"; PATH="$main_shim:$PATH" MAIN_WAIT_SECONDS=5 MAIN_POLL_SECONDS=0 \
+    SHIM_STATE=success wait_for_main 2>/dev/null)"
+
+expect "a main gate still pending at the timeout stays pending" "pending" \
+  "$(PATH="$main_shim:$PATH" MAIN_WAIT_SECONDS=0 MAIN_POLL_SECONDS=0 \
+    SHIM_STATE=pending wait_for_main 2>/dev/null)"
+
+# The sweep: a pending main ends with the notice and exit 0, a red main with
+# the warning only.
+status=0
+out="$(PATH="$main_shim:$PATH" SHIM_STATE=pending AUTOMERGE_MAIN_WAIT_SECONDS=0 AUTOMERGE_MAIN_POLL_SECONDS=0 \
+  AUTOMERGE_GATE_WORKFLOWS=CI=gate /bin/bash "$SCRIPT_DIR/auto-merge-sweep.sh" 2>&1)" || status=$?
+expect "a sweep that times out on a pending main exits 0" "0" "$status"
+expect "a sweep that times out on a pending main gives a notice" "1" \
+  "$(echo "$out" | grep -c '::notice::the sweep timed out waiting for main')"
+expect "a sweep that times out on a pending main merges nothing" "0" \
+  "$(echo "$out" | grep -c 'merged #')"
+
+status=0
+out="$(PATH="$main_shim:$PATH" SHIM_STATE=failure AUTOMERGE_GATE_WORKFLOWS=CI=gate /bin/bash \
+  "$SCRIPT_DIR/auto-merge-sweep.sh" 2>&1)" || status=$?
+expect "a sweep on a red main exits 0" "0" "$status"
+expect "a sweep on a red main gives no timeout notice" "0" \
+  "$(echo "$out" | grep -c 'timed out')"
+expect "a sweep on a red main warns" "1" \
+  "$(echo "$out" | grep -c '::warning::main is not green (red)')"
+rm -rf "$main_shim"
+unset SHIM_DIR GATE_WORKFLOW_LIST
+
 # --- the sweep runs to the end and exits 0 ----------------------------------
 # Regression: the EXIT trap used a `local` of main(), so every sweep that got
 # past the main-is-green check ended with "unbound variable" and a red job.
