@@ -368,8 +368,9 @@ _NUM_RE = re.compile(r"(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)")
 _KNOCKOUT_EXEMPT = ("runways", "runway-marks")
 # The runway ink: nothing else is ever cut for it, and it cuts everything else.
 _RUNWAY_INK = ("runways", "runway-marks", "osm-runways")
-# Clear paper between a runway band and the other lines cut back from it.
-_RUNWAY_CLEAR_MM = 0.5
+# Gap between a runway band and the lines cut back from it: none - they meet the
+# strip edge exactly (the strip is drawn over them in its own ink).
+_RUNWAY_CLEAR_MM = 0.0
 
 
 def _knock_out(parts: list[str], shapes: list, exempt: tuple[str, ...]) -> list[str]:
@@ -829,7 +830,7 @@ def render_diagram(
             seg = math.hypot(dx, dy) or 1.0
             nx, ny = -dy / seg, dx / seg  # world-space normal
             hw = s["width_m"] / 2.0 * _RUNWAY_WIDTH_EXAGGERATE
-            # Runway priority band: the strip plus a hairline of clear paper.
+            # Runway priority band: exactly the strip (plus _RUNWAY_CLEAR_MM, 0 = flush).
             pad_m = (width * _RUNWAY_CLEAR_MM / _PAGE_MM_W) / scale
             ux_w, uy_w = dx / seg, dy / seg
             le_p = (s["le"][0] - ux_w * pad_m, s["le"][1] - uy_w * pad_m)

@@ -1,7 +1,7 @@
 """Integration: runway ink has priority. Print the map black with a red runway
 and any taxiway/road/apron line under the runway band would be overprinted (the
 red does not cover black). The emitted SVG must hold no other ink inside the
-band; lines are cut back to a hairline of clear paper around it."""
+band; lines are cut back to a no gap: they meet the strip edge exactly."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from backend.airports.render import render_diagram
 from backend.airports.schemas import AIRFIELD_LAYERS
 from backend.tests.test_airport_label_clearance_svg import LE, HE, _airport, _offset, _runway
 
-PAD_UNITS = 1000 * 0.5 / 210.0  # _RUNWAY_CLEAR_MM at width 1000
+FLUSH_TOL = 0.35  # units: cut ends sit on the strip edge, no gap
 RUNWAY_INK = ("runways", "runway-marks", "osm-runways")
 
 
@@ -98,20 +98,19 @@ def test_no_other_ink_inside_the_runway_band():
     assert not bad, f"{len(bad)} ink samples under the runway, e.g. {bad[:3]}"
 
 
-def test_crossing_lines_are_cut_back_to_the_clear_paper_margin():
+def test_crossing_lines_meet_the_strip_edge_with_no_gap():
     svg = _render(**_mock())
     band = _band(svg)
-    # Strip edge = outermost infill lines; the cut sits PAD_UNITS beyond them.
     groups = _groups(svg)
     cut_ends = []
-    for gid in ("osm-taxiways", "context-roads"):
+    for gid in ("osm-taxiways", "context-roads", "osm-aprons"):
         for poly in groups[gid]:
             cut_ends += [poly[0], poly[-1]]
-    ends_near_band = [p for p in cut_ends if abs(_dist_to_polygon_edge(p, band)) < 6.0]
-    assert ends_near_band, "no cut ends near the runway"
+    ends_near_band = [p for p in cut_ends if _dist_to_polygon_edge(p, band) < 6.0]
+    assert len(ends_near_band) >= 6, "expected cuts at the runway"
     for p in ends_near_band:
         d = _dist_to_polygon_edge(p, band)
-        assert PAD_UNITS * 0.7 <= d <= PAD_UNITS * 1.5, f"cut {d:.2f} units off the strip, want ~{PAD_UNITS:.2f}"
+        assert d <= FLUSH_TOL, f"cut ends {d:.2f} units off the strip edge, want flush (no gap)"
 
 
 def _dist_to_polygon_edge(pt, poly):
