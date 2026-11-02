@@ -540,3 +540,12 @@ def test_solid_panorama_stays_above_the_band_over_http(http_client):
             spanning += 1
     # Only the page frame spans the band top; nothing overflows the strip.
     assert spanning == 1
+
+
+def test_strip_bottom_gap_clears_pen_width():
+    # Descenders must not touch the frame bottom: gap is at least the pad.
+    for font in labels.LABEL_FONTS:
+        m = labels._strip_metrics("Budapest Liszt Ferenc", height_mm=5.0, font=font)
+        assert m is not None
+        _, pad, gap = m
+        assert gap >= pad and gap >= labels.BORDER_GAP_MIN_MM
