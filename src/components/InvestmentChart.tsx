@@ -222,7 +222,7 @@ export const InvestmentChart = ({
           <h3 className="text-lg font-semibold mb-3">Performance (%)</h3>
           <ChartContainer config={chartConfig} className="h-[260px] w-full !aspect-auto">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
+              <LineChart data={zoomedChartData}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" />
                 <XAxis
                   dataKey="date"
@@ -239,7 +239,7 @@ export const InvestmentChart = ({
                 />
                 <YAxis
                   tick={{ fontSize: 12 }}
-                  domain={[-20, "auto"]}
+                  domain={["auto", "auto"]}
                   tickFormatter={(value) => `${value.toFixed(1)}%`}
                 />
                 <Tooltip content={<ChartTooltipContent />} />
