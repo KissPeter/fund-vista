@@ -253,6 +253,16 @@ def test_traffic_validation_never_rate_limits(live):
         assert r.json()["error"]["code"] == "invalid_params"
 
 
+def test_render_rejects_ambiguous_type_and_airline_codes(live):
+    """422 before any ingest lookup: an element that could alias another
+    filter in the L4 key never reaches the cache (wrong-SVG bug)."""
+    day = _yesterday_iso()
+    for extra in ({"types": [""]}, {"types": ["A320,B738"]}, {"airlines": ["WZZ,RYR"]}):
+        resp = live.post("/v1/traffic/render", json=_render_body(day, **extra))
+        assert resp.status_code == 422, (extra, resp.text)
+        assert resp.json()["error"]["code"] == "invalid_params", resp.text
+
+
 # -- jobs --------------------------------------------------------------------
 
 def test_jobs_traffic_enqueue_422(live):
