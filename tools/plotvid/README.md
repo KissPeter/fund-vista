@@ -96,5 +96,21 @@ At 10 fps the dense 0.1–0.2 s detail strokes cannot be resolved, so their labe
   - `outro`: 2.5 s. The default is a Pillow card with the plot name and `outro.text`. An image is silent; a video keeps its own audio.
 - **Transition:** `crossfade` (default) joins segments, photo and outro with `xfade` (`crossfade_type`, 0.5 s `crossfade_s`) and `acrossfade`, so the audio fades out into the silent photo. `cut` uses hard concat. Each crossfade shortens the clip by its length; the planner counts that. Everything is one ffmpeg call.
 
+## Folder script (`plotvid.folder`)
+Runs the same plan and render on one folder of videos and photos, with a slideshow and an outro.
+
+```bash
+uv run python -m plotvid.folder FOLDER [--config YAML] [--out DIR] [--slide-s 3]
+```
+
+- **Defaults:** `--config /data/pen-pixel/raw/common/plotvid.yaml`, `--out /data/pen-pixel/processed`. `folder.yaml` in this folder is the same generic config.
+- **Videos** (`.mov`, `.mp4`, `.m4v`) are ordered by creation time, then go through the usual detect, ink check, segment and clip plan. The clip count is `videos.count: auto`, so one folder gives several clips of 30–40 s each.
+- **Photos** (any image type plotvid reads) are ordered by EXIF capture time, file mtime when missing. Each is cropped to the output frame and shown for `--slide-s` seconds (default 3). The slideshow is rendered on its own with hard cuts, then closes the **last** clip, before the outro.
+- **Outro:** `outro` from the YAML, relative to the YAML file. An SVG is converted to PNG at the output size with ImageMagick. A video outro keeps its own audio.
+- **Ending order:** every clip is footage, then the outro. The last clip is footage, then the slideshow, then the outro.
+- **Output:** `OUT/<folder>.mp4` for one clip, or `OUT/<folder>_01.mp4`, `_02.mp4`, ... when there are several. Work files go to `OUT/work/<folder>/`: a generated config, the photo stills, the slideshow, and `summary.json`.
+- **Skipped files:** names starting with `.`, including macOS `._*` companions, and any other extension.
+- **Final photo:** the YAML's `final_photo` is ignored, because the slideshow replaces it. A folder with photos but no videos gets the slideshow and outro only, at 1080×1920.
+
 ## Licensing
 NumPy (BSD-3), Pillow (HPND), PyYAML (MIT) and opencv-python-headless (Apache-2.0) are permissive. ffmpeg's licence depends on how it was built; builds with libx264 are GPL, which is fine for rendering our own videos.
