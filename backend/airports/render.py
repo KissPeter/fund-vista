@@ -851,6 +851,62 @@ def render_diagram(
                     counts["runway"] += 1
         parts.append("</g>")
 
+    # -- runway idents + displaced-threshold ticks: placed FIRST (priority over all
+    # other labels, which are then fitted around them); emitted later in
+    # <g id="runway-marks">. No degree ovals — the ident already encodes the heading.
+    mark_lines: list[str] = []
+    for s in (strips_r if show_runway else []):
+        x1, y1 = W2S(*s["le"])
+        x2, y2 = W2S(*s["he"])
+        dx, dy = x2 - x1, y2 - y1
+        seg = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / seg, dy / seg
+        nx, ny = -uy, ux
+        half_band = (s["width_m"] * _RUNWAY_WIDTH_EXAGGERATE * scale) / 2.0
+        for (px, py), ident, disp_m, end_sign in (
+            ((x1, y1), s["le_ident"], s["le_disp_m"], -1.0),
+            ((x2, y2), s["he_ident"], s["he_disp_m"], +1.0),
+        ):
+            # Off-frame runway ends (zoomed in) lose their furniture too.
+            if not _in_frame(px, py):
+                continue
+            # Displaced-threshold tick: perpendicular bar disp_m inside the end.
+            if disp_m > 0 and s["length_m"] > 0:
+                frac = disp_m / s["length_m"]
+                tx = px - ux * end_sign * frac * seg
+                ty = py - uy * end_sign * frac * seg
+                tick = _clip_segment(
+                    (tx - nx * half_band, ty - ny * half_band),
+                    (tx + nx * half_band, ty + ny * half_band),
+                )
+                if tick is not None:
+                    (ax_, ay_), (bx_, by_) = tick
+                    mark_lines.append(
+                        f"<path d=\"M {ax_:.2f} {ay_:.2f} L {bx_:.2f} {by_:.2f}\"/>"
+                    )
+            # Ident label past the threshold, with a gap to the strip end and
+            # pushed further out / sideways until it is clear of roads.
+            isz = text_h * 1.4
+            hw_u, hh_u, _, _ = _ink_metrics(ident)
+            reach = hw_u * isz * abs(ux) + hh_u * isz * abs(uy)  # half-extent along the axis
+            # Never closer than before (band half-width + 1.2 glyphs), and at
+            # least one glyph of clear paper between strip end and label.
+            base = max(half_band + text_h * 1.2, reach + label_pad + text_h * 0.3)
+            # Runway idents have PRIORITY: placed first and fixed ON the runway axis
+            # (a sideways ident reads as a different runway). Lines behind the label
+            # are knocked out of its white box; every other label moves around it.
+            ix = px + ux * end_sign * base
+            iy = py + uy * end_sign * base
+            isz_used = isz
+            label_boxes.append(_label_box(ix, iy, isz, ident, label_pad))
+            obstacles.extend(_box_edges(_label_box(ix, iy, isz_used, ident)))
+            tx, ty = _label_attrs(ix, iy, isz_used, ident)
+            mark_lines.append(
+                f'<text x="{tx:.2f}" y="{ty:.2f}" text-anchor="middle" '
+                f'font-family="monospace" data-stroke-font="hershey" font-size="{isz_used:.1f}" '
+                f'stroke="none" fill="#000000">{_esc(ident)}</text>'
+            )
+
     # -- taxiway designators (opt-in annotations of the taxiway layer) -----
     # One label per designator (OSM splits ways arbitrarily): keep the
     # longest surviving way so the ref sits on the major stretch. A ref
@@ -908,68 +964,7 @@ def render_diagram(
             f'<g id="runway-marks" fill="none" stroke="#000000" '
             f'stroke-width="{thin_w:.2f}">'
         )
-    for s in (strips_r if show_runway else []):
-        x1, y1 = W2S(*s["le"])
-        x2, y2 = W2S(*s["he"])
-        dx, dy = x2 - x1, y2 - y1
-        seg = math.hypot(dx, dy) or 1.0
-        ux, uy = dx / seg, dy / seg
-        nx, ny = -uy, ux
-        half_band = (s["width_m"] * _RUNWAY_WIDTH_EXAGGERATE * scale) / 2.0
-        for (px, py), ident, disp_m, end_sign in (
-            ((x1, y1), s["le_ident"], s["le_disp_m"], -1.0),
-            ((x2, y2), s["he_ident"], s["he_disp_m"], +1.0),
-        ):
-            # Off-frame runway ends (zoomed in) lose their furniture too.
-            if not _in_frame(px, py):
-                continue
-            # Displaced-threshold tick: perpendicular bar disp_m inside the end.
-            if disp_m > 0 and s["length_m"] > 0:
-                frac = disp_m / s["length_m"]
-                tx = px - ux * end_sign * frac * seg
-                ty = py - uy * end_sign * frac * seg
-                tick = _clip_segment(
-                    (tx - nx * half_band, ty - ny * half_band),
-                    (tx + nx * half_band, ty + ny * half_band),
-                )
-                if tick is not None:
-                    (ax_, ay_), (bx_, by_) = tick
-                    parts.append(
-                        f"<path d=\"M {ax_:.2f} {ay_:.2f} L {bx_:.2f} {by_:.2f}\"/>"
-                    )
-            # Ident label past the threshold, with a gap to the strip end and
-            # pushed further out / sideways until it is clear of roads.
-            isz = text_h * 1.4
-            hw_u, hh_u, _, _ = _ink_metrics(ident)
-            reach = hw_u * isz * abs(ux) + hh_u * isz * abs(uy)  # half-extent along the axis
-            # Never closer than before (band half-width + 1.2 glyphs), and at
-            # least one glyph of clear paper between strip end and label.
-            base = max(half_band + text_h * 1.2, reach + label_pad + text_h * 0.3)
-            cands = [
-                (px + ux * end_sign * (base + k * text_h * 0.6) + nx * lat * text_h,
-                 py + uy * end_sign * (base + k * text_h * 0.6) + ny * lat * text_h)
-                for k in range(10) for lat in (0.0, 1.2, -1.2, 2.4, -2.4)
-            ]
-            # Keep-out: the strip end plus one glyph of paper beyond it.
-            ex0, ey0 = px - nx * half_band, py - ny * half_band
-            ex1, ey1 = (px + ux * end_sign * text_h * 1.0 + nx * half_band,
-                        py + uy * end_sign * (label_pad + text_h * 0.3) + ny * half_band)
-            keep = (min(ex0, ex1, px - nx * half_band, px + nx * half_band) - 1.0,
-                    min(ey0, ey1, py - ny * half_band, py + ny * half_band) - 1.0,
-                    max(ex0, ex1, px - nx * half_band, px + nx * half_band) + 1.0,
-                    max(ey0, ey1, py - ny * half_band, py + ny * half_band) + 1.0)
-            ix, iy = _place_label(
-                ident, isz, cands, obstacles, label_pad, _box_in_frame,
-                keepout=keep, radius=text_h * 5.0, hard=runway_hard)
-            isz_used = isz
-            label_boxes.append(_label_box(ix, iy, isz, ident, label_pad))
-            obstacles.extend(_box_edges(_label_box(ix, iy, isz_used, ident)))
-            tx, ty = _label_attrs(ix, iy, isz_used, ident)
-            parts.append(
-                f'<text x="{tx:.2f}" y="{ty:.2f}" text-anchor="middle" '
-                f'font-family="monospace" data-stroke-font="hershey" font-size="{isz_used:.1f}" '
-                f'stroke="none" fill="#000000">{_esc(ident)}</text>'
-            )
+        parts.extend(mark_lines)
     if show_runway:
         parts.append("</g>")
 

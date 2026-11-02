@@ -373,3 +373,87 @@ def test_terminal_rule_ignores_other_outlines():
     svg = _taxi_render([near, _outer()], [("L3", near)], extra_osm={"apron": [apron]})
     _, labels = _analyse(svg)
     assert "L3" in labels
+
+
+def _axis_offsets(svg):
+    """Lateral offset (SVG units) of each runway ident's ink centre from the runway axis."""
+    strip = _groups_paths(svg)
+    c = strip[len(strip) // 2]                       # centreline infill path
+    (x0, y0), (x1, y1) = c[0], c[-1]
+    ln = math.hypot(x1 - x0, y1 - y0)
+    ux, uy = (x1 - x0) / ln, (y1 - y0) / ln
+    _, labels = _analyse(svg)
+    out = {}
+    for name in ("13L", "31R"):
+        segs = labels[name]
+        xs = [x for s in segs for x, _ in s]
+        ys = [y for s in segs for _, y in s]
+        cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2  # ink bbox centre
+        out[name] = (cx - x0) * (-uy) + (cy - y0) * ux
+    return out
+
+
+def _groups_paths(svg):
+    strip = svg.split('id="runways"')[1].split("</g>")[0]
+    return [[(float(a), float(b)), (float(c), float(d))]
+            for a, b, c, d in re.findall(r'<path d="M ([\d.]+) ([\d.]+) L ([\d.]+) ([\d.]+)"/>', strip)]
+
+
+def test_runway_idents_stay_on_the_axis_even_with_a_line_on_it():
+    """Regression: a stub line lying on the runway axis just past the end made the
+    centred spot 'dirty', and the ident slid sideways (3.5 mm off-centre on LHBP).
+    The ident stays centred; the stub is knocked out of its white box instead."""
+    stubs = [[_offset(LE, -35, 0), _offset(LE, -60, 0)],     # on the axis beyond the LE end
+             [_offset(HE, 35, 0), _offset(HE, 60, 0)]]       # ...and beyond the HE end
+    svg = _taxi_render([_outer(), *stubs], [])
+    offs = _axis_offsets(svg)
+    assert abs(offs["13L"]) < 0.6 and abs(offs["31R"]) < 0.6, offs
+
+
+def test_runway_idents_are_centred_in_total_clutter_too():
+    mesh = [[_offset(LE, -400, i * 5.0), _offset(HE, 400, i * 5.0)] for i in range(-120, 121)]
+    mesh += [[_offset(LE, j * 5.0 - 400, -600), _offset(LE, j * 5.0 - 400, 600)] for j in range(0, 400)]
+    svg = _taxi_render([_outer()], [], ctx={"roads": mesh})
+    offs = _axis_offsets(svg)
+    assert abs(offs["13L"]) < 0.6 and abs(offs["31R"]) < 0.6, offs
+
+
+def _ident_texts(svg):
+    return {n: re.search(r'<text[^>]*>%s</text>' % n, svg).group(0) for n in ("13L", "31R")}
+
+
+def _crossing_scene():
+    # A route crossing the runway axis right past each end: its midpoint (the
+    # natural label spot) is exactly where the runway ident wants to sit.
+    cross_le = [_offset(LE, -28, -220), _offset(LE, -28, 220)]
+    cross_he = [_offset(HE, 28, -220), _offset(HE, 28, 220)]
+    return [cross_le, cross_he, _outer()], [("C1", cross_le), ("C2", cross_he)]
+
+
+def test_runway_idents_have_priority_over_taxiway_labels():
+    ways, refs = _crossing_scene()
+    with_labels = _taxi_render(ways, refs)
+    without = render_diagram(
+        airport=_airport(), runways=[_runway()], frequencies=[],
+        osm_geoms={"runway": [], "taxiway": ways, "apron": [], "terminal": [], "hangar": []},
+        context_geoms=None, width=1000, layers=[*AIRFIELD_LAYERS, *CONTEXT_CLASSES],
+        taxiway_refs=refs, taxiway_labels=False,
+    )[0]
+    # The ident is exactly where it would be with no taxiway labels at all.
+    assert _ident_texts(with_labels) == _ident_texts(without)
+    offs = _axis_offsets(with_labels)
+    assert abs(offs["13L"]) < 0.6 and abs(offs["31R"]) < 0.6, offs
+    # Taxiway labels, if drawn, moved out of the idents' way (clear of the ident ink).
+    _, labels = _analyse(with_labels)
+    for tw in ("C1", "C2"):
+        if tw in labels:
+            for ident in ("13L", "31R"):
+                assert _clearance(labels[tw], labels[ident]) >= 1000 * 2.5 / 210.0 * 0.45, (tw, ident)
+
+
+def test_ident_position_does_not_depend_on_what_the_other_labels_do():
+    ways, refs = _crossing_scene()
+    a = _taxi_render(ways, refs)
+    b = _taxi_render(ways, list(reversed(refs)))
+    c = _taxi_render(ways, [])
+    assert _ident_texts(a) == _ident_texts(b) == _ident_texts(c)
