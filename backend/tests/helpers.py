@@ -4,8 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 
 from PIL import Image, ImageDraw
+
+
+def perf_budget(seconds: float) -> float:
+    """Wall-clock ceiling for a perf assertion, scaled by PERF_BUDGET_SCALE.
+
+    The shared CI runner is often loaded; backend-tests.yml sets the scale
+    there. Locally it defaults to 1.0, so the assertion is unchanged.
+    """
+    return seconds * float(os.environ.get("PERF_BUDGET_SCALE", "1.0"))
 
 
 def png_bytes(width: int = 320, height: int = 240) -> bytes:

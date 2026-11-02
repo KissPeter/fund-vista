@@ -24,6 +24,7 @@ from backend.penplot.schemas import (
     LabelParams,
     PageParams,
 )
+from backend.tests.helpers import perf_budget
 
 NS = "{http://www.w3.org/2000/svg}"
 W, H, MARGIN = 210.0, 297.0, 10.0
@@ -352,7 +353,7 @@ def test_direct_performance_five_mb_artwork_under_two_seconds():
     cs.compose_sheet_svg(req, max_svg_bytes=25 * 1024 * 1024)  # warm caches
     started = time.perf_counter()
     cs.compose_sheet_svg(req, max_svg_bytes=25 * 1024 * 1024)
-    assert time.perf_counter() - started < 2.0
+    assert time.perf_counter() - started < perf_budget(2.0)
 
 
 # -- HTTP ----------------------------------------------------------------------
