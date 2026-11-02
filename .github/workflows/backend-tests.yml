@@ -115,6 +115,9 @@ jobs:
           PENPLOT_RATE_LIMIT: "100000"
           PENPIXEL_HMAC_SECRET: test-secret-ci
           PYTHONPATH: .
+          # Shared runner is loaded: wall-clock perf budgets get 3x headroom
+          # (backend/tests/helpers.py perf_budget). Local runs keep 1.0.
+          PERF_BUDGET_SCALE: "3"
         run: >
           python -m pytest backend/tests/ -q
           --junitxml=backend/reports/junit.xml

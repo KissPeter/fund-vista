@@ -15,6 +15,7 @@ from backend.traffic import corridors as C
 from backend.traffic import render as R
 from backend.traffic.classify import classify_day
 from backend.traffic.corridors import corridor_keep
+from backend.tests.helpers import perf_budget
 from backend.traffic.filters import Filters
 
 W = 1000.0  # default canvas width -> tol = 2 user units (≈ 0.6 mm on paper)
@@ -111,7 +112,7 @@ def test_dense_funnel_is_fast_enough():
     keep = corridor_keep(strokes, W)
     elapsed = time.monotonic() - t0
     assert len(keep) < len(strokes)
-    assert elapsed < 15.0, "corridor_keep too slow on a dense funnel: %.2fs" % elapsed
+    assert elapsed < perf_budget(15.0), "corridor_keep too slow on a dense funnel: %.2fs" % elapsed
 
 
 # -- render wiring ----------------------------------------------------------------
