@@ -172,11 +172,11 @@ def test_ourairports_wraps_tls_failure(monkeypatch: pytest.MonkeyPatch):
     async def cache_miss(key: str) -> str | None:  # noqa: ARG001
         return None
 
-    def broken_client(**_kw):  # matches tls.async_client kwargs
+    def broken_transport(*_a, **_kw):  # smart_client builds tls.async_transport()
         raise OSError(5, "Input/output error", "cacert.pem")
 
     monkeypatch.setattr(cache_mod, "cache_get", cache_miss)
-    monkeypatch.setattr(tls, "async_client", broken_client)
+    monkeypatch.setattr(tls, "async_transport", broken_transport)
 
     with pytest.raises(OurAirportsError) as exc_info:
         asyncio.run(_fetch_csv("airports"))
