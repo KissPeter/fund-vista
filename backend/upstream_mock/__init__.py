@@ -52,6 +52,11 @@ def enabled() -> bool:
     return UpstreamMockSettings().upstream_mode.strip().lower() == MOCK
 
 
+def installed() -> bool:
+    """True once :func:`install` has wrapped the httpx constructors."""
+    return _installed
+
+
 _BBOX_RE = re.compile(r"\(\s*(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\s*\)")
 _AROUND_RE = re.compile(r"\(around:\d+,(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\)")
 _RELEASE_RE = re.compile(r"^/repos/(adsblol/globe_history_\d{4})/releases/tags/([^/]+)$")

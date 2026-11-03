@@ -100,6 +100,15 @@ def async_client(**kwargs: Any) -> httpx.AsyncClient:
     return httpx.AsyncClient(**_guarded_kwargs(kwargs))
 
 
+def async_transport(**kwargs: Any) -> httpx.AsyncHTTPTransport:
+    """Default httpx transport with the same CA guard as :func:`async_client`.
+
+    For clients that supply their own ``transport=`` (httpx ignores
+    ``verify`` then), e.g. :func:`backend.http.upstream.smart_client`.
+    """
+    return httpx.AsyncHTTPTransport(**_guarded_kwargs(kwargs))
+
+
 def client(**kwargs: Any) -> httpx.Client:
     """``httpx.Client`` guarded against an unreadable certifi bundle."""
     return httpx.Client(**_guarded_kwargs(kwargs))
@@ -110,4 +119,4 @@ def ca_status() -> dict[str, str]:
     return probe_ca()
 
 
-__all__ = ["async_client", "ca_status", "client"]
+__all__ = ["async_client", "async_transport", "ca_status", "client"]
