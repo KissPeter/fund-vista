@@ -172,7 +172,7 @@ def _footage_clips(cfg: config.Config, infos: list[probe.SourceInfo],
 
 
 def process(folder: Path, cfg_path: Path, out_root: Path, slide_s: float,
-            overrides: dict[str, float]) -> Path:
+            overrides: dict[str, float], first: str | None = None) -> Path:
     folder = folder.resolve()
     name = folder.name
     work = out_root / "work" / name
@@ -182,6 +182,10 @@ def process(folder: Path, cfg_path: Path, out_root: Path, slide_s: float,
     if not videos and not images:
         raise RuntimeError(f"{folder}: no videos or images")
     infos = probe.order_sources(videos) if videos else []
+    # Creation-time order can disagree with the recording order, so --first moves one file
+    # to the front: every story stage then starts with that file.
+    if first:
+        infos.sort(key=lambda i: i.path.name != first)
     shots = sorted(((taken, size, p) for p in images
                     for taken, size in [_image_info(p)]), key=lambda t: (t[0], t[2].name))
 
@@ -238,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--slide-s", type=float, default=3.0, help="seconds per image")
     ap.add_argument("--detect-prominence", action="append", default=[], metavar="FILE=DB",
                     help="pen-event threshold for one video file, e.g. BDMV.mov=3")
+    ap.add_argument("--first", metavar="FILE",
+                    help="video whose footage comes first in every story stage, e.g. BDMV2.mov")
     args = ap.parse_args(argv)
     overrides = {}
     for item in args.detect_prominence:
@@ -251,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"plotvid.folder: {tool} not found on PATH", file=sys.stderr)
             return 2
     try:
-        out = process(args.folder, args.config, args.out, args.slide_s, overrides)
+        out = process(args.folder, args.config, args.out, args.slide_s, overrides, args.first)
     except (RuntimeError, config.ConfigError, OSError, ValueError) as exc:
         print(f"plotvid.folder: {exc}", file=sys.stderr)
         return 1

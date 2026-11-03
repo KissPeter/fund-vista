@@ -104,13 +104,35 @@ uv run python -m plotvid.folder FOLDER [--config YAML] [--out DIR] [--slide-s 3]
 ```
 
 - **Defaults:** `--config /data/pen-pixel/raw/common/plotvid.yaml`, `--out /data/pen-pixel/processed`. `folder.yaml` in this folder is the same generic config.
-- **Videos** (`.mov`, `.mp4`, `.m4v`) are ordered by creation time, then go through the usual detect, ink check, segment and clip plan. The clip count is `videos.count: auto`, so one folder gives several clips of 30–40 s each.
+- **Videos** (`.mov`, `.mp4`, `.m4v`) go through detect, ink check and segment, as usual. Each file's own recording is cut into `videos.parts` story stages (beginning, middle, end), and the stages are interleaved: stage 1 of every file, then stage 2 of every file, and so on. Every clip therefore takes footage from every file in every stage. `--first FILE` puts that file first in each stage (creation time can disagree with the recording order, so set it when needed). The clip count is `videos.count: auto`, so one folder gives up to `max_count` clips of 30–40 s each; the planner lowers the count when a stage lacks enough footage.
+- **Ink check:** frame-to-frame ECC steps are stored, and the ink check maps two frames by composing only the steps between them. A global chain drifted to about 1e75 over a long video and failed, so it is no longer used. A degenerate ECC warp is rejected and the seed is kept instead.
 - **Photos** (any image type plotvid reads) are ordered by EXIF capture time, file mtime when missing. Each is cropped to the output frame and shown for `--slide-s` seconds (default 3). The slideshow is rendered on its own with hard cuts, then closes **every** clip, before the outro.
 - **Outro:** `outro` from the YAML, relative to the YAML file. An SVG is converted to PNG at the output size with ImageMagick. A video outro keeps its own audio.
 - **Ending order:** every clip is footage, then the slideshow, then the outro.
 - **Output:** `OUT/<folder>.mp4` for one clip, or `OUT/<folder>_01.mp4`, `_02.mp4`, ... when there are several. Work files go to `OUT/work/<folder>/`: a generated config, the photo stills, the slideshow, and `summary.json`.
 - **Skipped files:** names starting with `.`, including macOS `._*` companions, and any other extension.
 - **Final photo:** the YAML's `final_photo` is ignored, because the slideshow replaces it. A folder with photos but no videos gets the slideshow and outro only, at 1080×1920.
+
+### Running on the NAS
+
+The NAS (`192.168.0.240`, root) keeps a copy of this code at `/opt/plotvid/tools/plotvid`. It is a plain copy, not a git checkout, so copy the code there from a committed state before each run.
+
+```bash
+rsync -a --exclude '__pycache__' --exclude '.venv' tools/plotvid/ root@192.168.0.240:/opt/plotvid/tools/plotvid/
+```
+
+Run detached, so an SSH drop does not kill the job:
+
+```bash
+ssh root@192.168.0.240 'cd /opt/plotvid/tools/plotvid && PATH=/root/.local/bin:$PATH nohup uv run python -m plotvid.folder /data/pen-pixel/raw/LHBP --first BDMV2.mov > /data/pen-pixel/processed/LHBP.log 2>&1 &'
+```
+
+- **Inputs:** `/data/pen-pixel/raw/LHBP` (videos and photos), `/data/pen-pixel/raw/common/plotvid.yaml` (config), `outro.svg` next to that YAML.
+- **Outputs:** `/data/pen-pixel/processed/LHBP_01.mp4` … `LHBP_NN.mp4`, plus `/data/pen-pixel/processed/work/LHBP/` (generated config, stills, slideshow, `summary.json`).
+- **Log:** `/data/pen-pixel/processed/LHBP.log` ends with `-> <out>` on success. A failure prints `plotvid.folder: <reason>`, with no traceback.
+- **Analysis cache:** the pen-event analysis of each file is stored in `work/<folder>/cache/`, so a rerun skips it. Delete the cache if you change the detection settings.
+
+**Known limit:** BDMV.mov has few pen strokes, so with every stage in every file the planner currently produces 2 clips, not the 8–10 requested. Choose between both files in every clip with fewer clips, or 12 clips with the both-files rule relaxed.
 
 ## Licensing
 NumPy (BSD-3), Pillow (HPND), PyYAML (MIT) and opencv-python-headless (Apache-2.0) are permissive. ffmpeg's licence depends on how it was built; builds with libx264 are GPL, which is fine for rendering our own videos.

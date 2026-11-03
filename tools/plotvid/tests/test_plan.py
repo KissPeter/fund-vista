@@ -212,14 +212,15 @@ def test_final_segment_runs_to_source_end():
     assert ends[0][1].end_s == big[0].duration_s
 
 
-def test_two_sources_parts_span_the_global_timeline():
+def test_two_sources_each_clip_has_every_file_in_every_stage():
     tls = _timeline(blocks=40, sources=2)
     res = assign.assign(tls, SegmentConfig(), VideosConfig(count=2, parts=3), BUDGET)
     assert res.clips
-    assert tls[1].offset_s == pytest.approx(tls[0].span_s)
-    assert {s.source for c in res.clips for s in c.segments} == {0, 1}
+    # Parts are interleaved per stage: 3 stages x 2 files = 6 parts.
+    assert len(res.parts) == 6
     for c in res.clips:
-        assert assign.story_ok(c.segments, 3)
+        assert assign.story_ok(c.segments, 6)
+        assert {s.source for s in c.segments} == {0, 1}
 
 
 @pytest.mark.parametrize("w, h, expect", [

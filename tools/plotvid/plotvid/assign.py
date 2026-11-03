@@ -358,11 +358,26 @@ def _plan_for(cands_by_part: list[list[Segment]], count: int, level: int, budget
     return clips, pool_s
 
 
+def interleaved_parts(tls: list[SourceTimeline], n: int
+                      ) -> list[tuple[SourceTimeline, tuple[float, float]]]:
+    """Each file's own story cut into ``n`` parts, interleaved by stage: stage 0 of
+    every file, then stage 1 of every file, and so on. Every clip therefore takes
+    segments from every file in every stage."""
+    slots = []
+    for stage in range(n):
+        for tl in tls:
+            lo = tl.offset_s + tl.span_s * stage / n
+            hi = tl.offset_s + tl.span_s * (stage + 1) / n
+            slots.append((tl, (lo, hi)))
+    return slots
+
+
 def assign(tls: list[SourceTimeline], seg: SegmentConfig, vids: VideosConfig,
            budget: Budget) -> Assignment:
-    parts = parts_for(tls, vids.parts)
+    slots = interleaved_parts(tls, vids.parts)
+    parts = [rng for _, rng in slots]
     counts = [vids.count] if isinstance(vids.count, int) else list(range(vids.max_count, 0, -1))
-    cands = {lv: [part_candidates(tls, i, p, seg, lv) for i, p in enumerate(parts)]
+    cands = {lv: [part_candidates([tl], k, rng, seg, lv) for k, (tl, rng) in enumerate(slots)]
              for lv in range(seg.max_relax + 1)}
     tried: dict[int, int | None] = {}
     for count in counts:
