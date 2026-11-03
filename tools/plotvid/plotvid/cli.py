@@ -271,6 +271,10 @@ def run_render(cfg: config.Config) -> int:
         outro = assets / "outro_card.png"
         render.outro_card(size, cfg.plot, cfg.outro.text, outro)
     outro_part = render.asset_part(outro, cfg.outro.seconds)
+    wm_png, wm_size = assets / "watermark.png", None
+    if cfg.render.watermark is not None:
+        wm_size = render.watermark_image(cfg.render.watermark,
+                                         round(size[0] * cfg.render.watermark_width_frac), wm_png)
 
     for plan_path in plans:
         data = manifest.read(plan_path)
@@ -291,7 +295,10 @@ def run_render(cfg: config.Config) -> int:
         parts.append(render.Part("image", photo, cfg.final_photo.seconds, has_audio=False))
         parts.append(outro_part)
         out = clips_dir / f"{plan_path.stem}.mp4"
-        render.render(parts, size, fps, cfg.render, out)
+        # The logo runs over the whole clip except the outro, which carries its own.
+        wm = None if wm_size is None else render.Watermark(
+            wm_png, wm_size, render.expected_duration(parts, cfg.render) - outro_part.duration_s)
+        render.render(parts, size, fps, cfg.render, out, watermark=wm)
         print(f"{out.name}: {render.expected_duration(parts, cfg.render):.2f} s "
               f"({data['footage_s']:.1f} s footage, {len(data['segments'])} segments) -> {out}")
     return 0

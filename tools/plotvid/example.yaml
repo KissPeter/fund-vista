@@ -69,6 +69,9 @@ render:
   transition: crossfade # crossfade | cut
   crossfade_s: 0.5      # overlap at every join (segments, photo, outro); shortens the clip
   crossfade_type: fade  # xfade style: fade | dissolve | fadeblack | fadewhite
+  watermark: null       # PNG or SVG logo, bottom right on every clip except the outro; null = none
+  # watermark_width_frac: 0.2    # logo width as a share of the output width (0 < x <= 0.5)
+  # watermark_margin_frac: 0.04  # gap to the right and bottom edges, same unit (0 < x <= 0.5)
 
 final_photo:
   path: null            # image; null = last clean frame of the last source

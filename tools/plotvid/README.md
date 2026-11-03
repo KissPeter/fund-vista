@@ -97,6 +97,7 @@ At 10 fps the dense 0.1–0.2 s detail strokes cannot be resolved, so their labe
   - `final_photo`: silent, 2.5 s. The default is the frame in the source's last 5 s where the arm covers the least paper.
   - `outro`: 2.5 s. The default is a Pillow card with the plot name and `outro.text`. An image is silent; a video keeps its own audio.
 - **Transition:** `crossfade` (default) joins segments, photo and outro with `xfade` (`crossfade_type`, 0.5 s `crossfade_s`) and `acrossfade`, so the audio fades out into the silent photo. `cut` uses hard concat. Each crossfade shortens the clip by its length; the planner counts that. Everything is one ffmpeg call.
+- **Watermark:** `render.watermark` (PNG or SVG, relative to the YAML; `null` = none) is overlaid in the bottom-right corner of every clip except the outro, which already carries the logo. `watermark_width_frac` (0.2) sets its width and `watermark_margin_frac` (0.04) its gap to the edges, both as shares of the output width. The bundled `folder.yaml` uses `assets/watermark.svg`.
 
 ## Folder script (`plotvid.folder`)
 Runs the same plan and render on one folder of videos and photos.

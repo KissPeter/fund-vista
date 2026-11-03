@@ -26,6 +26,7 @@ ends, so cuts do not click.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -78,6 +79,33 @@ class Part:
     fade_audio: bool = False
 
 
+@dataclass(frozen=True)
+class Watermark:
+    path: Path  # PNG with alpha, already scaled to ``size``
+    size: tuple[int, int]
+    visible_s: float  # shown from the clip's start until this time, then hidden
+
+
+def watermark_image(src: Path, width: int, out: Path) -> tuple[int, int]:
+    """Watermark logo ``width`` px wide as a transparent PNG at ``out``; returns its size.
+    An SVG goes through librsvg with no background, so alpha is kept. A raster
+    image is scaled with Pillow."""
+    if src.suffix.lower() == ".svg":
+        if shutil.which("rsvg-convert") is None:
+            raise RuntimeError("rsvg-convert not found (apt install librsvg2-bin); needed for "
+                               "the SVG watermark")
+        subprocess.run(["rsvg-convert", "-w", str(width), "-f", "png", "-o", str(out), str(src)],
+                       check=True)
+    else:
+        with Image.open(src) as img:
+            img = img.convert("RGBA")
+            img = img.resize((width, round(img.height * width / img.width)),
+                             Image.Resampling.LANCZOS)
+            img.save(out)
+    with Image.open(out) as img:
+        return img.size
+
+
 def _probe_video(path: Path) -> tuple[float, bool]:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams",
@@ -123,7 +151,7 @@ def _audio_chain(p: Part, fade_s: float) -> str:
 
 
 def build_command(parts: list[Part], size: tuple[int, int], fps: float, cfg: RenderConfig,
-                  out: Path) -> list[str]:
+                  out: Path, watermark: Watermark | None = None) -> list[str]:
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-y"]
     filters: list[str] = []
     n_inputs = 0
@@ -149,9 +177,11 @@ def build_command(parts: list[Part], size: tuple[int, int], fps: float, cfg: Ren
         filters.append(f"[{ai}]{_audio_chain(p, cfg.audio_fade_s)}[a{k}]")
         labels.append((f"v{k}", f"a{k}"))
 
+    # With a watermark, the joined video goes to vout_pre and the overlay makes vout.
+    v_last = "vout_pre" if watermark else "vout"
     if cfg.transition == "cut" or len(parts) == 1:
         joined = "".join(f"[{v}][{a}]" for v, a in labels)
-        filters.append(f"{joined}concat=n={len(parts)}:v=1:a=1[vout][aout]")
+        filters.append(f"{joined}concat=n={len(parts)}:v=1:a=1[{v_last}][aout]")
     else:
         x = cfg.crossfade_s
         v_prev, a_prev = labels[0]
@@ -159,12 +189,23 @@ def build_command(parts: list[Part], size: tuple[int, int], fps: float, cfg: Ren
         for k in range(1, len(parts)):
             v_next, a_next = labels[k]
             offset = elapsed - x
-            vo, ao = ("vout", "aout") if k == len(parts) - 1 else (f"vx{k}", f"ax{k}")
+            vo, ao = (v_last, "aout") if k == len(parts) - 1 else (f"vx{k}", f"ax{k}")
             filters.append(f"[{v_prev}][{v_next}]xfade=transition={cfg.crossfade_type}:duration={x:.4f}:"
                            f"offset={offset:.6f}[{vo}]")
             filters.append(f"[{a_prev}][{a_next}]acrossfade=d={x:.4f}[{ao}]")
             v_prev, a_prev = vo, ao
             elapsed = offset + parts[k].duration_s
+    if watermark is not None:
+        # The PNG is looped for the whole clip and hidden after visible_s. The
+        # overlay stops with the video, so the logo never extends the clip.
+        wi = n_inputs
+        total = expected_duration(parts, cfg)
+        cmd += ["-loop", "1", "-framerate", f"{fps}", "-t", f"{total + 0.5:.6f}",
+                "-i", str(watermark.path)]
+        margin = round(size[0] * cfg.watermark_margin_frac)
+        filters.append(f"[{wi}:v:0]format=rgba[wm]")
+        filters.append(f"[{v_last}][wm]overlay=x=W-w-{margin}:y=H-h-{margin}:"
+                       f"enable='lt(t,{watermark.visible_s:.3f})':format=auto:shortest=1[vout]")
     cmd += ["-filter_complex", ";".join(filters), "-map", "[vout]", "-map", "[aout]",
             "-c:v", "libx264", "-preset", cfg.preset, "-crf", str(cfg.crf),
             "-pix_fmt", "yuv420p", "-r", f"{fps}",
@@ -181,10 +222,10 @@ def expected_duration(parts: list[Part], cfg: RenderConfig) -> float:
 
 
 def render(parts: list[Part], size: tuple[int, int], fps: float, cfg: RenderConfig,
-           out: Path) -> None:
+           out: Path, watermark: Watermark | None = None) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(build_command(parts, size, fps, cfg, out), capture_output=True, text=True,
-                          check=False)
+    proc = subprocess.run(build_command(parts, size, fps, cfg, out, watermark), capture_output=True,
+                          text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed for {out.name}:\n{proc.stderr[-2000:]}")
 

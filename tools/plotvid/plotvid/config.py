@@ -130,6 +130,11 @@ class RenderConfig:
     transition: str = "crossfade"  # "cut" | "crossfade"
     crossfade_s: float = 0.5
     crossfade_type: str = "fade"  # an xfade transition: fade | dissolve | fadeblack | fadewhite
+    # Logo in the bottom-right corner of every clip except the outro. PNG or SVG;
+    # None = no watermark.
+    watermark: Path | None = None
+    watermark_width_frac: float = 0.2  # width as a share of the output width
+    watermark_margin_frac: float = 0.04  # gap to the right and bottom edges, same unit
 
 
 @dataclass(frozen=True)
@@ -294,6 +299,10 @@ def load(path: str | Path) -> Config:
         raise ConfigError("render: crossfade_s > 0 and audio_fade_s >= 0")
     if render.crossfade_type not in CROSSFADE_TYPES:
         raise ConfigError(f"render: crossfade_type must be one of {list(CROSSFADE_TYPES)}")
+    if not (0 < render.watermark_width_frac <= 0.5 and 0 < render.watermark_margin_frac <= 0.5):
+        raise ConfigError("render: watermark_width_frac and watermark_margin_frac must be "
+                          "within (0, 0.5]")
+    render = replace(render, watermark=_asset(render.watermark, base, "render.watermark"))
     if render.transition == "crossfade" and render.crossfade_s * 2 >= segment.min_s:
         raise ConfigError("render: crossfade_s must be under half of segment.min_s")
 

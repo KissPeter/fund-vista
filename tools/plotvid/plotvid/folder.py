@@ -105,6 +105,10 @@ def _load_config(cfg_path: Path, videos: list[Path], work: Path) -> config.Confi
     if outro.get("path"):  # relative to the YAML, so resolve before the copy moves
         outro["path"] = str((cfg_path.parent / outro["path"]).resolve())
     raw["outro"] = outro
+    render_raw = dict(raw.get("render") or {})
+    if render_raw.get("watermark"):  # relative to the YAML too, resolved before the copy
+        render_raw["watermark"] = str((cfg_path.parent / render_raw["watermark"]).resolve())
+    raw["render"] = render_raw
     tmp = work / "plotvid.yaml"
     tmp.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True))
     cfg = config.load(tmp)
@@ -215,6 +219,10 @@ def process(folder: Path, cfg_path: Path, slide_s: float,
     outro = _outro(cfg, size, work)
 
     outro_part = render.asset_part(outro, cfg.outro.seconds)
+    wm_png, wm_size = work / "watermark.png", None
+    if cfg.render.watermark is not None:
+        wm_size = render.watermark_image(cfg.render.watermark,
+                                         round(size[0] * cfg.render.watermark_width_frac), wm_png)
     # The length window counts the slideshow too, since every clip ends with it.
     ending_s = outro_part.duration_s + len(shots) * slide_s
     clips = _footage_clips(cfg, infos, ending_s, overrides) if infos else [[]]
@@ -241,7 +249,10 @@ def process(folder: Path, cfg_path: Path, slide_s: float,
             parts.append(slide_part)
         parts.append(outro_part)
         out = out_root / (f"{name}.mp4" if len(clips) == 1 else f"{name}_{i + 1:02d}.mp4")
-        render.render(parts, size, fps, cfg.render, out)
+        # The logo runs over the whole clip except the outro, which carries its own.
+        wm = None if wm_size is None else render.Watermark(
+            wm_png, wm_size, render.expected_duration(parts, cfg.render) - outro_part.duration_s)
+        render.render(parts, size, fps, cfg.render, out, watermark=wm)
         duration = round(render.expected_duration(parts, cfg.render), 2)
         outs.append({"output": str(out), "duration_s": duration})
         print(f"{out.name}: {duration} s")

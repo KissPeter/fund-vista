@@ -69,6 +69,7 @@ render:
   transition: crossfade # crossfade | cut
   crossfade_s: 0.5
   crossfade_type: fade
+  watermark: assets/watermark.svg  # logo bottom right on every clip, not the outro; null = none
 
 outro:
   path: assets/outro.svg     # SVG (converted to PNG at the output size) or an image or video

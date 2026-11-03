@@ -8,9 +8,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from plotvid import cli, manifest, render
 from plotvid.config import RenderConfig
+
+REPO = Path(__file__).resolve().parents[1]
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not on PATH")
 
@@ -116,3 +119,84 @@ def test_render_default_is_soft_and_matches_duration_math(tmp_path):
     expect = assign.Budget(5.0, 0.5).total(sum(b - a for a, b in spans), 3)
     assert expect == pytest.approx(3.5 + 3.5 + 1.4 + 5.0 - 2.0)
     assert float(info["format"]["duration"]) == pytest.approx(expect, abs=0.15)
+
+
+def test_build_command_without_watermark():
+    part = render.Part("segment", Path("src.mp4"), 3.0, start_s=1.0, display_size=(1080, 1920))
+    cmd = render.build_command([part], (1080, 1920), 30.0, RenderConfig(), Path("out.mp4"))
+    filters = cmd[cmd.index("-filter_complex") + 1]
+    assert cmd.count("-i") == 1 and "overlay" not in filters
+    assert cmd[cmd.index("-map"):cmd.index("-map") + 4] == ["-map", "[vout]", "-map", "[aout]"]
+
+
+@pytest.mark.parametrize("transition", ["cut", "crossfade"])
+def test_build_command_with_watermark(transition):
+    parts = [render.Part("segment", Path("a.mp4"), 3.0, start_s=1.0, display_size=(1080, 1920)),
+             render.Part("segment", Path("b.mp4"), 2.5, start_s=0.0, display_size=(1080, 1920))]
+    wm = render.Watermark(Path("wm.png"), (216, 230), visible_s=3.0)
+    cmd = render.build_command(parts, (1080, 1920), 30.0, RenderConfig(transition=transition),
+                               Path("out.mp4"), watermark=wm)
+    filters = cmd[cmd.index("-filter_complex") + 1]
+    # One extra looped PNG input after the two segments: input index 2.
+    i = cmd.index("wm.png")
+    assert cmd[i - 1] == "-i" and cmd[i - 7:i - 5] == ["-loop", "1"]
+    assert "[2:v:0]format=rgba[wm]" in filters
+    margin = round(1080 * 0.04)  # 43 px to the right and bottom edges
+    assert (f"[vout_pre][wm]overlay=x=W-w-{margin}:y=H-h-{margin}:enable='lt(t,3.000)'"
+            f":format=auto:shortest=1[vout]") in filters
+    assert filters.count("[vout]") == 1 and filters.count("[vout_pre]") == 2
+    assert cmd[cmd.index("-map"):cmd.index("-map") + 4] == ["-map", "[vout]", "-map", "[aout]"]
+
+
+def half_red_png(path: Path) -> Path:
+    """100 x 100 RGBA watermark: left half transparent, right half opaque red."""
+    img = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+    img.paste((255, 0, 0, 255), (50, 0, 100, 100))
+    img.save(path)
+    return path
+
+
+def near(px: tuple[int, int, int], rgb: tuple[int, int, int], tol: int = 60) -> bool:
+    return all(abs(a - b) <= tol for a, b in zip(px, rgb))
+
+
+def test_watermark_in_bottom_right_corner_until_visible_s(tmp_path):
+    blue = tmp_path / "blue.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "color=c=blue:size=576x1024:rate=30:duration=3", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(blue)], check=True)
+    black = tmp_path / "black.png"
+    Image.new("RGB", (576, 1024), (0, 0, 0)).save(black)
+    parts = [render.Part("segment", blue, 3.0, start_s=0.0, display_size=(576, 1024),
+                         has_audio=False),
+             render.Part("image", black, 2.0, has_audio=False)]
+    out = tmp_path / "out.mp4"
+    wm = render.Watermark(half_red_png(tmp_path / "wm.png"), (100, 100), visible_s=1.5)
+    render.render(parts, (576, 1024), 30.0, RenderConfig(transition="cut"), out, watermark=wm)
+
+    # Box at x 453..553, y 901..1001 (margin 23 px). Left sample sits over the
+    # transparent half, right sample over the red half.
+    def corner(t: float) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+        frame = tmp_path / f"frame_{t}.png"
+        render.extract_frame(out, t, frame)
+        img = Image.open(frame).convert("RGB")
+        return img.getpixel((478, 951)), img.getpixel((528, 951))
+
+    blue_rgb, red_rgb, black_rgb = (0, 0, 255), (255, 0, 0), (0, 0, 0)
+    left, right = corner(0.5)  # shown
+    assert near(left, blue_rgb) and near(right, red_rgb)  # alpha kept
+    left, right = corner(2.0)  # footage after visible_s: no watermark
+    assert near(left, blue_rgb) and near(right, blue_rgb)
+    left, right = corner(3.6)  # outro: not watermarked
+    assert near(left, black_rgb) and near(right, black_rgb)
+
+
+@pytest.mark.skipif(shutil.which("rsvg-convert") is None, reason="rsvg-convert not on PATH")
+def test_real_watermark_svg_becomes_transparent_png(tmp_path):
+    png = tmp_path / "wm.png"
+    w, h = render.watermark_image(REPO / "assets" / "watermark.svg", 120, png)
+    img = Image.open(png)
+    assert img.mode == "RGBA" and img.size == (w, h) and w == 120
+    alpha = img.getchannel("A")
+    assert all(alpha.getpixel(c) == 0 for c in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)])
+    assert alpha.getextrema()[1] > 0  # the logo and text strokes are opaque somewhere

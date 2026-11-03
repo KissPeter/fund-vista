@@ -68,6 +68,10 @@ def test_clip_sections_parsed(tmp_path):
     ("plot: p\nsources: a.mp4\nrender: {rotate: 45}\n", "render: rotate must be"),
     ("plot: p\nsources: a.mp4\nrender: {rotate: sideways}\n", "render: rotate must be"),
     ("plot: p\nsources: a.mp4\nrender: {rotate: -90}\n", "render: rotate must be"),
+    ("plot: p\nsources: a.mp4\nrender: {watermark: nope.png}\n", "not found"),
+    ("plot: p\nsources: a.mp4\nrender: {watermark_width_frac: 0}\n", "within"),
+    ("plot: p\nsources: a.mp4\nrender: {watermark_width_frac: 0.6}\n", "within"),
+    ("plot: p\nsources: a.mp4\nrender: {watermark_margin_frac: -0.1}\n", "within"),
 ])
 def test_invalid_configs(tmp_path, body, msg):
     (tmp_path / "a.mp4").touch()
@@ -118,6 +122,34 @@ def test_render_rotate_default_and_values(tmp_path):
     for raw in ("auto", "0", "90", "180", "270"):
         cfg = config.load(write(tmp_path, f"plot: p\nsources: a.mp4\nrender: {{rotate: {raw}}}\n"))
         assert cfg.render.rotate == raw
+
+
+def test_render_watermark_defaults_and_relative_path(tmp_path):
+    (tmp_path / "a.mp4").touch()
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "wm.svg").touch()
+    cfg = config.load(write(tmp_path, "plot: p\nsources: a.mp4\n"))
+    assert cfg.render.watermark is None
+    assert cfg.render.watermark_width_frac == 0.2 and cfg.render.watermark_margin_frac == 0.04
+    cfg = config.load(write(tmp_path, (
+        "plot: p\nsources: a.mp4\nrender: {watermark: assets/wm.svg, watermark_width_frac: 0.25,"
+        " watermark_margin_frac: 0.05}\n")))
+    assert cfg.render.watermark == (tmp_path / "assets" / "wm.svg").resolve()
+    assert cfg.render.watermark_width_frac == 0.25 and cfg.render.watermark_margin_frac == 0.05
+    cfg = config.load(write(tmp_path, "plot: p\nsources: a.mp4\nrender: {watermark: null}\n"))
+    assert cfg.render.watermark is None
+
+
+def test_folder_script_resolves_watermark_against_yaml_folder(tmp_path):
+    from plotvid import folder
+    (tmp_path / "cfg" / "assets").mkdir(parents=True)
+    (tmp_path / "cfg" / "assets" / "wm.svg").touch()
+    yaml_path = tmp_path / "cfg" / "folder.yaml"
+    yaml_path.write_text("plot: p\nrender: {watermark: assets/wm.svg}\n")
+    work = tmp_path / "work"
+    work.mkdir()
+    cfg = folder._load_config(yaml_path, [], work)  # the copy in work/ would resolve it wrongly
+    assert cfg.render.watermark == (tmp_path / "cfg" / "assets" / "wm.svg").resolve()
 
 
 @pytest.mark.parametrize("setting, tagged, stored, expect", [
