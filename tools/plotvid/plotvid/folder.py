@@ -1,17 +1,20 @@
 """Turn one folder of pen-plotter footage and photos into one MP4.
 
-``python -m plotvid.folder FOLDER [--config YAML] [--out DIR] [--slide-s S]``
+``python -m plotvid.folder FOLDER [--config YAML] [--slide-s S]``
 
 - Videos: the plotvid steps (detect, ink check, segments, story parts) pick
-  one clip's footage from all videos, ordered by creation time.
-- Images: a slideshow, ``--slide-s`` seconds each (default 3), ordered by
-  EXIF capture time (file mtime when missing). Hard cuts between images.
+  one clip's footage from all videos, ordered by creation time. Each file
+  keeps its own start and end: its stages begin and end with the file.
+- Images: found in FOLDER and shown as a slideshow, ``--slide-s`` seconds each
+  (default 3), ordered by EXIF capture time (file mtime when missing).
 - Outro: the YAML ``outro`` image or video, relative to the YAML file.
-  An SVG is converted to a PNG at the output size with ImageMagick.
+- Config: the bundled ``folder.yaml`` unless ``--config`` is given.
 
-Order in the MP4: footage, slideshow, outro. Output is ``OUT/<folder>.mp4``;
-work files go to ``OUT/work/<folder>/``. The YAML's ``final_photo`` is not
-used, because the slideshow replaces it.
+Order in the MP4: footage, slideshow, outro. Output goes to the same path
+with the ``raw`` folder replaced by ``processed`` (``.../raw/lhbp`` ->
+``.../processed/lhbp/lhbp_NN.mp4``); earlier clips of that name are replaced.
+Temporary files (cache, stills, slideshow) go to ``$TMPDIR/plotvid/<folder>/``.
+The YAML's ``final_photo`` is not used, because the slideshow replaces it.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -33,8 +37,7 @@ from PIL import Image, ImageOps
 
 from plotvid import assign, cli, config, events, probe, render
 
-DEFAULT_CONFIG = Path("/data/pen-pixel/raw/common/plotvid.yaml")
-DEFAULT_OUT = Path("/data/pen-pixel/processed")
+DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "folder.yaml"
 VIDEO_EXTS = {".mov", ".mp4", ".m4v"}
 EXIF_DATETIME = 306
 EXIF_DATETIME_ORIGINAL = 36867
@@ -42,6 +45,21 @@ EXIF_IFD = 0x8769
 EXIF_ORIENTATION = 274
 ROTATED = {5, 6, 7, 8}  # orientations that swap width and height
 PHOTO_ONLY_SIZE = (1080, 1920)
+
+
+def output_dir(folder: Path) -> Path:
+    """The folder with its last ``raw`` component replaced by ``processed``;
+    without one, ``processed/<name>`` next to the folder."""
+    parts = list(folder.parts)
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].lower() == "raw":
+            parts[i] = "processed"
+            return Path(*parts)
+    return folder.parent / "processed" / folder.name
+
+
+def work_dir(folder: Path) -> Path:
+    return Path(tempfile.gettempdir()) / "plotvid" / folder.name
 
 
 def _media(folder: Path) -> tuple[list[Path], list[Path]]:
@@ -146,7 +164,8 @@ def _footage_clips(cfg: config.Config, infos: list[probe.SourceInfo],
         analysed = list(pool.map(cli.analyse_source, cfgs, infos, [False] * len(infos)))
     per_source = []
     for info, data in zip(infos, analysed):
-        labels = events.build_strokes(data["events"], data["new_ink"], cfg.strokes)
+        labels = events.build_strokes(data["events"], data["new_ink"], cfg.strokes,
+                                      data["synthetic"])
         per_source.append((labels.strokes, info.duration_s))
         print(f"{info.path.name}: {len(labels.strokes)} strokes, "
               f"ink reliable: {labels.ink_reliable}")
@@ -158,7 +177,8 @@ def _footage_clips(cfg: config.Config, infos: list[probe.SourceInfo],
     if not result.clips:
         raise RuntimeError(f"no clip count reaches videos.min_total_s="
                            f"{cfg.videos.min_total_s} s (tried {result.tried}); adjust the YAML")
-    print(f"{result.count} clips (relaxation level {result.level})")
+    print(f"{result.count} clips (relaxation level {result.level}); tried {result.tried}; "
+          f"part pools {[round(x, 1) for x in result.pool_s]} s")
     clips = []
     for clip in result.clips:
         print(f"clip {clip.clip + 1}: {clip.footage_s:.1f} s footage, "
@@ -171,21 +191,19 @@ def _footage_clips(cfg: config.Config, infos: list[probe.SourceInfo],
     return clips
 
 
-def process(folder: Path, cfg_path: Path, out_root: Path, slide_s: float,
-            overrides: dict[str, float], first: str | None = None) -> Path:
+def process(folder: Path, cfg_path: Path, slide_s: float,
+            overrides: dict[str, float]) -> Path:
     folder = folder.resolve()
     name = folder.name
-    work = out_root / "work" / name
+    out_root = output_dir(folder)
+    work = work_dir(folder)
     work.mkdir(parents=True, exist_ok=True)
+    out_root.mkdir(parents=True, exist_ok=True)
 
     videos, images = _media(folder)
     if not videos and not images:
         raise RuntimeError(f"{folder}: no videos or images")
     infos = probe.order_sources(videos) if videos else []
-    # Creation-time order can disagree with the recording order, so --first moves one file
-    # to the front: every story stage then starts with that file.
-    if first:
-        infos.sort(key=lambda i: i.path.name != first)
     shots = sorted(((taken, size, p) for p in images
                     for taken, size in [_image_info(p)]), key=lambda t: (t[0], t[2].name))
 
@@ -211,6 +229,10 @@ def process(folder: Path, cfg_path: Path, out_root: Path, slide_s: float,
         slide_part = render.asset_part(slideshow, None)
 
     # Every clip is footage, then the slideshow, then the outro.
+    # Earlier clips of this name are replaced, so a shorter run leaves no stale ones.
+    for old in out_root.glob(f"{name}_[0-9][0-9].mp4"):
+        old.unlink()
+    (out_root / f"{name}.mp4").unlink(missing_ok=True)
     outs = []
     for i, footage in enumerate(clips):
         parts = list(footage)
@@ -230,20 +252,18 @@ def process(folder: Path, cfg_path: Path, out_root: Path, slide_s: float,
         "size": list(size), "fps": fps, "slide_s": slide_s, "outputs": outs,
     }
     (work / "summary.json").write_text(json.dumps(summary, indent=2))
-    return out_root / name
+    return out_root
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="plotvid.folder", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("folder", type=Path, help="folder with videos and images")
-    ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="generic plotvid YAML")
-    ap.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output folder")
+    ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
+                    help="plotvid YAML (default: the bundled folder.yaml)")
     ap.add_argument("--slide-s", type=float, default=3.0, help="seconds per image")
     ap.add_argument("--detect-prominence", action="append", default=[], metavar="FILE=DB",
                     help="pen-event threshold for one video file, e.g. BDMV.mov=3")
-    ap.add_argument("--first", metavar="FILE",
-                    help="video whose footage comes first in every story stage, e.g. BDMV2.mov")
     args = ap.parse_args(argv)
     overrides = {}
     for item in args.detect_prominence:
@@ -257,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"plotvid.folder: {tool} not found on PATH", file=sys.stderr)
             return 2
     try:
-        out = process(args.folder, args.config, args.out, args.slide_s, overrides, args.first)
+        out = process(args.folder, args.config, args.slide_s, overrides)
     except (RuntimeError, config.ConfigError, OSError, ValueError) as exc:
         print(f"plotvid.folder: {exc}", file=sys.stderr)
         return 1

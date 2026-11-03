@@ -23,7 +23,7 @@ def _stroke(s: Stroke) -> dict[str, Any]:
     return {"index": s.index, "start_s": round(s.start_s, 3), "end_s": round(s.end_s, 3),
             "duration_s": round(s.duration_s, 3),
             "new_ink": None if s.new_ink is None else round(s.new_ink, 1),
-            "drawing": s.drawing, "long": s.long}
+            "drawing": s.drawing, "long": s.long, "synthetic_start": s.synthetic_start}
 
 
 def _segment(seg: Segment, source: Path, strokes: list[Stroke]) -> dict[str, Any]:

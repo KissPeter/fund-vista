@@ -19,6 +19,8 @@ so any event can cut.
 
 from __future__ import annotations
 
+import itertools
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -34,6 +36,7 @@ class Stroke:
     new_ink: float | None  # px at the ink reference width; None = not measured
     drawing: bool | None  # None = unknown (ink unreliable or off)
     long: bool
+    synthetic_start: bool = False  # the event this stroke starts at was split in
 
     @property
     def duration_s(self) -> float:
@@ -52,9 +55,37 @@ class StrokeLabels:
     drawn_share_long: float  # share of long strokes read as drawing
 
 
+def split_long_gaps(event_times: list[float], cfg: StrokesConfig) -> tuple[list[float], list[bool]]:
+    """Insert evenly spaced synthetic events into every gap over ``split_over_s``.
+
+    A gap of ``g`` seconds becomes ``ceil(g / split_piece_s)`` equal pieces.
+    Returns the sorted event times and, per event, True when it was inserted."""
+    times = sorted(float(t) for t in event_times)
+    if cfg.split_over_s is None or len(times) < 2:
+        return times, [False] * len(times)
+    out, flags = [times[0]], [False]
+    for a, b in itertools.pairwise(times):
+        gap = b - a
+        if gap > cfg.split_over_s:
+            pieces = math.ceil(gap / cfg.split_piece_s)
+            step = gap / pieces
+            out.extend(a + k * step for k in range(1, pieces))
+            flags.extend([True] * (pieces - 1))
+        out.append(b)
+        flags.append(False)
+    return out, flags
+
+
 def build_strokes(event_times: list[float] | np.ndarray, new_ink: list[float] | None,
-                  cfg: StrokesConfig) -> StrokeLabels:
-    t = np.asarray(sorted(event_times), dtype=float)
+                  cfg: StrokesConfig, synthetic: list[bool] | None = None) -> StrokeLabels:
+    """Label the strokes between sorted events. ``synthetic`` flags each event
+    (see ``split_long_gaps``); None = no event is synthetic."""
+    flags = [False] * len(event_times) if synthetic is None else list(synthetic)
+    if len(flags) != len(event_times):
+        raise ValueError("synthetic must have one flag per event")
+    pairs = sorted(zip((float(t) for t in event_times), flags), key=lambda p: p[0])
+    t = np.asarray([p[0] for p in pairs], dtype=float)
+    syn = [p[1] for p in pairs]
     if len(t) < 2:
         return StrokeLabels([], 0.0, False, 0.0)
     dur = np.diff(t)
@@ -73,6 +104,7 @@ def build_strokes(event_times: list[float] | np.ndarray, new_ink: list[float] | 
             new_ink=None if new_ink is None else float(new_ink[k]),
             drawing=bool(drawn[k]) if reliable else None,
             long=bool(long[k]),
+            synthetic_start=syn[k],
         )
         for k in range(len(dur))
     ]

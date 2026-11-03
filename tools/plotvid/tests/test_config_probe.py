@@ -63,11 +63,21 @@ def test_clip_sections_parsed(tmp_path):
     ("plot: p\nsources: a.mp4\nink: {roi: [0.5, 0, 0.2, 1]}\n", "roi"),
     ("plot: p\nsources: a.mp4\noutro: {path: nope.mp4}\n", "not found"),
     ("plot: p\nsources: a.mp4\noutro: {seconds: null}\n", "only for a video"),
+    ("plot: p\nsources: a.mp4\nstrokes: {split_piece_s: 0}\n", "split_piece_s"),
+    ("plot: p\nsources: a.mp4\nstrokes: {split_over_s: 5}\n", "split_over_s"),
 ])
 def test_invalid_configs(tmp_path, body, msg):
     (tmp_path / "a.mp4").touch()
     with pytest.raises(config.ConfigError, match=msg):
         config.load(write(tmp_path, body))
+
+
+def test_strokes_split_defaults_and_null(tmp_path):
+    (tmp_path / "a.mp4").touch()
+    cfg = config.load(write(tmp_path, "plot: p\nsources: a.mp4\n"))
+    assert cfg.strokes.split_over_s == 20.0 and cfg.strokes.split_piece_s == 7.0
+    cfg = config.load(write(tmp_path, "plot: p\nsources: a.mp4\nstrokes: {split_over_s: null}\n"))
+    assert cfg.strokes.split_over_s is None
 
 
 def make_clip(path: Path, created: str | None) -> None:

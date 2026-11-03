@@ -5,11 +5,9 @@ stretch runs from its first pen event to its last, except the last source,
 which runs on to the end of the recording so the pen's trip home can be
 shown. That gives one *global* plotting time.
 
-**Parts.** The global timeline is cut into ``videos.parts`` (3: beginning,
-middle, end) equal time ranges. A part is only a range on the global
-timeline, so it may later be backed by a different source file: nothing here
-cares which source a segment comes from. A segment belongs to a part only if
-it lies entirely inside it.
+**Parts.** Each file is one part: a new section starts where a recording
+starts. A file is not cut further; its segments are stretches between pen
+events. A segment belongs to a part only if it lies entirely inside it.
 
 **Clips.** Every clip takes segments from every part, in chronological
 order, so each clip shows the drawing grow from start to finish. Footage is
@@ -358,26 +356,17 @@ def _plan_for(cands_by_part: list[list[Segment]], count: int, level: int, budget
     return clips, pool_s
 
 
-def interleaved_parts(tls: list[SourceTimeline], n: int
-                      ) -> list[tuple[SourceTimeline, tuple[float, float]]]:
-    """Each file's own story cut into ``n`` parts, interleaved by stage: stage 0 of
-    every file, then stage 1 of every file, and so on. Every clip therefore takes
-    segments from every file in every stage."""
-    slots = []
-    for stage in range(n):
-        for tl in tls:
-            lo = tl.offset_s + tl.span_s * stage / n
-            hi = tl.offset_s + tl.span_s * (stage + 1) / n
-            slots.append((tl, (lo, hi)))
-    return slots
+def story_parts(tls: list[SourceTimeline]) -> list[tuple[float, float]]:
+    """One part per file: a new section starts where a recording starts. A file is
+    not cut further; its segments are the pen-up-to-pen-up stretches."""
+    return [(tl.offset_s, tl.offset_s + tl.span_s) for tl in tls]
 
 
 def assign(tls: list[SourceTimeline], seg: SegmentConfig, vids: VideosConfig,
            budget: Budget) -> Assignment:
-    slots = interleaved_parts(tls, vids.parts)
-    parts = [rng for _, rng in slots]
+    parts = story_parts(tls)
     counts = [vids.count] if isinstance(vids.count, int) else list(range(vids.max_count, 0, -1))
-    cands = {lv: [part_candidates([tl], k, rng, seg, lv) for k, (tl, rng) in enumerate(slots)]
+    cands = {lv: [part_candidates(tls, i, p, seg, lv) for i, p in enumerate(parts)]
              for lv in range(seg.max_relax + 1)}
     tried: dict[int, int | None] = {}
     for count in counts:

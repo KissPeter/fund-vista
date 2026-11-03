@@ -81,8 +81,9 @@ At 10 fps the dense 0.1–0.2 s detail strokes cannot be resolved, so their labe
   | 2 | Start at any event; end after any stroke that may be drawn |
   | 3 | Every event may cut |
 
+- **Long gaps:** a gap of more than `strokes.split_over_s` (20 s) between consecutive pen events is split into `ceil(gap / strokes.split_piece_s)` equal pieces (7 s by default), with synthetic events at the piece boundaries. This runs before the ink check, so each piece is measured on its own. A dense line with no pen-up move would otherwise make one stroke too long for any 3–8 s segment. Gaps at or under the threshold are untouched, and `null` turns the rule off. Synthetic events are flagged in the strokes CSV and manifests (`synthetic_start`).
 - **Final segment:** the last source's stretch of the timeline runs to the end of the recording, so the pen's trip home is not cut off. The plot's final segment ends at the source end and may be up to `final_extra_s` (3 s) longer than `max_s`. It always goes to the last clip.
-- **Story parts:** the plotting timeline (sources end to end) is split into `videos.parts` (3) equal time ranges. A part is only a time range on that global timeline, so it can later be backed by another source file. A segment belongs to a part only if it lies wholly inside it.
+- **Story parts:** with several files each file is one part (a new section starts where a recording starts), ordered by creation time. A single file is split into `videos.parts` (3) equal time ranges. A segment belongs to a part only if it lies wholly inside it.
 - **Every clip covers every part**, in chronological order, so it shows the drawing grow. The first segment always comes from the first part and the last from the last part (checked by `story_ok`, recorded as `story` in each manifest). Footage is never reused.
 - **Length:** a clip is footage + final photo + outro minus the crossfade overlaps (`join_s` for each of the n+1 joins of n segments), within `min_total_s`..`max_total_s` (30–40 s, target 35 s). There are no segment-length caps. Per count and relaxation level the plan draws (seeded, `attempts`) a non-overlapping pool per part (a weighted-interval DP on jittered weights, so pools of varied segment lengths are tried), deals each block of consecutive segments to the clips in a random order (picks are spread through a part), then a local search moves, drops or swaps segments until every clip is in the window and the parts are balanced.
 - **`videos.count: auto`** tries the count from `max_count` down and, per count, relaxation level 0 up to `max_relax`. The first count where every clip reaches `min_total_s` wins; `summary.json` lists the level for each count tried (`null` = none) and the pool and used footage per part. Clips are never shortened to get more of them; if nothing fits, no clips are planned.
@@ -97,42 +98,21 @@ At 10 fps the dense 0.1–0.2 s detail strokes cannot be resolved, so their labe
 - **Transition:** `crossfade` (default) joins segments, photo and outro with `xfade` (`crossfade_type`, 0.5 s `crossfade_s`) and `acrossfade`, so the audio fades out into the silent photo. `cut` uses hard concat. Each crossfade shortens the clip by its length; the planner counts that. Everything is one ffmpeg call.
 
 ## Folder script (`plotvid.folder`)
-Runs the same plan and render on one folder of videos and photos, with a slideshow and an outro.
+Runs the same plan and render on one folder of videos and photos.
 
 ```bash
-uv run python -m plotvid.folder FOLDER [--config YAML] [--out DIR] [--slide-s 3]
+uv run python -m plotvid.folder /path/raw/lhbp [--config YAML] [--slide-s 3]
 ```
 
-- **Defaults:** `--config /data/pen-pixel/raw/common/plotvid.yaml`, `--out /data/pen-pixel/processed`. `folder.yaml` in this folder is the same generic config.
-- **Videos** (`.mov`, `.mp4`, `.m4v`) go through detect, ink check and segment, as usual. Each file's own recording is cut into `videos.parts` story stages (beginning, middle, end), and the stages are interleaved: stage 1 of every file, then stage 2 of every file, and so on. Every clip therefore takes footage from every file in every stage. `--first FILE` puts that file first in each stage (creation time can disagree with the recording order, so set it when needed). The clip count is `videos.count: auto`, so one folder gives up to `max_count` clips of 30–40 s each; the planner lowers the count when a stage lacks enough footage.
-- **Ink check:** frame-to-frame ECC steps are stored, and the ink check maps two frames by composing only the steps between them. A global chain drifted to about 1e75 over a long video and failed, so it is no longer used. A degenerate ECC warp is rejected and the seed is kept instead.
-- **Photos** (any image type plotvid reads) are ordered by EXIF capture time, file mtime when missing. Each is cropped to the output frame and shown for `--slide-s` seconds (default 3). The slideshow is rendered on its own with hard cuts, then closes **every** clip, before the outro.
-- **Outro:** `outro` from the YAML, relative to the YAML file. An SVG is converted to PNG at the output size with ImageMagick. A video outro keeps its own audio.
-- **Ending order:** every clip is footage, then the slideshow, then the outro.
-- **Output:** `OUT/<folder>.mp4` for one clip, or `OUT/<folder>_01.mp4`, `_02.mp4`, ... when there are several. Work files go to `OUT/work/<folder>/`: a generated config, the photo stills, the slideshow, and `summary.json`.
+- **Config:** the bundled `folder.yaml` (outro `assets/outro.svg`) unless `--config` is given.
+- **Output:** the folder path with `raw` replaced by `processed`: `/path/raw/lhbp` gives `/path/processed/lhbp/lhbp_01.mp4`, `_02`, ... (`lhbp.mp4` for one clip). Earlier clips of that name are deleted first, so a rerun replaces them. Without a `raw` component the output is `processed/<name>` next to the folder.
+- **Temporary files:** `$TMPDIR/plotvid/<name>/` (generated config, analysis cache, stills, slideshow, `summary.json`). Delete the cache if you change the detection settings.
+- **Videos** (`.mov`, `.mp4`, `.m4v`) go through detect, ink check and segment, ordered by container creation time. Each file is one story part (see above).
+- **Photos** are picked up from the same folder automatically, ordered by EXIF capture time (mtime when missing). Each is cropped to the output frame and shown for `--slide-s` seconds. The slideshow closes every clip, before the outro.
+- **Outro:** `outro` from the YAML, relative to the YAML file. An SVG is converted with `rsvg-convert`. A video outro keeps its own audio.
 - **Skipped files:** names starting with `.`, including macOS `._*` companions, and any other extension.
-- **Final photo:** the YAML's `final_photo` is ignored, because the slideshow replaces it. A folder with photos but no videos gets the slideshow and outro only, at 1080×1920.
-
-### Running on the NAS
-
-The NAS (`192.168.0.240`, root) keeps a copy of this code at `/opt/plotvid/tools/plotvid`. It is a plain copy, not a git checkout, so copy the code there from a committed state before each run.
-
-```bash
-rsync -a --exclude '__pycache__' --exclude '.venv' tools/plotvid/ root@192.168.0.240:/opt/plotvid/tools/plotvid/
-```
-
-Run detached, so an SSH drop does not kill the job:
-
-```bash
-ssh root@192.168.0.240 'cd /opt/plotvid/tools/plotvid && PATH=/root/.local/bin:$PATH nohup uv run python -m plotvid.folder /data/pen-pixel/raw/LHBP --first BDMV2.mov > /data/pen-pixel/processed/LHBP.log 2>&1 &'
-```
-
-- **Inputs:** `/data/pen-pixel/raw/LHBP` (videos and photos), `/data/pen-pixel/raw/common/plotvid.yaml` (config), `outro.svg` next to that YAML.
-- **Outputs:** `/data/pen-pixel/processed/LHBP_01.mp4` … `LHBP_NN.mp4`, plus `/data/pen-pixel/processed/work/LHBP/` (generated config, stills, slideshow, `summary.json`).
-- **Log:** `/data/pen-pixel/processed/LHBP.log` ends with `-> <out>` on success. A failure prints `plotvid.folder: <reason>`, with no traceback.
-- **Analysis cache:** the pen-event analysis of each file is stored in `work/<folder>/cache/`, so a rerun skips it. Delete the cache if you change the detection settings.
-
-**Known limit:** BDMV.mov has few pen strokes, so with every stage in every file the planner currently produces 2 clips, not the 8–10 requested. Choose between both files in every clip with fewer clips, or 12 clips with the both-files rule relaxed.
+- **Final photo:** the YAML's `final_photo` is ignored, because the slideshow replaces it. A folder with photos but no videos gets the slideshow and outro only.
+- **Failures:** the log ends with `-> <out>` on success, or `plotvid.folder: <reason>`.
 
 ## Licensing
 NumPy (BSD-3), Pillow (HPND), PyYAML (MIT) and opencv-python-headless (Apache-2.0) are permissive. ffmpeg's licence depends on how it was built; builds with libx264 are GPL, which is fine for rendering our own videos.

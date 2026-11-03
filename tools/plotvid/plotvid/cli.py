@@ -114,9 +114,14 @@ def _cache_path(cfg: config.Config, info: probe.SourceInfo) -> Path:
 def analyse_source(cfg: config.Config, info: probe.SourceInfo, want_clean: bool) -> dict:
     """Pen events, per-stroke new ink and (optionally) the clean final-frame time.
 
+    Gaps over ``strokes.split_over_s`` get synthetic events (see
+    ``events.split_long_gaps``) before the ink check, so ink is measured per
+    piece. The returned ``events`` include them and ``synthetic`` flags them.
+
     Cached under out_dir/cache, keyed by path, size, mtime and the detect
     and ink configs, so re-planning with other segment or videos settings
-    is instant."""
+    is instant. The ink entry also records the split settings it was measured
+    with (``ink_for``); other values recompute the ink only, not the detection."""
     path = _cache_path(cfg, info)
     data = json.loads(path.read_text()) if path.exists() else {}
     if "events" not in data:
@@ -125,9 +130,11 @@ def analyse_source(cfg: config.Config, info: probe.SourceInfo, want_clean: bool)
         else:
             x = media.extract_audio(info.path, cfg.detect.sample_rate)
             data["events"] = [e.time_s for e in audio.detect(x, cfg.detect).events]
-    times = data["events"]
-    if "new_ink" not in data:
+    times, synthetic = events.split_long_gaps(data["events"], cfg.strokes)
+    ink_for = [cfg.strokes.split_over_s, cfg.strokes.split_piece_s]
+    if data.get("ink_for") != ink_for:  # also invalidates caches from before the split
         data["new_ink"], data["ecc_failures"] = None, None
+        data["ink_for"] = ink_for
         if cfg.ink.enabled and len(times) >= 2:
             ana = ink.analyse(info.path, info.display_size, cfg.ink)
             data["new_ink"] = [ana.new_ink(a, b, cfg.ink) for a, b in itertools.pairwise(times)]
@@ -138,18 +145,19 @@ def analyse_source(cfg: config.Config, info: probe.SourceInfo, want_clean: bool)
                                                     info.duration_s, cfg.ink)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data))
-    return data
+    return {**data, "events": times, "synthetic": synthetic}
 
 
 def _write_strokes(path: Path, labels: events.StrokeLabels) -> None:
     with path.open("w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["index", "start_s", "end_s", "duration_s", "new_ink", "drawing", "long"])
+        w.writerow(["index", "start_s", "end_s", "duration_s", "new_ink", "drawing", "long",
+                    "synthetic_start"])
         for s in labels.strokes:
             w.writerow([s.index, f"{s.start_s:.3f}", f"{s.end_s:.3f}", f"{s.duration_s:.3f}",
                         "" if s.new_ink is None else f"{s.new_ink:.1f}",
                         {True: "draw", False: "travel", None: "unknown"}[s.drawing],
-                        int(s.long)])
+                        int(s.long), int(s.synthetic_start)])
 
 
 def run_plan(cfg: config.Config) -> int:
@@ -161,7 +169,8 @@ def run_plan(cfg: config.Config) -> int:
     per_source, labels_all, stats = [], [], []
     for order, info in enumerate(sources):
         data = analyse_source(cfg, info, want_clean=order == len(sources) - 1)
-        labels = events.build_strokes(data["events"], data["new_ink"], cfg.strokes)
+        labels = events.build_strokes(data["events"], data["new_ink"], cfg.strokes,
+                                      data["synthetic"])
         _write_strokes(root / f"strokes_{info.path.stem}.csv", labels)
         per_source.append((labels.strokes, info.duration_s))
         labels_all.append(labels)
@@ -169,6 +178,7 @@ def run_plan(cfg: config.Config) -> int:
         st = {
             "source": str(info.path),
             "events": len(data["events"]),
+            "synthetic_events": sum(data["synthetic"]),
             "strokes": len(labels.strokes),
             "long_cutoff_s": round(labels.long_cutoff_s, 3),
             "ink_reliable": labels.ink_reliable,
@@ -181,7 +191,8 @@ def run_plan(cfg: config.Config) -> int:
             "clean_time_s": data.get("clean_time_s"),
         }
         stats.append(st)
-        print(f"[{order}] {info.path.name}: {st['events']} events, {st['strokes']} strokes "
+        print(f"[{order}] {info.path.name}: {st['events']} events ({st['synthetic_events']} "
+              f"synthetic), {st['strokes']} strokes "
               f"({st['drawing']} drawing / {st['travel']} travel / {st['unknown']} unknown; "
               f"long >= {st['long_cutoff_s']} s: {st['long_drawing']} drawing, "
               f"{st['long_travel']} travel); ink reliable: {st['ink_reliable']}")

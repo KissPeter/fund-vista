@@ -73,6 +73,12 @@ class StrokesConfig:
     # is deemed unreliable and every stroke is labelled unknown (= any event
     # may cut).
     min_drawn_share: float = 0.1
+    # Gaps between consecutive pen events longer than this get evenly spaced
+    # synthetic cut points, so a dense line with no pen-up move still yields
+    # usable segments. None = off.
+    split_over_s: float | None = 20.0
+    # A split gap becomes ceil(gap / split_piece_s) equal pieces.
+    split_piece_s: float = 7.0
 
 
 @dataclass(frozen=True)
@@ -244,6 +250,10 @@ def load(path: str | Path) -> Config:
         raise ConfigError("strokes: long_percentile must be within 0..100")
     if strokes.drawn_min_px < 0 or not 0 <= strokes.min_drawn_share <= 1:
         raise ConfigError("strokes: drawn_min_px >= 0 and min_drawn_share within 0..1")
+    if strokes.split_piece_s <= 0:
+        raise ConfigError("strokes: split_piece_s must be > 0")
+    if strokes.split_over_s is not None and strokes.split_over_s < strokes.split_piece_s:
+        raise ConfigError("strokes: split_over_s must be >= split_piece_s or null")
 
     segment = _build(SegmentConfig, raw.get("segment"), "segment")
     lead = segment.lead_short
