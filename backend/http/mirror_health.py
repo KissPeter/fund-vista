@@ -121,9 +121,20 @@ class MirrorHealth:
 overpass_mirrors = MirrorHealth("upstream:park:overpass")
 
 
+#: Park state for the OSM Main API (``/map`` fallback), which has its own
+#: "downloaded too much data, try again in N seconds" 429.
+osm_api_mirrors = MirrorHealth("upstream:park:osmapi")
+
+
 def configure_mirror_health_redis(client) -> None:
     """Wire the shared Redis client (called from the app lifespan)."""
     overpass_mirrors.configure(client)
+    osm_api_mirrors.configure(client)
 
 
-__all__ = ["MirrorHealth", "configure_mirror_health_redis", "overpass_mirrors"]
+__all__ = [
+    "MirrorHealth",
+    "configure_mirror_health_redis",
+    "osm_api_mirrors",
+    "overpass_mirrors",
+]
