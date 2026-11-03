@@ -126,9 +126,12 @@ def _align(template: np.ndarray, image: np.ndarray, init: np.ndarray | None,
     try:
         _, warp = cv2.findTransformECC(template, image, warp, cv2.MOTION_AFFINE,
                                        _ECC_CRITERIA, None, 5)
-        return warp.astype(np.float32), True
     except cv2.error:
         return init.astype(np.float32), False
+    # A warp that squashes the frame to a line has no inverse; keep the seed instead.
+    if abs(np.linalg.det(warp[:, :2])) < 1e-6:
+        return init.astype(np.float32), False
+    return warp.astype(np.float32), True
 
 
 @dataclass
@@ -149,7 +152,14 @@ class InkAnalysis:
         return min(self.n - 1, max(0, i))
 
     def _map(self, i: int, j: int) -> np.ndarray:
-        return (self.cum[j] @ np.linalg.inv(self.cum[i]))[:2].astype(np.float32)
+        """Affine taking frame i's pixels to frame j's: cum[j] @ inv(cum[i])."""
+        # A degenerate ECC warp makes cum[i] singular. inv() raises LinAlgError
+        # only for an exact zero pivot, so name the frame when it does.
+        try:
+            back = np.linalg.inv(self.cum[i])
+        except np.linalg.LinAlgError as exc:
+            raise ValueError(f"ink: frame {i} has a singular accumulated transform") from exc
+        return (self.cum[j] @ back)[:2].astype(np.float32)
 
     def new_ink(self, t0: float, t1: float, cfg: InkConfig) -> float:
         """New persistent ink pixels (at REF_WIDTH scale) appearing over [t0, t1]."""
