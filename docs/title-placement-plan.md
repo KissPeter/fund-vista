@@ -1,6 +1,19 @@
 # Title placement: inside or outside the page border
 
-Status: plan, not implemented. Reverted from the working tree; nothing in code changed.
+Status: implemented (phase 1, backend). `inside` stays the default and its output is byte-identical; outside placements live in `labels.py`, `pipeline.py`, `compose_sheet.py`, `layout_svg.py` and `stats_table.py`.
+
+### Implementation decisions (phase 1)
+
+- Subtitle cap height is `labels.SUBTITLE_HEIGHT_RATIO = 0.6` of the title height, one constant.
+- Title and subtitle are stacked with `labels.OUTSIDE_LINE_GAP_MM = 1.0` between them.
+- Shared limits are kept: 41 characters per line, two lines (`lines`), 52 characters for title plus subtitle in the shop.
+- Default placement is `inside`. Its cache key is unchanged because `placement` is dropped from the key when it is `inside`.
+- `label.lines` is optional on convert and replaces `label.text` when it carries text. Inside, it is drawn as `title - subtitle`.
+- Compose keeps `lines` top-level and does not accept them inside `layout.label`.
+- The `a4-bounds` rect is emitted only for outside placements, so inside output stays byte-identical.
+- Measured deviation: N6 (2 KB for the rect plus the second line) does not hold. A glyph line costs about 6.5 KB in the default face at any size, so the test guards the rect (under 200 bytes) and that a subtitle costs at most one title line.
+- Not run here: the live-server (HTTP) suites, because the venv lacks `httpx_retries`; the 422 checks are covered at the schema level.
+- vpype is not installed; the plotter-safety check (N7) is parse-based only.
 
 ## Goal
 
