@@ -66,8 +66,16 @@ class CitymapSettings(BaseSettings):
     osm_api_timeout_s: float = 30.0
     osm_api_max_deg: float = 0.1
     osm_api_min_deg: float = 0.025
+    # Same-cell retries come from the smart client (transient 408/5xx +
+    # connect failures). 429 is never retried: the editing API answers
+    # "You have downloaded too much data. Please try again in N seconds",
+    # so the endpoint is parked for that hint (Retry-After header, else the
+    # N in the body, else osm_api_cooldown_s), capped at osm_api_max_cooldown_s,
+    # shared across workers via Redis.
     osm_api_retries: int = 2
     osm_api_retry_backoff_s: float = 0.5
+    osm_api_cooldown_s: float = 60.0
+    osm_api_max_cooldown_s: float = 900.0
     nominatim_url: str = "https://nominatim.openstreetmap.org/search"
     nominatim_timeout_s: float = 15.0
     # Nominatim usage policy (operations.osmfoundation.org/policies/nominatim):
