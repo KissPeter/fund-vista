@@ -3,7 +3,7 @@
 Each stage is timed and debug-logged (``pipeline.convert image=... method=..
 stage=... ms=..``) so a slow slider value can be traced to hatch/flow vs.
 linemerge without a profiler. Pure function of (image bytes, params) apart
-from the result cache — same input always yields byte-identical SVG.
+from the result cache - same input always yields byte-identical SVG.
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ from backend.penplot.schemas import (
     ConvertParams,
     ConvertStats,
     DRAW_SPEED_MM_MIN,
+    LabelParams,
     PointsStats,
     SegmentsStats,
     TRAVEL_SPEED_MM_MIN,
@@ -75,8 +76,8 @@ class ConvertResult:
 
 # Parameters that never reach the geometry for vector inputs: the
 # technical-drawing-mode stages stay raster-only (they analyse photo
-# pixels — OCR text, exact circles, thin-line keeping, supersampled
-# tracing, frame cropping — and have no FE sliders).
+# pixels - OCR text, exact circles, thin-line keeping, supersampled
+# tracing, frame cropping - and have no FE sliders).
 _VECTOR_IGNORED_PARAMS = frozenset({
     "thin_lines",
     "trace_upscale",
@@ -105,7 +106,7 @@ _VECTOR_TONE_PARAMS = frozenset({
 # Method generators that need fills: centerlines skeletons and hatch/flow
 # shadings only exist on raster ink, so selecting any of them rasterizes
 # the vector first (supersampled, antialiased). Plain contour traces the
-# parsed polylines directly — byte-identical, fast, and the default
+# parsed polylines directly - byte-identical, fast, and the default
 # everywhere (lineart preset, all designer tabs).
 _VECTOR_RASTER_METHODS = frozenset({"centerline", "hatch", "flow"})
 
@@ -124,8 +125,8 @@ _SKIPPABLE_TRAVEL_STAGES = frozenset({"linesort", "reloop_tolerance_mm"})
 def is_fast_preview(params: ConvertParams, is_vector: bool) -> bool:
     """Vector inputs skip linesort/reloop unless ``full_quality`` is set.
 
-    Those two stages only reorder strokes for pen-travel speed — the drawn
-    geometry (what the preview shows) is byte-identical — and they are pure
+    Those two stages only reorder strokes for pen-travel speed - the drawn
+    geometry (what the preview shows) is byte-identical - and they are pure
     CPU on dense SVGs, so the fast preview path (the default) omits them.
     Raster inputs always optimise travel (their defaults already did).
     """
@@ -139,6 +140,10 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
     # stored result filenames) from before they existed stay valid.
     if not data.get("ocr_text", {}).get("enabled"):
         data.pop("ocr_text", None)
+    # Title placement inside the border is the default: its key stays out so
+    # existing cache entries stay valid. Outside placements get their own key.
+    if data.get("label", {}).get("placement") == "inside":
+        data["label"].pop("placement", None)
     if not any(data.get("svg_meta", {}).values()):
         data.pop("svg_meta", None)
     # Gallery context table (issue #1058) is off by default: keep its key out.
@@ -183,7 +188,7 @@ def estimate_plot_time_s(
     Feedrates are the measured machine constants ``DRAW_SPEED_MM_MIN`` /
     ``TRAVEL_SPEED_MM_MIN`` (mm/min, converted to mm/s); simplified model
     without acceleration ramps (SPEC_V1.md §3.4). Returns inf on degenerate
-    input — the caller drops the estimate with a warning instead of failing
+    input - the caller drops the estimate with a warning instead of failing
     the response JSON render (Schemathesis ST101, 2026-10-20).
     """
     try:
@@ -224,11 +229,26 @@ def _tone_to_mask(gray: np.ndarray, params: ConvertParams) -> tuple[np.ndarray, 
     return gray, imaging.threshold_mask(gray, params.threshold)
 
 
+def _label_title_subtitle(label: LabelParams) -> tuple[str, str]:
+    """(title, subtitle) of the convert label: ``lines`` when they carry text,
+    else the legacy ``text`` as the title."""
+    if label.lines is not None:
+        parts = [line.strip() for line in label.lines if line.strip()]
+        if parts:
+            return parts[0], (parts[1] if len(parts) > 1 else "")
+    return label.text, ""
+
+
+def _inside_text(title: str, subtitle: str) -> str:
+    """The single line drawn inside the border: ``title - subtitle``."""
+    return f"{title} - {subtitle}" if subtitle else title
+
+
 def _generate_from_mask(
     *, params: ConvertParams, mask: np.ndarray, gray: np.ndarray, up: int,
     src_w: float, src_h: float, reserve_bottom_mm: float,
     image_id: str, method_label: str, methods: list[str],
-    warnings: list[str], poll, started: float,
+    warnings: list[str], poll, started: float, reserve_top_mm: float = 0.0,
 ) -> list:
     """Shared method stage: hatch-strip → pitch/clamp → MethodContext →
     every selected generator in order.
@@ -253,6 +273,7 @@ def _generate_from_mask(
         params.page.size, params.page.orientation, params.page.margin_mm,
         reserve_bottom_mm,
         params.page.padding_mm,
+        reserve_top_mm,
     )
     pitch_px = params.hatch_pitch_mm / max(scale, 1e-9)
     pitch_px_clamped = float(np.clip(pitch_px, 2.0, 200.0))
@@ -275,7 +296,7 @@ def _generate_from_mask(
     # Every selected generator runs on the same (mask, gray) in the
     # requested order; outputs concatenate before the shared optimize
     # chain below. Listed order is preserved here (e.g. shading first,
-    # outlines last) — linesort later only reorders for travel.
+    # outlines last) - linesort later only reorders for travel.
     raw_px = []
     t0 = time.perf_counter()
     for method in methods:
@@ -307,10 +328,10 @@ def run_convert(
     the frame, label and table strokes out of the result. Fulfilment uses it
     for the secondary ink passes so the furniture is drawn exactly once.
 
-    ``cancelled`` is an optional ``() -> bool`` polled between stages — after
+    ``cancelled`` is an optional ``() -> bool`` polled between stages - after
     decode, before each method pass (``contour``/``centerline``/``hatch``/
     ``flow``), and between each vpype stage (``linemerge → linesimplify →
-    linesort → reloop``) — i.e. P2 checkpoint 4 for converts. When it fires,
+    linesort → reloop``) - i.e. P2 checkpoint 4 for converts. When it fires,
     :class:`backend.cancel.ClientCancelled` is raised; callers must skip
     result writes so no partial ``svg_url`` file is stored.
     """
@@ -335,17 +356,35 @@ def run_convert(
     # Title strip first: reserve the label zone from the image area so
     # artwork bottoms out on the title-block band instead of sliding under it.
     # 0 when the label is off/blank/fully-unsupported (render no-ops).
+    # Outside the border (below/above) the title block is a strip on that side
+    # of the page: the artwork keeps clear of it and the frame gives it up.
+    title, subtitle = _label_title_subtitle(params.label)
+    outside = params.label.placement != "inside"
+    label_strip_mm = 0.0
     reserve_bottom_mm = 0.0
-    if params.label.enabled and params.label.text.strip():
-        reserve_bottom_mm = labels.label_reserve_mm(
-            params.label.text,
-            height_mm=params.label.height_mm,
-            font=params.label.font,
-            border=params.label.border,
-        )
-        if reserve_bottom_mm > 0.0:
-            # +1 mm so image strokes can't linemerge into the band/frame.
-            reserve_bottom_mm += labels.LABEL_ARTWORK_GAP_MM
+    reserve_top_mm = 0.0
+    if params.label.enabled and title.strip():
+        if outside:
+            label_strip_mm = labels.label_outside_mm(
+                title, subtitle=subtitle, height_mm=params.label.height_mm,
+                font=params.label.font,
+            )
+            if label_strip_mm > 0.0:
+                reserve = label_strip_mm + labels.LABEL_ARTWORK_GAP_MM
+                if params.label.placement == "below":
+                    reserve_bottom_mm = reserve
+                else:
+                    reserve_top_mm = reserve
+        else:
+            reserve_bottom_mm = labels.label_reserve_mm(
+                _inside_text(title, subtitle),
+                height_mm=params.label.height_mm,
+                font=params.label.font,
+                border=params.label.border,
+            )
+            if reserve_bottom_mm > 0.0:
+                # +1 mm so image strokes can't linemerge into the band/frame.
+                reserve_bottom_mm += labels.LABEL_ARTWORK_GAP_MM
     extra_px: list = []   # OCR text + detected circles (drawing mode), working px
     drawing_mode = (not is_vector) and drawing.is_drawing_mode(params)
     stack = contextlib.ExitStack()   # holds the heavy-trace slot in drawing mode
@@ -369,7 +408,7 @@ def run_convert(
             _timed("parse-svg", image_id, method_label, t0)
             if not _vector_needs_raster(methods):
                 # Plain contour: the parsed polylines already ARE the plot
-                # geometry — trace them directly (byte-identical, fast).
+                # geometry - trace them directly (byte-identical, fast).
                 # Tone sliders have no pixels to act on here.
                 gray = None
                 mask = None
@@ -377,8 +416,8 @@ def run_convert(
                 # Centerline/hatch/flow need raster ink: rasterize the parsed
                 # polylines (supersampled, antialiased) and run the same
                 # tone+method pipeline as rasters, so every Style-rail
-                # slider — threshold, blur, contrast, hatch pitch, simplify,
-                # prune — shapes this geometry too.
+                # slider - threshold, blur, contrast, hatch pitch, simplify,
+                # prune - shapes this geometry too.
                 _poll("vector:rasterize")
                 gray = imaging.rasterize_polylines(raw_px, vw, vh, settings.max_image_dim_px)
                 src_w, src_h = float(gray.shape[1]), float(gray.shape[0])
@@ -393,6 +432,7 @@ def run_convert(
                     src_w=src_w, src_h=src_h, reserve_bottom_mm=reserve_bottom_mm,
                     image_id=image_id, method_label=method_label, methods=methods,
                     warnings=warnings, poll=_poll, started=t0,
+                    reserve_top_mm=reserve_top_mm,
                 )
                 del mask, gray
         else:
@@ -462,6 +502,7 @@ def run_convert(
                 src_w=src_w, src_h=src_h, reserve_bottom_mm=reserve_bottom_mm,
                 image_id=image_id, method_label=method_label, methods=methods,
                 warnings=warnings, poll=_poll, started=t0,
+                reserve_top_mm=reserve_top_mm,
             )
             del mask, gray
             stack.close()  # arrays freed; let the next heavy trace in
@@ -479,6 +520,7 @@ def run_convert(
             margin_mm=params.page.margin_mm,
             reserve_bottom_mm=reserve_bottom_mm,
             padding_mm=params.page.padding_mm,
+            reserve_top_mm=reserve_top_mm,
         )
         extra_laid: list = []
         if extra_px:
@@ -490,13 +532,14 @@ def run_convert(
                 margin_mm=params.page.margin_mm,
                 reserve_bottom_mm=reserve_bottom_mm,
                 padding_mm=params.page.padding_mm,
+                reserve_top_mm=reserve_top_mm,
             )
         _timed("layout", image_id, method_label, t0)
-        if params.label.enabled and params.label.text.strip():
+        if params.label.enabled and title.strip():
             # Title-block label (mm space already): joins quantize and the
             # rest of the cleanup chain so it plots and counts like any stroke.
             lab_lines, lab_warnings = labels.render_label(
-                params.label.text,
+                title,
                 height_mm=params.label.height_mm,
                 align=params.label.align,
                 page_w=page_w, page_h=page_h,
@@ -506,19 +549,26 @@ def run_convert(
                 pad_left_mm=params.label.pad_left_mm,
                 pad_right_mm=params.label.pad_right_mm,
                 border_radius_mm=params.label.border_radius_mm,
+                placement=params.label.placement,
+                subtitle=subtitle,
             )
             warnings.extend(lab_warnings)
             _timed("label", image_id, method_label, t0)
         else:
             lab_lines = []
-        # Whole-page margin frame — a page-furniture element of its own,
+        # Whole-page margin frame - a page-furniture element of its own,
         # independent of the title-block band (the label never draws the
         # margin rect), so a sheet can carry the frame, the band or both.
         frame_lines: list = []
         if params.page.frame:
+            # Outside titles take their strip off the frame on the title's side.
             frame_lines = [labels.page_frame_rect(
                 page_w, page_h,
                 params.page.margin_mm, params.page.frame_radius_mm,
+                top_mm=(params.page.margin_mm + label_strip_mm
+                        if params.label.placement == "above" else None),
+                bottom_mm=(page_h - params.page.margin_mm - label_strip_mm
+                           if params.label.placement == "below" else None),
             )]
         # Layer-stats overlay table (citymap/airport path_counts, plotted in
         # a page corner). Empty rows are a no-op so the toggle can stay on
@@ -532,6 +582,7 @@ def run_convert(
                 page_w=page_w, page_h=page_h,
                 margin_mm=params.page.margin_mm,
                 reserve_bottom_mm=reserve_bottom_mm,
+                reserve_top_mm=reserve_top_mm,
                 pad_left_mm=params.stats_table.pad_left_mm,
                 pad_right_mm=params.stats_table.pad_right_mm,
                 pad_top_mm=params.stats_table.pad_top_mm,
@@ -552,6 +603,7 @@ def run_convert(
                 page_w=page_w, page_h=page_h,
                 margin_mm=params.page.margin_mm,
                 reserve_bottom_mm=reserve_bottom_mm,
+                reserve_top_mm=reserve_top_mm,
                 pad_left_mm=params.context_table.pad_left_mm,
                 pad_right_mm=params.context_table.pad_right_mm,
                 pad_top_mm=params.context_table.pad_top_mm,
@@ -599,7 +651,7 @@ def run_convert(
         _poll("vpype:linesimplify")
         simplified = linesimplify(smoothed, params.linesimplify_tolerance_mm)
         # Page furniture kept its drawn shape (it bypassed linesimplify
-        # above) — rejoin before travel optimization so pen travel stays
+        # above) - rejoin before travel optimization so pen travel stays
         # optimal across the whole sheet.
         simplified.extend(static_merged)
         _timed("linesimplify", image_id, method_label, t0)
@@ -641,6 +693,7 @@ def run_convert(
             final, page_w, page_h,
             stroke_color=params.line_color,
             background_data_uri=get_background_data_uri(params.background),
+            a4_bounds=outside,
         )
         # Ownership/licence notice (no-op unless configured or titled).
         svg_text = svgmeta.stamp(
