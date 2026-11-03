@@ -139,12 +139,12 @@ class InkAnalysis:
     fps: float
     width: int
     feats: FrameFeatures
-    cum: np.ndarray  # (N, 3, 3): x_i = cum[i] @ x_0
+    steps: np.ndarray  # (N, 3, 3): steps[i] takes frame i-1 to frame i; steps[0] = identity
     ecc_failures: int
 
     @property
     def n(self) -> int:
-        return len(self.cum)
+        return len(self.steps)
 
     def frame_at(self, t: float, side: str) -> int:
         f = t * self.fps
@@ -152,14 +152,20 @@ class InkAnalysis:
         return min(self.n - 1, max(0, i))
 
     def _map(self, i: int, j: int) -> np.ndarray:
-        """Affine taking frame i's pixels to frame j's: cum[j] @ inv(cum[i])."""
-        # A degenerate ECC warp makes cum[i] singular. inv() raises LinAlgError
-        # only for an exact zero pivot, so name the frame when it does.
-        try:
-            back = np.linalg.inv(self.cum[i])
-        except np.linalg.LinAlgError as exc:
-            raise ValueError(f"ink: frame {i} has a singular accumulated transform") from exc
-        return (self.cum[j] @ back)[:2].astype(np.float32)
+        """Affine taking frame i's pixels to frame j's.
+
+        Composes only the steps between i and j, so ECC error does not build up
+        over the whole video (a global chain grew to ~1e75 over 6800 frames).
+        """
+        m = np.eye(3)
+        if j >= i:
+            for k in range(i + 1, j + 1):
+                m = self.steps[k] @ m
+        else:
+            for k in range(j + 1, i + 1):
+                m = self.steps[k] @ m
+            m = np.linalg.inv(m)
+        return m[:2].astype(np.float32)
 
     def new_ink(self, t0: float, t1: float, cfg: InkConfig) -> float:
         """New persistent ink pixels (at REF_WIDTH scale) appearing over [t0, t1]."""
@@ -194,14 +200,14 @@ def analyse(path: Path, display_size: tuple[int, int], cfg: InkConfig) -> InkAna
     feats = features(frames, cfg)
     n, h, w = frames.shape
     window = cv2.createHanningWindow((w, h), cv2.CV_32F)
-    cum = np.zeros((n, 3, 3))
-    cum[0] = np.eye(3)
+    steps = np.zeros((n, 3, 3))
+    steps[0] = np.eye(3)
     fails = 0
     for i in range(1, n):
         m, ok = _align(feats.tophat[i - 1], feats.tophat[i], None, window)
         fails += not ok
-        cum[i] = np.vstack([m, [0, 0, 1]]) @ cum[i - 1]
-    return InkAnalysis(cfg.fps, w, feats, cum, fails)
+        steps[i] = np.vstack([m, [0, 0, 1]])
+    return InkAnalysis(cfg.fps, w, feats, steps, fails)
 
 
 def clean_frame_time(path: Path, display_size: tuple[int, int], duration_s: float,
