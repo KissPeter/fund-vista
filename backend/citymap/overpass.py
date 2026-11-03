@@ -12,14 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import re
 
 import httpx
 
 from backend.citymap.config import settings
 from backend.citymap.layers import selectors_for
-from backend.http import tls
+from backend.http.overpass_client import OverpassClient, OverpassConfig, OverpassError
 
 log = logging.getLogger(__name__)
 
@@ -48,10 +47,6 @@ def _reset_overpass_semaphore() -> None:
     _overpass_sem = None
     _overpass_sem_capacity = 0
 
-# HTTP statuses worth retrying on the same mirror before failing over.
-# 400/403/404 fail fast (retrying won't help: rejected query / blocked).
-_RETRYABLE_STATUS: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
-_BODY_SNIPPET_LEN = 200
 
 BBox = tuple[float, float, float, float]  # south, west, north, east
 
@@ -208,144 +203,38 @@ def split_elements(
     return geoms, counts
 
 
-async def fetch_overpass(query: str, client: httpx.AsyncClient | None = None) -> list[dict]:
+async def fetch_overpass(
+    query: str,
+    client: httpx.AsyncClient | None = None,
+    budget_s: float | None = None,
+) -> list[dict]:
     """POST the query to the first healthy Overpass mirror.
 
-    Each mirror gets ``overpass_retries`` extra attempts on retryable
-    failures (HTTP 408/429/5xx + network errors) with exponential backoff
-    before failing over to the next mirror. 400/403/404 fail fast.
-    Concurrent upstream POSTs are capped by ``overpass_max_concurrent``
-    (fair use on shared public mirrors).
+    Thin binding of citymap settings to the shared
+    :class:`backend.http.overpass_client.OverpassClient`: mirror failover,
+    429 parking (Retry-After, Redis-shared), retries/backoff and logging
+    live there. Concurrent upstream POSTs are capped by
+    ``overpass_max_concurrent`` (fair use on shared public mirrors).
 
-    Raises :class:`OverpassError` when every mirror fails or answers with
-    non-JSON so the router can map it to a 502 envelope.
+    Raises :class:`OverpassError` when every mirror fails, is parked, or
+    answers with non-JSON so the router can map it to a 502 envelope.
     """
-    own_client = client is None
-    client = client or tls.async_client(timeout=settings.overpass_timeout_s)
-    try:
-        failures: list[str] = []
-        max_attempts = max(1, settings.overpass_retries + 1)
-        for url in settings.overpass_urls:
-            for attempt in range(max_attempts):
-                try:
-                    # Overpass answers 406 to generic HTTP-client UAs
-                    # (e.g. python-httpx/*) — identify the app on every POST.
-                    # The semaphore caps concurrent upstream POSTs per worker
-                    # (fair use: never hammer shared mirrors in parallel).
-                    async with _overpass_semaphore():
-                        resp = await client.post(
-                            url,
-                            data={"data": query},
-                            headers={"User-Agent": settings.user_agent},
-                        )
-                    if resp.status_code != 200:
-                        detail = f"{url} answered HTTP {resp.status_code}"
-                        snippet = _body_snippet(resp)
-                        if snippet:
-                            detail += f" ({snippet})"
-                        retryable = resp.status_code in _RETRYABLE_STATUS
-                        if retryable and attempt + 1 < max_attempts:
-                            log.warning(
-                                "overpass.retry mirror=%s http=%d attempt=%d/%d",
-                                url, resp.status_code, attempt + 1, max_attempts,
-                            )
-                            await asyncio.sleep(
-                                _backoff(settings.overpass_retry_backoff_s, attempt)
-                            )
-                            continue
-                        failures.append(detail)
-                        log.warning("overpass.fail mirror=%s http=%d", url, resp.status_code)
-                        break
-                    try:
-                        payload = resp.json()
-                    except ValueError as exc:
-                        detail = f"{url} returned an invalid payload ({_format_exc(exc)})"
-                        if attempt + 1 < max_attempts:
-                            log.warning(
-                                "overpass.retry mirror=%s invalid_payload attempt=%d/%d",
-                                url, attempt + 1, max_attempts,
-                            )
-                            await asyncio.sleep(
-                                _backoff(settings.overpass_retry_backoff_s, attempt)
-                            )
-                            continue
-                        failures.append(detail)
-                        log.warning("overpass.fail mirror=%s invalid_payload", url)
-                        break
-                    if not isinstance(payload, dict) or "elements" not in payload:
-                        failures.append(f"{url} returned an invalid payload")
-                        log.warning("overpass.fail mirror=%s invalid_payload", url)
-                        break
-                    # Overpass answers HTTP 200 with a partial/empty element
-                    # list plus a ``remark`` ("runtime error: Query timed
-                    # out", "out of memory") when it gave up mid-query.
-                    # That is not a complete answer: retry, then fail over.
-                    remark = payload.get("remark")
-                    if remark:
-                        detail = f"{url} reported a remark ({str(remark)[:_BODY_SNIPPET_LEN]})"
-                        if attempt + 1 < max_attempts:
-                            log.warning(
-                                "overpass.retry mirror=%s remark=%r attempt=%d/%d",
-                                url, remark, attempt + 1, max_attempts,
-                            )
-                            await asyncio.sleep(
-                                _backoff(settings.overpass_retry_backoff_s, attempt)
-                            )
-                            continue
-                        failures.append(detail)
-                        log.warning("overpass.fail mirror=%s remark=%r", url, remark)
-                        break
-                    log.info("overpass.ok mirror=%s elements=%d", url, len(payload["elements"]))
-                    return payload["elements"]
-                except (httpx.HTTPError, ValueError) as exc:
-                    detail = f"{url}: {_format_exc(exc)}"
-                    if attempt + 1 < max_attempts:
-                        log.warning(
-                            "overpass.retry mirror=%s error=%r attempt=%d/%d",
-                            url, exc, attempt + 1, max_attempts,
-                        )
-                        await asyncio.sleep(
-                            _backoff(settings.overpass_retry_backoff_s, attempt)
-                        )
-                        continue
-                    failures.append(detail)
-                    log.warning("overpass.fail mirror=%s error=%r", url, exc)
-                    break
-        raise OverpassError("; ".join(failures) or "no mirrors configured")
-    finally:
-        if own_client:
-            await client.aclose()
-
-
-def _format_exc(exc: BaseException) -> str:
-    """Never return an empty string (httpx timeouts often stringify to '')."""
-    msg = str(exc).strip()
-    name = type(exc).__name__
-    return f"{name}: {msg}" if msg else f"{name} (no detail)"
-
-
-def _body_snippet(resp: httpx.Response) -> str:
-    """First ~200 chars of an error body for diagnostics (403/504 pages)."""
-    try:
-        text = resp.text.strip().replace("\n", " ")
-    except Exception:
-        return ""
-    if len(text) > _BODY_SNIPPET_LEN:
-        return text[:_BODY_SNIPPET_LEN] + "…"
-    return text
-
-
-def _backoff(base_s: float, attempt: int) -> float:
-    """Exponential backoff with a small jitter so mirrors don't thunder."""
-    return base_s * (2**attempt) + random.uniform(0, 0.25)
-
-
-class OverpassError(Exception):
-    """All Overpass mirrors failed or answered unusable payloads."""
-
-    def __init__(self, detail: str) -> None:
-        super().__init__(detail)
-        self.detail = detail
+    cfg = OverpassConfig(
+        urls=tuple(settings.overpass_urls),
+        user_agent=settings.user_agent,
+        timeout_s=settings.overpass_timeout_s,
+        connect_timeout_s=settings.overpass_connect_timeout_s,
+        retries=settings.overpass_retries,
+        retry_backoff_s=settings.overpass_retry_backoff_s,
+        budget_s=settings.overpass_budget_s,
+        default_park_s=settings.overpass_default_park_s,
+        max_park_s=settings.overpass_max_park_s,
+        fail_park_s=settings.overpass_fail_park_s,
+        name="overpass",
+    )
+    return await OverpassClient(
+        cfg, semaphore=_overpass_semaphore, error_cls=OverpassError, http=client
+    ).fetch(query, budget_s)
 
 
 __all__ = [

@@ -95,3 +95,13 @@ def http_client(live_server: str):
     """Plain httpx client pointed at the live server (60s for flow method)."""
     with httpx.Client(base_url=live_server, timeout=60.0) as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def _reset_overpass_mirror_parks():
+    """A 429/5xx parks a mirror process-wide; never leak that across tests."""
+    from backend.http.mirror_health import overpass_mirrors
+
+    overpass_mirrors.reset()
+    yield
+    overpass_mirrors.reset()

@@ -7,6 +7,9 @@ dependencies = [
     "fastapi[standard]==0.115.0",
     "uvicorn[standard]==0.30.6",
     "httpx==0.27.2",
+    # Retry/backoff/Retry-After transport for the shared upstream client
+    # (backend/http/upstream.py). BSD-3-Clause — permissive, meets spec §7.
+    "httpx-retries>=0.4",
     "brotli==1.2.0",
     "redis==5.1.1",
     # pydantic-settings replaces hand-rolled os.getenv/_env_int/_env_float config

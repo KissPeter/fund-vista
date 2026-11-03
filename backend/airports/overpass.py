@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import re
 
 import httpx
 
 from backend.airports.config import settings
-from backend.http import tls
+from backend.http.overpass_client import OverpassClient, OverpassConfig, OverpassError
 
 log = logging.getLogger(__name__)
 
@@ -42,9 +41,6 @@ def _reset_overpass_semaphore() -> None:
     _overpass_sem = None
     _overpass_sem_capacity = 0
 
-_RETRYABLE_STATUS: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
-_BODY_SNIPPET_LEN = 200
-
 # aeroway tag values we draw. ``taxilane`` folds into taxiways (same
 # centerline treatment); stands/stopways get their own thin-outline groups.
 # Deliberately excluded (poster-scale clutter): jet_bridge, helipad,
@@ -59,12 +55,8 @@ _AEROWAY_TO_CLASS = {
 }
 
 
-class AirportOverpassError(Exception):
+class AirportOverpassError(OverpassError):
     """All Overpass mirrors failed or answered unusable payloads."""
-
-    def __init__(self, detail: str) -> None:
-        super().__init__(detail)
-        self.detail = detail
 
 
 def build_airport_query(lat: float, lon: float, radius_m: float) -> str:
@@ -278,78 +270,30 @@ async def fetch_airport_polygons(
 ) -> list[dict]:
     """POST the query to the first healthy Overpass mirror.
 
-    Same failover shape as citymap (per-mirror retries on retryable
-    failures with exponential backoff, fail-fast on 400/403/404) plus the
-    same ``overpass_max_concurrent`` cap on parallel upstream POSTs.
-    Raises :class:`AirportOverpassError` when every mirror fails.
+    Same shared :class:`~backend.http.overpass_client.OverpassClient` as
+    citymap (failover, 429 parking, retries, logging) with airports
+    settings and the same ``overpass_max_concurrent`` cap. Raises
+    :class:`AirportOverpassError` when every mirror fails.
     """
-    own_client = client is None
-    client = client or tls.async_client(timeout=settings.overpass_timeout_s)
-    try:
-        failures: list[str] = []
-        max_attempts = max(1, settings.overpass_retries + 1)
-        for url in settings.overpass_urls:
-            for attempt in range(max_attempts):
-                try:
-                    async with _overpass_semaphore():
-                        resp = await client.post(
-                            url,
-                            data={"data": query},
-                            headers={"User-Agent": settings.user_agent},
-                        )
-                    if resp.status_code != 200:
-                        detail = f"{url} answered HTTP {resp.status_code}"
-                        snippet = _body_snippet(resp)
-                        if snippet:
-                            detail += f" ({snippet})"
-                        if (
-                            resp.status_code in _RETRYABLE_STATUS
-                            and attempt + 1 < max_attempts
-                        ):
-                            await asyncio.sleep(
-                                _backoff(settings.overpass_retry_backoff_s, attempt)
-                            )
-                            continue
-                        failures.append(detail)
-                        break
-                    try:
-                        payload = resp.json()
-                    except ValueError as exc:
-                        if attempt + 1 < max_attempts:
-                            await asyncio.sleep(
-                                _backoff(settings.overpass_retry_backoff_s, attempt)
-                            )
-                            continue
-                        failures.append(f"{url} returned an invalid payload ({exc})")
-                        break
-                    if not isinstance(payload, dict) or "elements" not in payload:
-                        failures.append(f"{url} returned an invalid payload")
-                        break
-                    return payload["elements"]
-                except (httpx.HTTPError, ValueError) as exc:
-                    if attempt + 1 < max_attempts:
-                        await asyncio.sleep(
-                            _backoff(settings.overpass_retry_backoff_s, attempt)
-                        )
-                        continue
-                    failures.append(f"{url}: {type(exc).__name__}: {exc}")
-                    break
-        raise AirportOverpassError("; ".join(failures) or "no mirrors configured")
-    finally:
-        if own_client:
-            await client.aclose()
-
-
-def _body_snippet(resp: httpx.Response) -> str:
-    try:
-        text = resp.text.strip().replace("\n", " ")
-    except Exception:
-        return ""
-    return text[:_BODY_SNIPPET_LEN] + "…" if len(text) > _BODY_SNIPPET_LEN else text
-
-
-def _backoff(base_s: float, attempt: int) -> float:
-    return base_s * (2**attempt) + random.uniform(0, 0.25)
+    cfg = OverpassConfig(
+        urls=tuple(settings.overpass_urls),
+        user_agent=settings.user_agent,
+        timeout_s=settings.overpass_timeout_s,
+        connect_timeout_s=settings.overpass_connect_timeout_s,
+        retries=settings.overpass_retries,
+        retry_backoff_s=settings.overpass_retry_backoff_s,
+        budget_s=settings.overpass_budget_s,
+        default_park_s=settings.overpass_default_park_s,
+        max_park_s=settings.overpass_max_park_s,
+        fail_park_s=settings.overpass_fail_park_s,
+        name="overpass-airports",
+    )
+    return await OverpassClient(
+        cfg,
+        semaphore=_overpass_semaphore,
+        error_cls=AirportOverpassError,
+        http=client,
+    ).fetch(query)
 
 
 __all__ = [
