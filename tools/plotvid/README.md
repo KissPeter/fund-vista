@@ -105,9 +105,9 @@ uv run python -m plotvid.folder FOLDER [--config YAML] [--out DIR] [--slide-s 3]
 
 - **Defaults:** `--config /data/pen-pixel/raw/common/plotvid.yaml`, `--out /data/pen-pixel/processed`. `folder.yaml` in this folder is the same generic config.
 - **Videos** (`.mov`, `.mp4`, `.m4v`) are ordered by creation time, then go through the usual detect, ink check, segment and clip plan. The clip count is `videos.count: auto`, so one folder gives several clips of 30–40 s each.
-- **Photos** (any image type plotvid reads) are ordered by EXIF capture time, file mtime when missing. Each is cropped to the output frame and shown for `--slide-s` seconds (default 3). The slideshow is rendered on its own with hard cuts, then closes the **last** clip, before the outro.
+- **Photos** (any image type plotvid reads) are ordered by EXIF capture time, file mtime when missing. Each is cropped to the output frame and shown for `--slide-s` seconds (default 3). The slideshow is rendered on its own with hard cuts, then closes **every** clip, before the outro.
 - **Outro:** `outro` from the YAML, relative to the YAML file. An SVG is converted to PNG at the output size with ImageMagick. A video outro keeps its own audio.
-- **Ending order:** every clip is footage, then the outro. The last clip is footage, then the slideshow, then the outro.
+- **Ending order:** every clip is footage, then the slideshow, then the outro.
 - **Output:** `OUT/<folder>.mp4` for one clip, or `OUT/<folder>_01.mp4`, `_02.mp4`, ... when there are several. Work files go to `OUT/work/<folder>/`: a generated config, the photo stills, the slideshow, and `summary.json`.
 - **Skipped files:** names starting with `.`, including macOS `._*` companions, and any other extension.
 - **Final photo:** the YAML's `final_photo` is ignored, because the slideshow replaces it. A folder with photos but no videos gets the slideshow and outro only, at 1080×1920.

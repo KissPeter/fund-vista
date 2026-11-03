@@ -192,7 +192,9 @@ def process(folder: Path, cfg_path: Path, out_root: Path, slide_s: float,
     outro = _outro(cfg, size, work)
 
     outro_part = render.asset_part(outro, cfg.outro.seconds)
-    clips = _footage_clips(cfg, infos, outro_part.duration_s, overrides) if infos else [[]]
+    # The length window counts the slideshow too, since every clip ends with it.
+    ending_s = outro_part.duration_s + len(shots) * slide_s
+    clips = _footage_clips(cfg, infos, ending_s, overrides) if infos else [[]]
     slide_part = None
     if shots:
         slideshow = work / "slideshow.mp4"
@@ -204,11 +206,11 @@ def process(folder: Path, cfg_path: Path, out_root: Path, slide_s: float,
         render.render(slides, size, fps, replace(cfg.render, transition="cut"), slideshow)
         slide_part = render.asset_part(slideshow, None)
 
-    # The slideshow closes the last clip, before the outro; other clips are footage + outro.
+    # Every clip is footage, then the slideshow, then the outro.
     outs = []
     for i, footage in enumerate(clips):
         parts = list(footage)
-        if slide_part is not None and i == len(clips) - 1:
+        if slide_part is not None:
             parts.append(slide_part)
         parts.append(outro_part)
         out = out_root / (f"{name}.mp4" if len(clips) == 1 else f"{name}_{i + 1:02d}.mp4")
