@@ -35,7 +35,7 @@ from backend.traffic.router import router as traffic_router
 from backend.penplot.compose_sheet import router as compose_sheet_router
 from backend.penplot.errors import PenPlotError
 from backend.penplot.ratelimit import configure_redis
-from backend.http import tls
+from backend.http import tls, upstream
 from backend.penplot.router import (
     penplot_error_handler,
     router as penplot_router,
@@ -176,7 +176,9 @@ _install_upstream_mock()
 
 # Guarded client: a corrupted certifi CA bundle would otherwise make the
 # constructor raise OSError on every /{prefix}/{path} proxy request.
-http_client = tls.async_client(timeout=httpx.Timeout(30.0))
+http_client = upstream.smart_client(
+    "proxy", timeout=30.0, retries=1, allowed_methods=("GET", "HEAD", "OPTIONS"),
+)
 redis_client: Optional[Redis] = None
 
 

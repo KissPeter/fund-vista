@@ -23,7 +23,7 @@ from pydantic import ValidationError
 
 from backend.airports.ourairports import AirportNotFoundError, resolve_airport
 from backend.cancel import check_cancelled, race_cancel
-from backend.http import tls
+from backend.http import upstream
 from backend.http.errors import error_response
 from backend.penplot import imaging
 from backend.penplot.errors import PenPlotError
@@ -114,7 +114,11 @@ async def availability(icao: str = "", date: str = ""):
         return body
     timeout = traffic_settings.github_timeout_s
     try:
-        async with tls.async_client(timeout=httpx.Timeout(timeout)) as client:
+        # Small JSON release lookup (not a streamed download); the large archive
+        # downloads are sync streams in traffic/ingest.py, outside this client.
+        async with upstream.smart_client(
+            "traffic", timeout=timeout, allowed_methods=("GET", "HEAD"),
+        ) as client:
             return await _avail.asource_status(day, client)
     except httpx.HTTPError as exc:
         return error_response(502, "traffic_source_unavailable", f"Archive index lookup failed: {exc}")

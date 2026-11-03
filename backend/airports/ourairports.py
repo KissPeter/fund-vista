@@ -23,7 +23,7 @@ import httpx
 
 from backend.airports import cache as cache_mod
 from backend.airports.config import settings
-from backend.http import tls
+from backend.http import upstream
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +108,10 @@ async def _fetch_csv_uncached(
     # constructor before any network I/O — wrap it into the 502 envelope
     # with the remediation hint instead of the raw ``Errno 5`` text.
     try:
-        client = client or tls.async_client(timeout=settings.ourairports_timeout_s)
+        client = client or upstream.smart_client(
+            "ourairports", timeout=settings.ourairports_timeout_s,
+            allowed_methods=("GET", "HEAD"),
+        )
     except OSError as exc:
         raise OurAirportsError(
             f"TLS CA bundle unreadable ({exc}) — container image needs a "
