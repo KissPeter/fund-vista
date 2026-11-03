@@ -186,6 +186,7 @@ def _footage_clips(cfg: config.Config, infos: list[probe.SourceInfo],
         clips.append([render.Part(kind="segment", path=infos[s.source].path,
                                   duration_s=s.duration_s, start_s=s.start_s,
                                   display_size=infos[s.source].display_size,
+                                  rotate=infos[s.source].rotate_filter,
                                   has_audio=infos[s.source].has_audio, fade_audio=True)
                       for s in clip.segments])
     return clips
@@ -203,13 +204,13 @@ def process(folder: Path, cfg_path: Path, slide_s: float,
     videos, images = _media(folder)
     if not videos and not images:
         raise RuntimeError(f"{folder}: no videos or images")
-    infos = probe.order_sources(videos) if videos else []
+    cfg = _load_config(cfg_path, videos, work)
+    infos = probe.order_sources(videos, cfg.render.rotate) if videos else []
     shots = sorted(((taken, size, p) for p in images
                     for taken, size in [_image_info(p)]), key=lambda t: (t[0], t[2].name))
 
     # Video sets the frame like plotvid does; a photo-only folder gets a 9:16 phone frame.
     size = render.output_size([i.display_size for i in infos]) if infos else PHOTO_ONLY_SIZE
-    cfg = _load_config(cfg_path, videos, work)
     fps = cfg.render.fps or (render.nice_fps(infos[0].fps) if infos else 30.0)
     outro = _outro(cfg, size, work)
 

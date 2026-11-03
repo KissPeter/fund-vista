@@ -91,6 +91,7 @@ At 10 fps the dense 0.1–0.2 s detail strokes cannot be resolved, so their labe
 ## Rendering
 - **Output:** 9:16 H.264 + AAC MP4 with `+faststart`, at the source frame rate (a phone's 30.013 average snaps to 30).
 - **Size:** the largest 9:16 crop of the source at native resolution, with no upscaling. Too-tall sources lose top and bottom equally; too-wide ones lose left and right.
+- **Rotation:** `render.rotate` is extra clockwise degrees on top of the file's own rotation tag. `auto` (default) turns an untagged landscape file 90 degrees counter-clockwise, because the Sony camera was turned to portrait but stores landscape frames with no tag. A 1920x1080 file then becomes 1080x1920 with no crop. Tagged and portrait files are left alone. Set `0` to disable, or `90`, `180`, `270` to force. The rotation applies before detection, ink check and rendering.
 - **Audio:** each segment keeps the plotter's own sound, with 20 ms fades at the cut ends.
 - **Ending:**
   - `final_photo`: silent, 2.5 s. The default is the frame in the source's last 5 s where the arm covers the least paper.

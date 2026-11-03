@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from plotvid import cli, manifest
+from plotvid import cli, manifest, render
+from plotvid.config import RenderConfig
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not on PATH")
 
@@ -75,7 +76,7 @@ def test_render_crossfade_wide_source_video_outro(tmp_path):
     outro = tmp_path / "outro.mp4"
     make_source(outro, "640x360", 25, 2)
     hand_plan(tmp_path, src, [(0.5, 4.0), (6.0, 9.0)])
-    info = run(tmp_path, src, "render: {transition: crossfade, crossfade_s: 0.25}\n"
+    info = run(tmp_path, src, "render: {transition: crossfade, crossfade_s: 0.25, rotate: 0}\n"
                               "outro: {path: outro.mp4, seconds: null}\n")
     v, _ = streams(info)
     assert (v["width"], v["height"]) == (404, 720)  # too wide: sides cropped, no upscale
@@ -83,6 +84,25 @@ def test_render_crossfade_wide_source_video_outro(tmp_path):
     assert v["r_frame_rate"] == "60/1"
     # 3.5 + 3 + 2.5 photo + 2 outro video, minus three 0.25 s crossfades.
     assert float(info["format"]["duration"]) == pytest.approx(11.0 - 0.75, abs=0.15)
+
+
+def test_render_rotated_untagged_landscape_fills_portrait_frame(tmp_path):
+    # Camera turned to portrait, file stored 320x180 with no rotation tag.
+    src = tmp_path / "src.mp4"
+    make_source(src, "320x180", 30, 10)
+    hand_plan(tmp_path, src, [(1.0, 4.0), (5.0, 8.5)])
+    info = run(tmp_path, src, "render: {transition: cut}\n")
+    v, _ = streams(info)
+    assert (v["width"], v["height"]) == (180, 320)  # full height, no crop, no upscale
+    assert float(info["format"]["duration"]) == pytest.approx(11.5, abs=0.15)
+
+
+def test_segment_filter_rotates_before_crop():
+    part = render.Part("segment", Path("src.mp4"), 3.0, start_s=1.0, display_size=(1080, 1920),
+                       rotate="transpose=2")
+    cmd = render.build_command([part], (1080, 1920), 30.0, RenderConfig(), Path("out.mp4"))
+    filters = cmd[cmd.index("-filter_complex") + 1]
+    assert filters.startswith("[0:v:0]transpose=2,crop=1080:1920:0:0,fps=30.0")
 
 
 def test_render_default_is_soft_and_matches_duration_math(tmp_path):

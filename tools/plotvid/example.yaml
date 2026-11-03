@@ -61,6 +61,7 @@ videos:
 
 render:
   fps: null             # null = source frame rate (snapped to a standard rate)
+  rotate: auto          # extra clockwise degrees: auto = 270 for untagged landscape files, else 0; or 0/90/180/270
   crf: 20
   preset: medium
   audio_bitrate: 160k

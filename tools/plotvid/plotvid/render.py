@@ -72,7 +72,8 @@ class Part:
     path: Path
     duration_s: float
     start_s: float = 0.0  # segments and videos: source in-point
-    display_size: tuple[int, int] | None = None  # segments: autorotated size
+    display_size: tuple[int, int] | None = None  # segments: size after rotation
+    rotate: str = ""  # segments: extra rotation filter, applied first (SourceInfo.rotate_filter)
     has_audio: bool = True
     fade_audio: bool = False
 
@@ -103,6 +104,8 @@ def _video_chain(p: Part, size: tuple[int, int], fps: float) -> str:
         geo = f"crop={cw}:{ch}:{x}:{y}"
         if (cw, ch) != (w, h):
             geo += f",scale={w}:{h}:flags=lanczos"
+        if p.rotate:  # first, so the crop is taken from the rotated frame
+            geo = f"{p.rotate},{geo}"
     else:
         geo = (f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,"
                f"crop={w}:{h}")
@@ -186,10 +189,12 @@ def render(parts: list[Part], size: tuple[int, int], fps: float, cfg: RenderConf
         raise RuntimeError(f"ffmpeg failed for {out.name}:\n{proc.stderr[-2000:]}")
 
 
-def extract_frame(path: Path, time_s: float, out: Path) -> None:
-    """Full-resolution, autorotated still from a video."""
+def extract_frame(path: Path, time_s: float, out: Path, rotate: str = "") -> None:
+    """Full-resolution, autorotated still from a video; ``rotate`` as for Part."""
+    vf = ["-vf", rotate] if rotate else []
     subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-ss", f"{time_s:.3f}",
-                    "-i", str(path), "-frames:v", "1", str(out)], check=True, capture_output=True)
+                    "-i", str(path), *vf, "-frames:v", "1", str(out)], check=True,
+                   capture_output=True)
 
 
 def _font(size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:

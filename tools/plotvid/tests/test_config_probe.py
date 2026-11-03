@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from plotvid import config, probe
+from plotvid import config, ink, probe, render
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not on PATH")
 
@@ -65,6 +65,9 @@ def test_clip_sections_parsed(tmp_path):
     ("plot: p\nsources: a.mp4\noutro: {seconds: null}\n", "only for a video"),
     ("plot: p\nsources: a.mp4\nstrokes: {split_piece_s: 0}\n", "split_piece_s"),
     ("plot: p\nsources: a.mp4\nstrokes: {split_over_s: 5}\n", "split_over_s"),
+    ("plot: p\nsources: a.mp4\nrender: {rotate: 45}\n", "render: rotate must be"),
+    ("plot: p\nsources: a.mp4\nrender: {rotate: sideways}\n", "render: rotate must be"),
+    ("plot: p\nsources: a.mp4\nrender: {rotate: -90}\n", "render: rotate must be"),
 ])
 def test_invalid_configs(tmp_path, body, msg):
     (tmp_path / "a.mp4").touch()
@@ -80,14 +83,22 @@ def test_strokes_split_defaults_and_null(tmp_path):
     assert cfg.strokes.split_over_s is None
 
 
-def make_clip(path: Path, created: str | None) -> None:
+def make_clip(path: Path, created: str | None, size: str = "320x180",
+              display_rotation: int | None = None) -> None:
     cmd = ["ffmpeg", "-v", "error", "-y",
-           "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30:duration=1",
+           "-f", "lavfi", "-i", f"testsrc=size={size}:rate=30:duration=1",
            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"]
     if created:
         cmd += ["-metadata", f"creation_time={created}"]
-    subprocess.run([*cmd, str(path)], check=True)
+    if display_rotation is None:
+        subprocess.run([*cmd, str(path)], check=True)
+        return
+    # Remux with a Display Matrix: ffmpeg takes display_rotation as an input option.
+    plain = path.with_name(f"plain_{path.name}")
+    subprocess.run([*cmd, str(plain)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-display_rotation:v:0", str(display_rotation),
+                    "-i", str(plain), "-c", "copy", str(path)], check=True)
 
 
 def test_rotation_swaps_display_size():
@@ -101,14 +112,95 @@ def test_rotation_swaps_display_size():
     assert info.display_size == (576, 1024)
 
 
+def test_render_rotate_default_and_values(tmp_path):
+    (tmp_path / "a.mp4").touch()
+    assert config.load(write(tmp_path, "plot: p\nsources: a.mp4\n")).render.rotate == "auto"
+    for raw in ("auto", "0", "90", "180", "270"):
+        cfg = config.load(write(tmp_path, f"plot: p\nsources: a.mp4\nrender: {{rotate: {raw}}}\n"))
+        assert cfg.render.rotate == raw
+
+
+@pytest.mark.parametrize("setting, tagged, stored, expect", [
+    ("auto", False, (1920, 1080), 270),  # untagged landscape: camera turned to portrait
+    ("auto", False, (1080, 1920), 0),  # untagged portrait: already upright
+    ("auto", True, (1920, 1080), 0),  # tagged: ffmpeg autorotate already applied it
+    ("auto", True, (1080, 1920), 0),
+    ("0", False, (1920, 1080), 0),  # explicit values win over auto
+    ("90", False, (1920, 1080), 90),
+    ("180", True, (1080, 1920), 180),
+    ("270", False, (1080, 1920), 270),
+])
+def test_resolve_rotation(setting, tagged, stored, expect):
+    assert probe.resolve_rotation(setting, tagged, *stored) == expect
+
+
+def test_extra_rotation_swaps_display_size_and_sets_filter():
+    now = probe.datetime.now(probe.UTC)
+    info = probe.SourceInfo(Path("x"), 1.0, 1920, 1080, 0, 60.0, True, now, "mtime",
+                            extra_rotation=270)
+    assert info.display_size == (1080, 1920)
+    assert info.rotate_filter == "transpose=2"
+    # A tag of -90 plus 270 more is 180 in all: the display stays landscape.
+    tagged = probe.SourceInfo(Path("x"), 1.0, 1920, 1080, -90, 60.0, True, now, "mtime",
+                              extra_rotation=270)
+    assert tagged.display_size == (1920, 1080)
+    assert tagged.rotate_filter == "transpose=2"
+    filters = {0: "", 90: "transpose=1", 180: "hflip,vflip", 270: "transpose=2"}
+    for extra, text in filters.items():
+        info = probe.SourceInfo(Path("x"), 1.0, 1920, 1080, 0, 60.0, True, now, "mtime",
+                                extra_rotation=extra)
+        assert info.rotate_filter == text
+
+
+@needs_ffmpeg
+def test_probe_auto_rotation_only_for_untagged_landscape(tmp_path):
+    landscape, portrait, tagged = tmp_path / "land.mp4", tmp_path / "port.mp4", tmp_path / "tag.mp4"
+    make_clip(landscape, None, "320x180")
+    make_clip(portrait, None, "180x320")
+    make_clip(tagged, None, "320x180", display_rotation=-90)
+    info = probe.probe(landscape)
+    assert info.extra_rotation == 270 and info.display_size == (180, 320)
+    assert info.rotate_filter == "transpose=2"
+    info = probe.probe(portrait)
+    assert info.extra_rotation == 0 and info.display_size == (180, 320)
+    info = probe.probe(tagged)
+    assert info.rotation == -90 and info.extra_rotation == 0 and info.display_size == (180, 320)
+    assert probe.probe(landscape, "0").extra_rotation == 0
+    assert probe.probe(landscape, "0").display_size == (320, 180)
+    assert probe.probe(portrait, "90").extra_rotation == 90
+    assert probe.order_sources([landscape], "270")[0].display_size == (180, 320)
+
+
+def test_output_size_for_rotated_landscape_source_needs_no_crop():
+    assert render.crop_9_16(1080, 1920) == (1080, 1920, 0, 0)
+    assert render.output_size([(1080, 1920)]) == (1080, 1920)
+    # Without the rotation the same file would lose most of its width.
+    assert render.output_size([(1920, 1080)]) == (606, 1080)
+
+
+@needs_ffmpeg
+def test_decode_gray_applies_rotation_before_scaling(tmp_path):
+    # Dark on the left, bright on the right; 90 degrees counter-clockwise puts
+    # the bright edge at the top.
+    src = tmp_path / "ramp.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "color=c=black:s=320x180:r=10:d=1,geq=lum='X*255/320':cb=128:cr=128",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)], check=True)
+    frames = ink.decode_gray(src, 10.0, (180, 320), rotate="transpose=2")
+    assert frames.shape[1:] == (320, 180)
+    assert frames[0][:80].mean() > frames[0][-80:].mean() + 50
+
+
 @needs_ffmpeg
 def test_order_by_creation_time(tmp_path):
     late, early = tmp_path / "a_late.mp4", tmp_path / "z_early.mp4"
     make_clip(late, "2026-10-30T12:00:00Z")
     make_clip(early, "2026-10-30T09:00:00Z")
-    infos = probe.order_sources([late, early])
+    infos = probe.order_sources([late, early], "0")
     assert [i.path.name for i in infos] == ["z_early.mp4", "a_late.mp4"]
     assert all(i.created_from == "container" for i in infos)
     assert infos[0].has_audio
     assert infos[0].display_size == (320, 180)
+    # Default auto turns this untagged landscape clip to portrait.
+    assert probe.order_sources([late, early])[0].display_size == (180, 320)
     assert infos[0].fps == pytest.approx(30)

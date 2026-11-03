@@ -58,10 +58,11 @@ def analysis_size(display_size: tuple[int, int], width: int) -> tuple[int, int]:
 
 
 def decode_gray(path: Path, fps: float, size: tuple[int, int], start_s: float = 0.0,
-                duration_s: float | None = None) -> np.ndarray:
+                duration_s: float | None = None, rotate: str = "") -> np.ndarray:
     """Low-res grayscale frames (N, H, W) uint8 at ``fps`` from ``start_s``.
 
-    ffmpeg autorotates, so ``size`` is in display orientation."""
+    ffmpeg autorotates, so ``size`` is in display orientation. ``rotate`` is an
+    extra filter (SourceInfo.rotate_filter) applied before the scale."""
     w, h = size
     cmd = ["ffmpeg", "-v", "error", "-nostdin"]
     if start_s > 0:
@@ -69,7 +70,8 @@ def decode_gray(path: Path, fps: float, size: tuple[int, int], start_s: float = 
     cmd += ["-i", str(path)]
     if duration_s is not None:
         cmd += ["-t", f"{duration_s:.3f}"]
-    cmd += ["-vf", f"fps={fps},scale={w}:{h},format=gray", "-f", "rawvideo", "-"]
+    chain = f"fps={fps},scale={w}:{h},format=gray"
+    cmd += ["-vf", f"{rotate},{chain}" if rotate else chain, "-f", "rawvideo", "-"]
     raw = subprocess.run(cmd, check=True, capture_output=True).stdout
     n = len(raw) // (w * h)
     return np.frombuffer(raw[: n * w * h], np.uint8).reshape(n, h, w)
@@ -195,8 +197,9 @@ class InkAnalysis:
         return float(new.sum()) * REF_WIDTH / self.width
 
 
-def analyse(path: Path, display_size: tuple[int, int], cfg: InkConfig) -> InkAnalysis:
-    frames = decode_gray(path, cfg.fps, analysis_size(display_size, cfg.width))
+def analyse(path: Path, display_size: tuple[int, int], cfg: InkConfig,
+            rotate: str = "") -> InkAnalysis:
+    frames = decode_gray(path, cfg.fps, analysis_size(display_size, cfg.width), rotate=rotate)
     feats = features(frames, cfg)
     n, h, w = frames.shape
     window = cv2.createHanningWindow((w, h), cv2.CV_32F)
@@ -211,13 +214,14 @@ def analyse(path: Path, display_size: tuple[int, int], cfg: InkConfig) -> InkAna
 
 
 def clean_frame_time(path: Path, display_size: tuple[int, int], duration_s: float,
-                     cfg: InkConfig, search_s: float = 5.0) -> float:
+                     cfg: InkConfig, search_s: float = 5.0, rotate: str = "") -> float:
     """Time in the last ``search_s`` where the arm covers the least paper.
 
     Cheap stand-in for "the final plot, arm out of the way". Ties go to the
     later frame (the drawing is most complete there)."""
     start = max(0.0, duration_s - search_s)
-    frames = decode_gray(path, cfg.fps, analysis_size(display_size, cfg.width), start_s=start)
+    frames = decode_gray(path, cfg.fps, analysis_size(display_size, cfg.width), start_s=start,
+                         rotate=rotate)
     if len(frames) == 0:
         return max(0.0, duration_s - 0.1)
     occ = features(frames, cfg).occluder

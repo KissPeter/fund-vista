@@ -55,7 +55,7 @@ def _write_events(path: Path, events: list[audio.Event]) -> None:
 def run_detect(cfg: config.Config, preview: bool) -> int:
     root = cfg.out_dir / "detect"
     root.mkdir(parents=True, exist_ok=True)
-    sources = probe.order_sources(cfg.sources)
+    sources = probe.order_sources(cfg.sources, cfg.render.rotate)
     overview = []
     for order, info in enumerate(sources):
         out = root / info.path.stem
@@ -85,6 +85,7 @@ def run_detect(cfg: config.Config, preview: bool) -> int:
             "duration_s": info.duration_s,
             "display_size": info.display_size,
             "rotation": info.rotation,
+            "extra_rotation": info.extra_rotation,
             "fps": info.fps,
             "detect": asdict(cfg.detect),
             "events": len(det.events),
@@ -106,7 +107,8 @@ CACHE_VERSION = 1
 def _cache_path(cfg: config.Config, info: probe.SourceInfo) -> Path:
     st = info.path.stat()
     key = json.dumps([CACHE_VERSION, str(info.path), st.st_size, st.st_mtime_ns,
-                      asdict(cfg.detect), asdict(cfg.ink)], sort_keys=True, default=str)
+                      info.extra_rotation, asdict(cfg.detect), asdict(cfg.ink)],
+                     sort_keys=True, default=str)
     digest = hashlib.sha1(key.encode()).hexdigest()[:12]
     return cfg.out_dir / "cache" / f"{info.path.stem}-{digest}.json"
 
@@ -136,13 +138,14 @@ def analyse_source(cfg: config.Config, info: probe.SourceInfo, want_clean: bool)
         data["new_ink"], data["ecc_failures"] = None, None
         data["ink_for"] = ink_for
         if cfg.ink.enabled and len(times) >= 2:
-            ana = ink.analyse(info.path, info.display_size, cfg.ink)
+            ana = ink.analyse(info.path, info.display_size, cfg.ink, info.rotate_filter)
             data["new_ink"] = [ana.new_ink(a, b, cfg.ink) for a, b in itertools.pairwise(times)]
             data["ecc_failures"] = ana.ecc_failures
             data["ink_frames"] = ana.n
     if want_clean and "clean_time_s" not in data:
         data["clean_time_s"] = ink.clean_frame_time(info.path, info.display_size,
-                                                    info.duration_s, cfg.ink)
+                                                    info.duration_s, cfg.ink,
+                                                    rotate=info.rotate_filter)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data))
     return {**data, "events": times, "synthetic": synthetic}
@@ -165,7 +168,7 @@ def run_plan(cfg: config.Config) -> int:
     root.mkdir(parents=True, exist_ok=True)
     for old in root.glob("clip_*.json"):
         old.unlink()
-    sources = probe.order_sources(cfg.sources)
+    sources = probe.order_sources(cfg.sources, cfg.render.rotate)
     per_source, labels_all, stats = [], [], []
     for order, info in enumerate(sources):
         data = analyse_source(cfg, info, want_clean=order == len(sources) - 1)
@@ -255,7 +258,7 @@ def run_render(cfg: config.Config) -> int:
     if not plans:
         print("plotvid: no clip manifests; run `plan` first", file=sys.stderr)
         return 1
-    infos = {str(i.path): i for i in probe.order_sources(cfg.sources)}
+    infos = {str(i.path): i for i in probe.order_sources(cfg.sources, cfg.render.rotate)}
     size = render.output_size([i.display_size for i in infos.values()])
     fps = _fps(cfg, infos)
     assets = cfg.out_dir / "assets"
@@ -274,15 +277,17 @@ def run_render(cfg: config.Config) -> int:
         photo = cfg.final_photo.path
         if photo is None:
             ph = data["final_photo"]["placeholder"]
+            src = infos.get(ph["source"]) or probe.probe(Path(ph["source"]), cfg.render.rotate)
             photo = assets / "final_photo.png"
             if not photo.exists() or photo.stat().st_mtime < plan_path.stat().st_mtime:
-                render.extract_frame(Path(ph["source"]), ph["time_s"], photo)
+                render.extract_frame(src.path, ph["time_s"], photo, src.rotate_filter)
         parts = []
         for seg in data["segments"]:
-            info = infos.get(seg["source"]) or probe.probe(Path(seg["source"]))
+            info = infos.get(seg["source"]) or probe.probe(Path(seg["source"]), cfg.render.rotate)
             parts.append(render.Part("segment", info.path, seg["end_s"] - seg["start_s"],
                                      start_s=seg["start_s"], display_size=info.display_size,
-                                     has_audio=info.has_audio, fade_audio=True))
+                                     rotate=info.rotate_filter, has_audio=info.has_audio,
+                                     fade_audio=True))
         parts.append(render.Part("image", photo, cfg.final_photo.seconds, has_audio=False))
         parts.append(outro_part)
         out = clips_dir / f"{plan_path.stem}.mp4"

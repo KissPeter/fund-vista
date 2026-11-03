@@ -120,6 +120,9 @@ class VideosConfig:
 @dataclass(frozen=True)
 class RenderConfig:
     fps: float | None = None  # None = first source's frame rate
+    # Extra clockwise degrees on top of the file's rotation tag: "auto" (90 counter-
+    # clockwise for untagged landscape files), "0", "90", "180" or "270".
+    rotate: str = "auto"
     crf: int = 20
     preset: str = "medium"
     audio_bitrate: str = "160k"
@@ -183,6 +186,7 @@ def _resolve_sources(patterns: list[str], base: Path) -> tuple[Path, ...]:
 
 
 CROSSFADE_TYPES = ("fade", "dissolve", "fadeblack", "fadewhite")
+ROTATE_SETTINGS = ("auto", "0", "90", "180", "270")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
 
@@ -279,6 +283,9 @@ def load(path: str | Path) -> Config:
         raise ConfigError("videos: need 0 < min_total_s <= target_s <= max_total_s")
 
     render = _build(RenderConfig, raw.get("render"), "render")
+    render = replace(render, rotate=str(render.rotate))  # YAML reads 90 as an int
+    if render.rotate not in ROTATE_SETTINGS:
+        raise ConfigError(f"render: rotate must be one of {list(ROTATE_SETTINGS)}")
     if render.transition not in ("cut", "crossfade"):
         raise ConfigError("render: transition must be 'cut' or 'crossfade'")
     if render.fps is not None and render.fps <= 0:
