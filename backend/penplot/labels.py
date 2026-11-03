@@ -83,6 +83,7 @@ _outline_cache: dict[str, dict] = {}
 DEFAULT_BORDER_RADIUS_MM = 2.0
 BORDER_PAD_RATIO = 0.3
 BORDER_PAD_MIN_MM = 1.0
+BORDER_GAP_MIN_MM = 1.2
 CORNER_SEGMENTS = 8
 # Breathing room between artwork and the strip so the cleanup chain
 # (linemerge, default 0.5 mm) can't fuse image strokes into band/frame.
@@ -220,7 +221,9 @@ def _strip_metrics(
         return None
     text_h = max(ys) - min(ys)
     pad = max(height_mm * BORDER_PAD_RATIO, BORDER_PAD_MIN_MM)
-    gap = min(pad * 0.5, 2.0)
+    # Clearance between the lowest stroke (descenders) and the frame bottom;
+    # at pen width it must be a full pad, or p/g/y touch the frame.
+    gap = min(max(pad, BORDER_GAP_MIN_MM), 2.5)
     return text_h, pad, gap
 
 
