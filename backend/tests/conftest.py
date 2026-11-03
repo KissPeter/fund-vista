@@ -46,7 +46,15 @@ def _wait_for_health(base_url: str, proc: subprocess.Popen, timeout_s: float = 3
         except Exception as exc:  # server not up yet
             last_err = str(exc)
         time.sleep(0.25)
-    raise RuntimeError(f"uvicorn never became healthy: {last_err}")
+    # Still alive but not serving: kill it so its stderr can be read, and
+    # report that instead of the bare "Connection refused".
+    proc.kill()
+    proc.wait(timeout=10)
+    stderr_tail = (proc.stderr.read() if proc.stderr else b"").decode(errors="replace")[-4000:]
+    raise RuntimeError(
+        f"uvicorn never became healthy: {last_err}; process alive for "
+        f"{timeout_s:.0f}s without serving. stderr:\n{stderr_tail}"
+    )
 
 
 @pytest.fixture(scope="session")
