@@ -659,7 +659,9 @@ class ComposeSheetRequest(BaseModel):
         description=(
             "How the artwork is embedded. image: one base64 <image> (the preview). "
             "inline: the artwork's own vector markup in one transformed <g>, "
-            "plottable; the sheet then carries no <image> and no <text>."
+            "plottable; the sheet then carries no <image> and no <text>. Refused "
+            "(422): script, style, animation, external or escaped url(), "
+            "clip-path, mask, markers, and artwork that reaches past its box."
         ),
     )
 

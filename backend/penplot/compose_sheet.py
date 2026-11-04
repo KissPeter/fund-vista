@@ -9,9 +9,10 @@ mock, bottom of the stack last:
    ``artwork="image"``: embedded byte-for-byte as one ``<image>`` (base64 data
    URI, so nothing in the artwork is re-parsed, re-simplified or re-escaped).
    ``artwork="inline"``: the artwork's own vector markup in one transformed
-   ``<g data-kp-artwork>`` at the same box, so the plotter draws it. The inline
-   sheet is checked for plottability (no ``<image>``, no ``<text>``, something
-   for ``parse_svg_vectors`` to draw), see ``_inline_artwork``;
+   ``<g data-kp-artwork>`` at the same box, so the plotter draws it. The group's
+   matrix is the image-mode rule (the artwork's viewBox fitted with its own
+   preserveAspectRatio). The inline sheet is checked for plottability by
+   ``_assert_plottable`` on the polylines it draws, see ``_inline_artwork``;
 2. the whole-page margin frame (``labels.page_frame_rect``) when enabled;
 3. the title-block band (``labels._band_rect``) when there is a title and the
    border is on, drawn on top of the frame and never replacing it;
@@ -50,12 +51,12 @@ from defusedxml import ElementTree as DefusedET
 from fastapi import APIRouter, Depends, Response
 
 from backend.penplot import art_placement, labels, stats_table
-from backend.penplot.errors import ErrorCode, PenPlotError
+from backend.penplot.errors import ErrorCode, PenPlotError, sheet_not_plottable
 from backend.penplot.methods import Polyline
 from backend.penplot.raster import looks_like_svg
 from backend.penplot.router import get_settings, require_rate_limit
 from backend.penplot.schemas import ComposeContextPads, ComposeSheetRequest
-from backend.penplot.svg_vector import WARNING_EMBEDDED_RASTERS_IGNORED, parse_svg_vectors
+from backend.penplot.svg_vector import Matrix, _parse_viewbox, _viewbox_ctm, parse_svg_vectors
 
 log = logging.getLogger(__name__)
 
@@ -127,15 +128,30 @@ def _artwork_element(
     )
 
 
-#: Elements the inline artwork MUST NOT carry: active or external content.
+#: Elements the inline artwork MUST NOT carry: active or external content, and
+#: animation of any kind (SVG 1.1 and SVG Tiny ``handler``/``listener``/``animation``).
 #: ``style`` is refused too: parse_svg_vectors ignores CSS, and a selector in
 #: the artwork would restyle the frame and lettering the sheet draws.
 _UNSAFE_TAGS = frozenset({
     "script", "foreignobject", "style", "iframe", "embed", "object",
     "animate", "animatemotion", "animatetransform", "animatecolor", "set",
+    "handler", "listener", "animation",
 })
 #: Elements the plotted sheet MUST NOT carry: not plottable as polylines.
-_UNPLOTTABLE_TAGS = frozenset({"image", "text"})
+#: ``marker`` is here because the preview draws markers and the plotter does not.
+_UNPLOTTABLE_TAGS = frozenset({"image", "text", "marker"})
+#: Attributes that clip or mask the artwork, and the same as CSS properties in a
+#: style value. The plotter draws unclipped strokes, so the plot would differ
+#: from the preview: refused as artwork_not_plottable.
+_CLIP_ATTRS = frozenset({"clip-path", "mask"})
+_CLIP_STYLE_RE = re.compile(r"(?:^|;)\s*(?:clip-path|mask[\w-]*)\s*:", re.IGNORECASE)
+#: Marker properties (attribute or style). Drawn by the preview, not by the plotter:
+#: refused as artwork_not_plottable, for the same reason as clip-path.
+_MARKER_ATTRS = frozenset({"marker-start", "marker-mid", "marker-end"})
+_MARKER_STYLE_RE = re.compile(r"(?:^|;)\s*marker-(?:start|mid|end)\s*:", re.IGNORECASE)
+#: Tolerance in mm for the bounds checks: the sheet prints 2 dp, so an edge
+#: stroke may land a hair outside its box or the sheet.
+_BOUNDS_TOL_MM = 0.05
 #: Prefix on every id of the inline artwork: no id of the artwork can equal a sheet id.
 ART_ID_PREFIX = "kp-art-"
 #: Root attributes that describe the artwork's own viewport, not its paint.
@@ -148,10 +164,12 @@ _PROLOG_RE = re.compile(
 _START_TAG_RE = re.compile(r"""<svg\b(?:[^>"']|"[^"]*"|'[^']*')*>""")
 _ATTR_RE = re.compile(r"""\s([^\s=/>]+)\s*=\s*("[^"]*"|'[^']*')""")
 _END_SVG_RE = re.compile(r"</svg\s*>\s*$")
-_NUMBER_LIST_RE = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 _URL_RE = re.compile(r"""url\(\s*["']?([^)"'\s]*)""", re.IGNORECASE)
 _ID_ATTR_RE = re.compile(r"""(\sid\s*=\s*)(["'])([^"']*)\2""")
-_ID_REF_RE = re.compile(r"""((?:\shref|\sxlink:href)\s*=\s*["']|url\(\s*["']?)#([^"'\s)]+)""")
+#: An href under ANY prefix (``href``, ``xlink:href``, ``xl:href``): the prefix
+#: only has to be bound to the xlink namespace, which the id rewrite does not
+#: need to know. Every ``url(#...)`` reference is rewritten too.
+_ID_REF_RE = re.compile(r"""((?:\s(?:[\w.-]+:)?href)\s*=\s*["']|url\(\s*["']?)#([^"'\s)]+)""")
 
 
 def _artwork_error(code: str, message: str) -> PenPlotError:
@@ -166,11 +184,16 @@ def _local_name(name: str) -> str:
 def _assert_inline_safe(root) -> None:
     """Refuse the artwork markup an inline sheet must not carry.
 
-    Same rules as the shop's ``assertSafeSvg``, plus the plottability rules:
-    no script, foreignObject, CSS style, animation or embedded object, no
-    event handler, no external href or url(), no javascript: URL. No ``image``
-    or ``text`` (not plottable as polylines), no nested ``svg`` (AxiDraw does
-    not descend into one). Internal ``#id`` references are kept.
+    These are this module's own rules. They are not a port of the shop's
+    assertSafeSvg and are not claimed to match it. Refused as artwork_unsafe:
+    script, foreignObject, CSS ``style``, any animation element, an embedded
+    object, an event handler, an external href or url(), a javascript: URL, and
+    any backslash in an attribute value (a CSS escape can spell ``url(`` or
+    ``javascript:``, so the check runs on the escape-free text). Refused as
+    artwork_not_plottable: image, text, a marker element, a nested svg (AxiDraw
+    does not descend into one), and clip-path, mask or marker-start/mid/end
+    (the plotter would not apply them). Internal
+    ``#id`` references are kept.
     """
     for el in root.iter():
         if not isinstance(el.tag, str):
@@ -185,6 +208,10 @@ def _assert_inline_safe(root) -> None:
             )
         for name, value in el.attrib.items():
             attr = _local_name(name)
+            if "\\" in value:
+                raise _artwork_error(
+                    ErrorCode.ARTWORK_UNSAFE, "Artwork contains a backslash (CSS escape) in an attribute.",
+                )
             if attr.startswith("on"):
                 raise _artwork_error(ErrorCode.ARTWORK_UNSAFE, "Artwork contains an event handler.")
             if attr == "href" and not value.strip().startswith("#"):
@@ -193,6 +220,16 @@ def _assert_inline_safe(root) -> None:
                 raise _artwork_error(ErrorCode.ARTWORK_UNSAFE, "Artwork contains a javascript: URL.")
             if any(not target.startswith("#") for target in _URL_RE.findall(value)):
                 raise _artwork_error(ErrorCode.ARTWORK_UNSAFE, "Artwork contains an external url().")
+            if attr in _CLIP_ATTRS or (attr == "style" and _CLIP_STYLE_RE.search(value)):
+                raise _artwork_error(
+                    ErrorCode.ARTWORK_NOT_PLOTTABLE,
+                    "Artwork clips or masks its content (clip-path or mask), which cannot be plotted.",
+                )
+            if attr in _MARKER_ATTRS or (attr == "style" and _MARKER_STYLE_RE.search(value)):
+                raise _artwork_error(
+                    ErrorCode.ARTWORK_NOT_PLOTTABLE,
+                    "Artwork uses markers (marker-start, marker-mid or marker-end), which cannot be plotted.",
+                )
 
 
 def _num(value: float) -> str:
@@ -201,13 +238,58 @@ def _num(value: float) -> str:
     return "0" if text in ("", "-0") else text
 
 
-def _inline_viewbox(root, vp_w: float, vp_h: float) -> tuple[float, float, float, float]:
-    """The root viewBox; without one the artwork's own size (viewport px)."""
-    raw = root.attrib.get("viewBox") or root.attrib.get("viewbox")
-    nums = [float(n) for n in _NUMBER_LIST_RE.findall(raw)] if raw else []
-    if len(nums) == 4 and nums[2] > 0 and nums[3] > 0:
-        return (nums[0], nums[1], nums[2], nums[3])
-    return (0.0, 0.0, vp_w, vp_h)
+def _inline_fit(root, vp_w: float, vp_h: float, box: art_placement.Rect) -> tuple[Matrix, Matrix]:
+    """The artwork's viewBox fitted into ``box``, by the artwork's own preserveAspectRatio.
+
+    Returns ``(fit, to_sheet)``. ``fit`` maps the viewBox user space onto the
+    sheet in mm. It is the image-mode rule: the root's viewBox into the
+    ``<image>`` box with the root's preserveAspectRatio, derived by
+    svg_vector._viewbox_ctm (none, x/y Min/Mid/Max, meet, slice). Without a
+    viewBox the user space is the artwork's viewport px, as parse_svg_vectors
+    reads it. ``to_sheet`` is the affine ``(ax, ay, bx, by)`` that maps the
+    viewport px polylines parse_svg_vectors reports straight onto the sheet, so
+    the gate reuses the artwork's polylines without parsing it again.
+    """
+    vb = _parse_viewbox(root.attrib.get("viewBox") or root.attrib.get("viewbox"))
+    par = root.attrib.get("preserveAspectRatio")
+    vbx, vby, vbw, vbh = vb if vb else (0.0, 0.0, vp_w, vp_h)
+    bx, by, bw, bh = box
+    fit_ctm = _viewbox_ctm(vbx, vby, vbw, vbh, bw, bh, par)
+    fit: Matrix = (fit_ctm[0], 0.0, 0.0, fit_ctm[3], fit_ctm[4] + bx, fit_ctm[5] + by)
+    # parse_svg_vectors maps user space to the viewport px with the same rule.
+    view_ctm = _viewbox_ctm(vbx, vby, vbw, vbh, vp_w, vp_h, par) if vb else (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    ax = fit[0] / view_ctm[0]
+    ay = fit[3] / view_ctm[3]
+    to_sheet = (ax, ay, fit[4] - ax * view_ctm[4], fit[5] - ay * view_ctm[5])
+    return fit, to_sheet
+
+
+def _affine_polylines(
+    polylines: list[list[tuple[float, float]]], t: tuple[float, float, float, float],
+) -> list[list[tuple[float, float]]]:
+    """Each point mapped by the diagonal affine ``(ax, ay, bx, by)``."""
+    ax, ay, bx, by = t
+    return [[(ax * x + bx, ay * y + by) for x, y in pl] for pl in polylines]
+
+
+def _assert_within_box(polylines: list[list[tuple[float, float]]], box: art_placement.Rect) -> None:
+    """Refuse artwork strokes that reach past its box (artwork_not_plottable).
+
+    The preview clips the artwork to its box (the ``<image>`` viewport). The
+    plotter cannot clip, so a stroke past the box would plot where the preview
+    shows nothing. This happens with a slice that overflows its box.
+    """
+    x0, y0, bw, bh = box
+    for pl in polylines:
+        for x, y in pl:
+            if not (
+                x0 - _BOUNDS_TOL_MM <= x <= x0 + bw + _BOUNDS_TOL_MM
+                and y0 - _BOUNDS_TOL_MM <= y <= y0 + bh + _BOUNDS_TOL_MM
+            ):
+                raise _artwork_error(
+                    ErrorCode.ARTWORK_NOT_PLOTTABLE,
+                    "Artwork strokes reach past its box; the preview clips them and the plot would not.",
+                )
 
 
 def _prefix_ids(markup: str, ids: set[str]) -> str:
@@ -229,32 +311,22 @@ def _prefix_ids(markup: str, ids: set[str]) -> str:
     return _ID_REF_RE.sub(ref, _ID_ATTR_RE.sub(own, markup))
 
 
-def _inline_artwork(data: bytes, root, box: art_placement.Rect, vp_w: float, vp_h: float) -> str:
-    """The artwork's own vector markup as ONE transformed ``<g>`` in ``box``.
+def _inline_artwork(text: str, root, fit: Matrix) -> str:
+    """The artwork's own vector markup as ONE transformed ``<g>``.
 
-    Port of the shop's ``inlineArtwork``: prolog, DOCTYPE and comments are
-    dropped; the root's other attributes (paint, style, xml:space, xmlns:*)
-    move onto the group; the root viewBox is fitted into ``box`` with
-    ``xMidYMid meet`` and baked into the matrix. The fit is the one the
-    ``<image>`` form gets, so the two modes draw the art at the same place.
+    Port of the shop's ``inlineArtwork`` in shape: prolog, DOCTYPE and comments
+    are dropped; the root's other attributes (paint, style, xml:space, xmlns:*)
+    move onto the group; the root's viewBox and preserveAspectRatio are baked
+    into ``fit`` (see ``_inline_fit``), so the group sits where the ``<image>``
+    form draws the same artwork. ``text`` is the request's SVG str: the request
+    bytes are its UTF-8 encoding, so there is no decode step to fail.
     """
     _assert_inline_safe(root)
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise _artwork_error(
-            ErrorCode.ARTWORK_NOT_PLOTTABLE, "Inline artwork must be a UTF-8 SVG document.",
-        ) from exc
     body = _PROLOG_RE.sub("", text)
     start = _START_TAG_RE.search(body)
     if start is None:
         raise _artwork_error(ErrorCode.ARTWORK_NOT_PLOTTABLE, "Artwork has no <svg> root.")
     tag = start.group(0)
-    vbx, vby, vbw, vbh = _inline_viewbox(root, vp_w, vp_h)
-    bx, by, bw, bh = box
-    s = min(bw / vbw, bh / vbh)
-    tx = bx + (bw - vbw * s) / 2 - vbx * s
-    ty = by + (bh - vbh * s) / 2 - vby * s
     kept = "".join(
         f" {name}={value}"
         for name, value in _ATTR_RE.findall(tag)
@@ -262,9 +334,10 @@ def _inline_artwork(data: bytes, root, box: art_placement.Rect, vp_w: float, vp_
         and not name.startswith("data-kp-")
         and name.lower() not in _ROOT_GEOMETRY_ATTRS
     )
+    a, _b, _c, d, e, f = fit
     open_tag = (
         f'<g{kept} data-kp-artwork="1" '
-        f'transform="matrix({_num(s)} 0 0 {_num(s)} {_num(tx)} {_num(ty)})"'
+        f'transform="matrix({_num(a)} 0 0 {_num(d)} {_num(e)} {_num(f)})"'
     )
     if tag.endswith("/>"):
         markup = f"{open_tag} />"
@@ -275,20 +348,28 @@ def _inline_artwork(data: bytes, root, box: art_placement.Rect, vp_w: float, vp_
     return _prefix_ids(markup, ids)
 
 
-def _assert_plottable(sheet: str) -> None:
-    """Plottability gate for an inline sheet: no <image>, no <text>, one root,
-    and parse_svg_vectors finds something to plot."""
-    sheet_gone = _artwork_error(
-        ErrorCode.SHEET_NOT_PLOTTABLE, "The sheet has nothing that can be plotted.",
-    )
+def _assert_plottable(
+    sheet: str, plotted: list[list[tuple[float, float]]], w: float, h: float,
+) -> None:
+    """Plottability gate for an inline sheet, on the polylines the sheet draws.
+
+    ``plotted`` is the artwork's polylines mapped onto the sheet (reused from
+    validation, not parsed again) plus the sheet's own furniture polylines.
+    Every point MUST lie within the sheet (``_BOUNDS_TOL_MM``), there MUST be
+    something to plot, and the sheet MUST carry no <image>, no <text> and one
+    root. The input was valid, so a failure is a server fault: 500
+    sheet_not_plottable, never a 422 that blames the client.
+    """
     if re.search(r"<(?:image|text)[\s>/]", sheet) or len(re.findall(r"<svg[\s>]", sheet)) != 1:
-        raise sheet_gone
-    try:
-        _polylines, _w, _h, warnings = parse_svg_vectors(sheet.encode("utf-8"))
-    except PenPlotError as exc:
-        raise sheet_gone from exc
-    if WARNING_EMBEDDED_RASTERS_IGNORED in warnings:
-        raise sheet_gone
+        raise sheet_not_plottable()
+    if not any(plotted):
+        raise sheet_not_plottable()
+    lo = -_BOUNDS_TOL_MM
+    hi_x, hi_y = w + _BOUNDS_TOL_MM, h + _BOUNDS_TOL_MM
+    for pl in plotted:
+        for x, y in pl:
+            if not (lo <= x <= hi_x and lo <= y <= hi_y):
+                raise sheet_not_plottable()
 
 
 def _validate_svg(data: bytes, max_bytes: int):
@@ -571,8 +652,15 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
                 f'{escape(payload, {chr(34): "&quot;", chr(39): "&#39;"})}"'
             )
     parts: list[str] = []
+    # The polylines the inline gate checks: the artwork's (mapped onto the sheet)
+    # and every furniture polyline emitted below, in the order they are drawn.
+    art_sheet: list[list[tuple[float, float]]] = []
+    furniture: list[list[tuple[float, float]]] = []
     if body.artwork == "inline":
-        parts.append(_inline_artwork(data, root, box, vp_w, vp_h))
+        fit, to_sheet = _inline_fit(root, vp_w, vp_h, box)
+        parts.append(_inline_artwork(body.svg, root, fit))
+        art_sheet = _affine_polylines(polylines, to_sheet)
+        _assert_within_box(art_sheet, box)
     else:
         parts.append(
             _artwork_element(data, x=box[0], y=box[1], width=box[2], height=box[3])
@@ -587,12 +675,14 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
             bottom_mm=h - margin - strip if below else None,
         )
         parts.append(_path(frame, ink, 'data-kp-frame="1"'))
+        furniture.append(frame)
     border = bool(lines) and style.border and not outside
     if border:
         band = labels._band_rect(
             margin, band_top, w - margin, h - margin, style.border_radius_mm,
         )
         parts.append(_path(band, ink, 'data-kp-title-block="1"'))
+        furniture.append(band)
 
     # Lettering: inside, each line is anchored on its own row by render_label's
     # bottom-anchor, with the row's bottom passed as the virtual page bottom.
@@ -611,12 +701,14 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
             pad_right_mm=style.pad_right_mm,
             subtitle=subtitle,
         )
-        rows_svg = [
-            f'<g data-kp-text="{escape(text_, {chr(34): "&quot;"})}">'
-            + "".join(_polyline(pl, ink) for pl in strokes)
-            + "</g>"
-            for text_, strokes in zip((title, subtitle), rows)
-        ]
+        rows_svg: list[str] = []
+        for text_, strokes in zip((title, subtitle), rows):
+            furniture.extend(strokes)
+            rows_svg.append(
+                f'<g data-kp-text="{escape(text_, {chr(34): "&quot;"})}">'
+                + "".join(_polyline(pl, ink) for pl in strokes)
+                + "</g>"
+            )
         if rows_svg:
             parts.append(
                 f'<g data-kp-label="1" data-kp-label-font="{style.font}" '
@@ -625,7 +717,7 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
                 + "</g>"
             )
     elif lines:
-        rows_svg: list[str] = []
+        rows_svg = []
         for i, line in enumerate(lines):
             row_bottom = band_top + i * (line_h + LINE_GAP_MM) + line_h + LINE_GAP_MM / 2
             strokes, _warnings = labels.render_label(
@@ -640,6 +732,7 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
                 pad_left_mm=style.pad_left_mm,
                 pad_right_mm=style.pad_right_mm,
             )
+            furniture.extend(strokes)
             strokes_svg = "".join(_polyline(pl, ink) for pl in strokes)
             text_attr = escape(line, {'"': "&quot;"})
             rows_svg.append(f'<g data-kp-text="{text_attr}">{strokes_svg}</g>')
@@ -658,6 +751,7 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
             grid, text = table_lines[:grid_count], table_lines[grid_count:]
             outer = _path(grid[0], ink, 'data-kp-context-border="1"')
             rules = "".join(_polyline(pl, ink, ' data-kp-context-rule="1"') for pl in grid[1:])
+            furniture.extend(grid)
             # Cell lettering, one marked group per non-blank cell in layout
             # order (key then value, row by row), so the table stays
             # assertable: the stroke count per cell is the one
@@ -670,6 +764,7 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
                 if n == 0:
                     continue
                 strokes_svg = "".join(_polyline(pl, ink) for pl in text[at : at + n])
+                furniture.extend(text[at : at + n])
                 at += n
                 groups.append(f'<g data-kp-text="{escape(cell, {chr(34): "&quot;"})}">{strokes_svg}</g>')
             text_svg = "".join(groups)
@@ -692,7 +787,7 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
         + "</svg>"
     )
     if body.artwork == "inline":
-        _assert_plottable(sheet)
+        _assert_plottable(sheet, art_sheet + furniture, w, h)
     log.info(
         "compose.sheet svg_bytes=%d lines=%d context_rows=%d frame=%s border=%s",
         len(data), len(lines), len(ctx_rows), body.layout.page.frame, border,

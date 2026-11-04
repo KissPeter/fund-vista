@@ -1067,18 +1067,12 @@ def test_inline_keeps_internal_references_and_prefixes_every_id():
         assert any(_same_polyline(px, got, tol=0.1) for got in plotted)
 
 
-def test_inline_sheet_with_nothing_plottable_is_422(monkeypatch):
-    real = cs.parse_svg_vectors
-
-    def sheet_without_strokes(data: bytes):
-        if b"data-kp-compose" in data:
-            raise PenPlotError(status=400, code="bad_image", message="no strokes")
-        return real(data)
-
-    monkeypatch.setattr(cs, "parse_svg_vectors", sheet_without_strokes)
+def test_inline_sheet_with_nothing_plottable_is_a_500_server_fault(monkeypatch):
+    # Valid input whose sheet draws nothing: the gate fails on the server side.
+    monkeypatch.setattr(cs, "_affine_polylines", lambda polylines, t: [])
     with pytest.raises(PenPlotError) as exc:
-        _compose(artwork=INLINE_OK)
-    assert exc.value.status == 422
+        _compose(artwork=INLINE_OK, layout={"page": {"frame": False}})
+    assert exc.value.status == 500
     assert exc.value.code == "sheet_not_plottable"
 
 
@@ -1097,3 +1091,279 @@ def test_direct_performance_five_mb_inline_artwork_under_two_seconds():
     started = time.perf_counter()
     cs.compose_sheet_svg(req, max_svg_bytes=25 * 1024 * 1024)
     assert time.perf_counter() - started < perf_budget(2.0)
+
+
+def test_direct_performance_five_mb_inline_with_table_under_two_seconds():
+    req = ComposeSheetRequest.model_validate({
+        "svg": _five_mb_overlapping_art(), "lines": ["Title"], "artwork": INLINE_OK,
+        "context_table": {"enabled": True, "position": "top-right", "rows": LONG_ROWS},
+    })
+    cs.compose_sheet_svg(req, max_svg_bytes=25 * 1024 * 1024)  # warm caches
+    started = time.perf_counter()
+    svg = cs.compose_sheet_svg(req, max_svg_bytes=25 * 1024 * 1024)
+    assert time.perf_counter() - started < perf_budget(2.0)
+    assert "data-kp-art-overlap" in _placement(_root(svg))  # the table was drawn
+
+
+def test_inline_gate_reuses_the_artwork_polylines_and_never_parses_the_sheet(monkeypatch):
+    real = cs.parse_svg_vectors
+    seen: list[bool] = []
+
+    def spy(data: bytes):
+        seen.append(b"data-kp-compose" in data)
+        return real(data)
+
+    monkeypatch.setattr(cs, "parse_svg_vectors", spy)
+    _compose(svg=SEIRAN_SVG, lines=["Title"], context_table=TABLE_TOP_RIGHT, artwork=INLINE_OK)
+    assert seen == [False]  # the artwork is parsed once, at validation; the sheet never
+
+
+# -- inline: the artwork's own preserveAspectRatio -----------------------------
+
+
+def _box_of_image(svg: str) -> tuple[float, float, float, float]:
+    img = _image(_root(_compose(svg=svg, lines=["Title"])))
+    return tuple(float(img.attrib[k]) for k in ("x", "y", "width", "height"))
+
+
+def _image_rule(par: str, vb, box):
+    """The image-mode rule written out here, not via compose_sheet: the root's
+    viewBox into the <image> box with the root's preserveAspectRatio (SVG 1.1
+    section 7.8). Returns (sx, sy, tx, ty)."""
+    vx, vy, vw, vh = vb
+    bx, by, bw, bh = box
+    parts = par.split()
+    align = parts[0]
+    if align == "none":
+        sx, sy = bw / vw, bh / vh
+        return sx, sy, bx - vx * sx, by - vy * sy
+    pick = {"Min": 0.0, "Mid": 0.5, "Max": 1.0}
+    fx, fy = pick[align[1:4]], pick[align[5:8]]
+    slice_ = len(parts) > 1 and parts[1] == "slice"
+    s = max(bw / vw, bh / vh) if slice_ else min(bw / vw, bh / vh)
+    return s, s, bx + (bw - vw * s) * fx - vx * s, by + (bh - vh * s) * fy - vy * s
+
+
+@pytest.mark.parametrize("par", ["none", "xMinYMin meet", "xMaxYMid meet"])
+def test_inline_matrix_follows_the_artworks_preserve_aspect_ratio(par):
+    # A 100x100 root over a 200x100 viewBox: the box is square, so the
+    # artwork's own par decides how the viewBox fills it.
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" '
+        f'viewBox="0 0 200 100" preserveAspectRatio="{par}">'
+        '<rect x="0" y="0" width="200" height="100" fill="#000"/></svg>'
+    )
+    box = _box_of_image(svg)
+    inline = _root(_compose(svg=svg, lines=["Title"], artwork=INLINE_OK))
+    sx, sy, tx, ty = _image_rule(par, (0, 0, 200, 100), box)
+    a, b, c, d, e, f = _group_matrix(inline)
+    assert _close(a, sx) and _close(d, sy) and _close(e, tx) and _close(f, ty), (a, d, e, f)
+    assert _close(b, 0) and _close(c, 0)
+
+
+def test_inline_none_par_plots_the_strokes_where_the_image_mode_draws_them():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" '
+        'viewBox="0 0 200 100" preserveAspectRatio="none">'
+        '<path d="M 0 0 L 200 100" fill="none" stroke="#000"/></svg>'
+    )
+    box = _box_of_image(svg)
+    sx, sy, tx, ty = _image_rule("none", (0, 0, 200, 100), box)
+    plotted, _w, _h, _warn = parse_svg_vectors(
+        _compose(svg=svg, lines=["Title"], artwork=INLINE_OK).encode()
+    )
+    corners = [(tx + 0 * sx, ty + 0 * sy), (tx + 200 * sx, ty + 100 * sy)]
+    px = [(x * PX_PER_MM, y * PX_PER_MM) for x, y in corners]
+    assert any(_same_polyline(px, got, tol=0.1) for got in plotted), (px, plotted[:3])
+
+
+def test_inline_slice_that_overflows_its_box_is_refused_as_not_plottable():
+    # slice fills the box and overflows it; the preview clips to the box, the
+    # plotter cannot, so the inline form is refused (the image form composes).
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" '
+        'viewBox="0 0 200 100" preserveAspectRatio="xMidYMid slice">'
+        '<rect x="0" y="0" width="200" height="100" fill="#000"/></svg>'
+    )
+    assert _compose(svg=svg, lines=["Title"])  # image mode is fine
+    with pytest.raises(PenPlotError) as exc:
+        _compose(svg=svg, lines=["Title"], artwork=INLINE_OK)
+    assert exc.value.status == 422
+    assert exc.value.code == "artwork_not_plottable"
+
+
+# -- inline: refused forms ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        '<clipPath id="c"><rect width="50" height="50"/></clipPath>'
+        '<rect width="9" height="9" clip-path="url(#c)"/>',
+        '<mask id="m"><rect width="50" height="50" fill="#fff"/></mask>'
+        '<rect width="9" height="9" mask="url(#m)"/>',
+        '<clipPath id="c"><rect width="50" height="50"/></clipPath>'
+        '<rect width="9" height="9" style="clip-path:url(#c)"/>',
+        '<mask id="m"><rect width="50" height="50" fill="#fff"/></mask>'
+        '<rect width="9" height="9" style="fill:#000;mask:url(#m)"/>',
+    ],
+)
+def test_inline_refuses_clip_path_and_mask_as_not_plottable(fragment):
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" '
+        f'viewBox="0 0 100 100"><rect width="5" height="5"/>{fragment}</svg>'
+    )
+    assert _compose(svg=svg, lines=["Title"])  # the preview still composes it
+    with pytest.raises(PenPlotError) as exc:
+        _compose(svg=svg, artwork=INLINE_OK)
+    assert exc.value.status == 422
+    assert exc.value.code == "artwork_not_plottable"
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        '<handler type="application/ecmascript">x()</handler>',
+        '<listener event="click" handler="#h"/>',
+        '<animation href="x.svg"/>',
+    ],
+)
+def test_inline_refuses_svg_tiny_handler_listener_and_animation(fragment):
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" '
+        f'viewBox="0 0 100 100"><rect width="5" height="5"/>{fragment}</svg>'
+    )
+    with pytest.raises(PenPlotError) as exc:
+        _compose(svg=svg, artwork=INLINE_OK)
+    assert exc.value.status == 422
+    assert exc.value.code == "artwork_unsafe"
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        # External url() spelled with a CSS hex escape: u\72l( is url(.
+        r'<rect width="5" height="5" fill="u\72l(http://evil/x)"/>',
+        r'<rect width="5" height="5" fill="u\000072l(http://evil/x)"/>',
+        r'<rect width="5" height="5" style="fill:u\72l(http://evil/x)"/>',
+        # Internal url() spelled the same way: refused too, the escaped form
+        # is not rewritten with the artwork's ids.
+        r'<linearGradient id="g"/><rect width="5" height="5" fill="u\72l(#g)"/>',
+        r'<linearGradient id="g"/><rect width="5" height="5" style="fill:u\72l(#g)"/>',
+        # javascript: spelled with an escape.
+        r'<a href="java\73cript:alert(1)"><rect width="5" height="5"/></a>',
+    ],
+)
+def test_inline_refuses_css_escapes_in_url_bearing_values(fragment):
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" '
+        f'viewBox="0 0 100 100"><rect width="5" height="5"/>{fragment}</svg>'
+    )
+    with pytest.raises(PenPlotError) as exc:
+        _compose(svg=svg, artwork=INLINE_OK)
+    assert exc.value.status == 422
+    assert exc.value.code == "artwork_unsafe"
+
+
+@pytest.mark.parametrize("prefix", ["xlink", "xl"])
+def test_inline_rewrites_href_under_any_xlink_prefix(prefix):
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:{prefix}="http://www.w3.org/1999/xlink" '
+        'width="100" height="100" viewBox="0 0 100 100">'
+        '<defs><path id="line" d="M 0 0 L 50 0" fill="none" stroke="#000"/></defs>'
+        f'<use {prefix}:href="#line" x="10" y="30"/></svg>'
+    )
+    out = _compose(svg=svg, lines=["Title"], artwork=INLINE_OK)
+    root = _root(out)
+    assert [el.attrib["id"] for el in root.iter() if "id" in el.attrib] == ["kp-art-line"]
+    assert f'{prefix}:href="#kp-art-line"' in out
+    plotted, _w, _h, _warn = parse_svg_vectors(out.encode())
+    box = _box_of_image(svg)
+    s, tx, ty = _fit((0, 0, 100, 100), box)
+    mm = [(tx + x * s, ty + y * s) for x, y in [(10, 30), (60, 30)]]
+    px = [(x * PX_PER_MM, y * PX_PER_MM) for x, y in mm]
+    assert any(_same_polyline(px, got, tol=0.1) for got in plotted)
+
+
+def test_inline_rewrites_paint_and_style_url_references():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">'
+        '<defs><linearGradient id="g"><stop offset="0" stop-color="#000"/></linearGradient></defs>'
+        '<path d="M 10 10 L 60 10" fill="none" stroke="url(#g)"/>'
+        '<rect x="10" y="20" width="20" height="20" fill="url(#g)" style="stroke:url(#g)"/>'
+        "</svg>"
+    )
+    out = _compose(svg=svg, lines=["Title"], artwork=INLINE_OK)
+    assert 'stroke="url(#kp-art-g)"' in out
+    assert 'fill="url(#kp-art-g)"' in out
+    assert 'style="stroke:url(#kp-art-g)"' in out
+    ids = sorted(el.attrib["id"] for el in _root(out).iter() if "id" in el.attrib)
+    assert ids == ["kp-art-g"]
+    plotted, _w, _h, _warn = parse_svg_vectors(out.encode())
+    assert len(plotted) >= 2  # the path and the rect are drawn
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        '<marker id="m" markerWidth="4" markerHeight="4" refX="2" refY="2">'
+        '<circle cx="2" cy="2" r="1" fill="none" stroke="#000"/></marker>'
+        '<path d="M 10 10 L 60 10" fill="none" stroke="#000" marker-end="url(#m)"/>',
+        '<marker id="m"><circle r="1"/></marker>'
+        '<path d="M 10 10 L 60 10" fill="none" stroke="#000" marker-start="url(#m)"/>',
+        '<marker id="m"><circle r="1"/></marker>'
+        '<path d="M 10 10 L 60 10 L 60 40" fill="none" stroke="#000" marker-mid="url(#m)"/>',
+        '<marker id="m"><circle r="1"/></marker>'
+        '<path d="M 10 10 L 60 10" fill="none" stroke="#000" style="marker-end:url(#m)"/>',
+        '<marker id="m"><circle r="1"/></marker>'
+        '<path d="M 10 10 L 60 10" fill="none" stroke="#000" style="fill:none;marker-start:url(#m)"/>',
+    ],
+)
+def test_inline_refuses_markers_as_not_plottable(fragment):
+    # The preview draws markers; the plotter does not. Same rule as clip-path.
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" '
+        f'viewBox="0 0 100 100"><rect width="5" height="5"/>{fragment}</svg>'
+    )
+    assert _compose(svg=svg, lines=["Title"])  # the preview still composes it
+    with pytest.raises(PenPlotError) as exc:
+        _compose(svg=svg, artwork=INLINE_OK)
+    assert exc.value.status == 422
+    assert exc.value.code == "artwork_not_plottable"
+
+
+# -- inline: the plottability gate ----------------------------------------------
+
+_GATE_SHEET = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" '
+    'viewBox="0 0 210 297" data-kp-compose="1"><polyline points="1,1 2,2"/></svg>'
+)
+
+
+def test_gate_point_outside_the_sheet_is_a_500_server_fault():
+    for bad in ([(-5.0, 10.0), (20.0, 20.0)], [(10.0, 297.5), (20.0, 20.0)]):
+        with pytest.raises(PenPlotError) as exc:
+            cs._assert_plottable(_GATE_SHEET, [bad], 210.0, 297.0)
+        assert (exc.value.status, exc.value.code) == (500, "sheet_not_plottable")
+
+
+def test_gate_tolerates_a_hair_outside_the_sheet_and_nothing_plotted_is_a_500():
+    cs._assert_plottable(_GATE_SHEET, [[(-0.02, 10.0), (209.99, 296.99)]], 210.0, 297.0)
+    with pytest.raises(PenPlotError) as exc:
+        cs._assert_plottable(_GATE_SHEET, [], 210.0, 297.0)
+    assert (exc.value.status, exc.value.code) == (500, "sheet_not_plottable")
+
+
+def test_gate_sheet_with_an_image_is_a_500_server_fault():
+    sheet = _GATE_SHEET.replace("<polyline", '<image href="x" width="1" height="1"/><polyline')
+    with pytest.raises(PenPlotError) as exc:
+        cs._assert_plottable(sheet, [[(1.0, 1.0), (2.0, 2.0)]], 210.0, 297.0)
+    assert (exc.value.status, exc.value.code) == (500, "sheet_not_plottable")
+
+
+@pytest.mark.parametrize("placement", ["inside", "below", "above"])
+def test_inline_sheet_passes_the_gate_for_every_furniture_layout(placement):
+    layout = {"page": {"frame": True}, "label": {"placement": placement}}
+    out = _compose(svg=SEIRAN_SVG, lines=["Title", "Sub"], context_table=TABLE_TOP_RIGHT,
+                   layout=layout, artwork=INLINE_OK)
+    assert _root(out).attrib.get("data-kp-compose") == "1"

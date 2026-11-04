@@ -24,7 +24,9 @@ class ErrorCode:
     IMAGE_TOO_LARGE = "image_too_large"
     RATE_LIMITED = "rate_limited"
     TOKEN_SIGNING_UNAVAILABLE = "token_signing_unavailable"
-    # compose-sheet, artwork "inline": markup the plotted sheet must not carry.
+    # compose-sheet, artwork "inline": artwork_unsafe and artwork_not_plottable
+    # are input faults (422). sheet_not_plottable is a server fault (500): the
+    # input was valid but the composed sheet failed the plottability gate.
     ARTWORK_UNSAFE = "artwork_unsafe"
     ARTWORK_NOT_PLOTTABLE = "artwork_not_plottable"
     SHEET_NOT_PLOTTABLE = "sheet_not_plottable"
@@ -68,6 +70,15 @@ def invalid_params(message: str) -> PenPlotError:
 def processing_failed(message: str = "Image processing failed.") -> PenPlotError:
     return PenPlotError(
         status=500, code=ErrorCode.PROCESSING_FAILED, message=message
+    )
+
+
+def sheet_not_plottable() -> PenPlotError:
+    """Server fault: the composed sheet failed its plottability gate on valid input."""
+    return PenPlotError(
+        status=500,
+        code=ErrorCode.SHEET_NOT_PLOTTABLE,
+        message="The composed sheet failed the plottability check.",
     )
 
 
