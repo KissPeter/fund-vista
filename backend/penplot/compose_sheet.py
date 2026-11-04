@@ -181,12 +181,6 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     art_x = (w - box_w) / 2
     art_y = art_top + (area_h - box_h) / 2
     parts: list[str] = []
-    if outside:
-        # Invisible sheet-size bounds: first child, no fill and no stroke.
-        parts.append(
-            f'<rect id="a4-bounds" x="0" y="0" width="{w:g}" height="{h:g}" '
-            'fill="none" stroke="none"/>'
-        )
     parts.append(
         _artwork_element(data, x=art_x, y=art_y, width=box_w, height=box_h)
     )
@@ -308,10 +302,13 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
 
     width_mm = f"{w:g}"
     height_mm = f"{h:g}"
+    # Outside placements carry the sheet bounds on the root, not in a rect:
+    # vpype plots an invisible rect (fill and stroke none) as a path.
+    bounds_attr = f' data-kp-a4-bounds="0 0 {width_mm} {height_mm}"' if outside else ""
     sheet = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_mm}mm" '
         f'height="{height_mm}mm" viewBox="0 0 {width_mm} {height_mm}" '
-        f'data-kp-compose="1">'
+        f'data-kp-compose="1"{bounds_attr}>'
         + "".join(parts)
         + "</svg>"
     )

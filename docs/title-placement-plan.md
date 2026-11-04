@@ -10,10 +10,10 @@ Status: implemented (phase 1, backend). `inside` stays the default and its outpu
 - Default placement is `inside`. Its cache key is unchanged because `placement` is dropped from the key when it is `inside`.
 - `label.lines` is optional on convert and replaces `label.text` when it carries text. Inside, it is drawn as `title - subtitle`.
 - Compose keeps `lines` top-level and does not accept them inside `layout.label`.
-- The `a4-bounds` rect is emitted only for outside placements, so inside output stays byte-identical.
-- Measured deviation: N6 (2 KB for the rect plus the second line) does not hold. A glyph line costs about 6.5 KB in the default face at any size, so the test guards the rect (under 200 bytes) and that a subtitle costs at most one title line.
+- Outside placements carry the sheet bounds as `data-kp-a4-bounds="0 0 W H"` on the root `<svg>`, not as an `a4-bounds` rect, so inside output stays byte-identical. Fallback applied for N7: vpype 1.15.0 plots a fill-none, stroke-none rect as a path (sample sheet: 40 paths / 6674.6 mm with the rect, 38 paths / 3964.7 mm without), so the rect is not emitted.
+- N7 verified with real vpype 1.15.0 (`backend/tests/test_penplot_vpype_bounds.py`, skipped without vpype): the emitted sheet plots the same as the same sheet without the bounds attribute, and the per-ink sheets share one viewBox. vpype 1.15.0 runs on Python 3.12 only in a separate scratch venv, because `pip install vpype` into the Python 3.14 fund-vista venv fails (vpype 1.9.0 pins Shapely 1.8.0, which has no wheel for 3.14).
+- Measured deviation: N6 (2 KB for the rect plus the second line) does not hold. A glyph line costs about 6.5 KB in the default face at any size, so the test guards the bounds attribute (under 200 bytes) and that a subtitle costs at most one title line.
 - Not run here: the live-server (HTTP) suites, because the venv lacks `httpx_retries`; the 422 checks are covered at the schema level.
-- vpype is not installed; the plotter-safety check (N7) is parse-based only.
 
 ## Goal
 

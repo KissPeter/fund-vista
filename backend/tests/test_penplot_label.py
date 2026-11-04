@@ -784,15 +784,13 @@ def test_convert_lines_inside_match_the_legacy_text():
     assert by_lines == by_text
 
 
-def test_convert_outside_sheet_carries_invisible_bounds_first():
+def test_convert_outside_sheet_carries_bounds_on_the_root_and_no_rect():
     _, root = _convert_svg(
         {"enabled": True, "lines": ["Budapest", "Map 1:5000"], "placement": "below"},
         page={"frame": True},
     )
-    first = list(root)[0]
-    assert first.attrib.get("id") == "a4-bounds"
-    assert first.attrib["fill"] == "none" and first.attrib["stroke"] == "none"
-    assert float(first.attrib["width"]) == 210.0 and float(first.attrib["height"]) == 297.0
+    assert root.attrib["data-kp-a4-bounds"] == "0 0 210.000 297.000"
+    assert not [el for el in root.iter() if el.attrib.get("id") == "a4-bounds"]
 
 
 def test_stats_table_top_reserve_clears_an_above_title():

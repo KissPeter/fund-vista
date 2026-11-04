@@ -91,17 +91,16 @@ def to_svg(
     ignored by plotters - geometry and stats are unaffected.
     """
     stroke = LINE_COLORS.get(stroke_color, LINE_COLORS["black"])
+    # Sheet bounds ride on the root, not in a rect: vpype plots an invisible
+    # rect (fill and stroke none) as a path. The viewBox already gives the
+    # full sheet to bbox consumers.
+    bounds_attr = (
+        f' data-kp-a4-bounds="0 0 {page_w:.3f} {page_h:.3f}"' if a4_bounds else ""
+    )
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{page_w:.2f}mm" '
-        f'height="{page_h:.2f}mm" viewBox="0 0 {page_w:.3f} {page_h:.3f}">',
+        f'height="{page_h:.2f}mm" viewBox="0 0 {page_w:.3f} {page_h:.3f}"{bounds_attr}>',
     ]
-    if a4_bounds:
-        # Invisible sheet-size rect (no fill, no stroke): bbox consumers still
-        # see the full sheet when the title sits outside the border.
-        parts.append(
-            f'<rect id="a4-bounds" x="0" y="0" width="{page_w:.3f}" '
-            f'height="{page_h:.3f}" fill="none" stroke="none"/>',
-        )
     if background_data_uri:
         parts.append(
             f'<image href="{background_data_uri}" x="0" y="0" '

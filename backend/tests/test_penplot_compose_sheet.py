@@ -478,14 +478,13 @@ def test_unknown_placement_is_rejected_for_compose():
 
 @pytest.mark.parametrize("placement", ["below", "above"])
 @pytest.mark.parametrize("orientation", ["portrait", "landscape"])
-def test_outside_sheet_is_a4_with_invisible_bounds_first(placement, orientation):
+def test_outside_sheet_is_a4_with_bounds_on_the_root_and_no_rect(placement, orientation):
     root = _root(_outside(placement, [TITLE, SUB], orientation))
     w, h = (297.0, 210.0) if orientation == "landscape" else (210.0, 297.0)
     assert root.attrib["width"] == f"{w:g}mm" and root.attrib["height"] == f"{h:g}mm"
-    first = list(root)[0]
-    assert first.tag == NS + "rect" and first.attrib["id"] == "a4-bounds"
-    assert first.attrib["fill"] == "none" and first.attrib["stroke"] == "none"
-    assert float(first.attrib["width"]) == w and float(first.attrib["height"]) == h
+    # vpype plots an invisible rect, so the bounds live on the root instead.
+    assert root.attrib["data-kp-a4-bounds"] == f"0 0 {w:g} {h:g}"
+    assert root.find(f".//{NS}rect[@id='a4-bounds']") is None
 
 
 def test_outside_below_moves_the_frame_and_the_lettering_to_the_strip():
@@ -529,15 +528,15 @@ def test_outside_sheet_is_deterministic():
     assert _outside("above", [TITLE]) == _outside("above", [TITLE])
 
 
-def test_a4_bounds_rect_is_tiny_and_a_subtitle_costs_one_title_line():
-    # N6 asks for at most 2 KB for the rect plus the second line. Glyph
+def test_a4_bounds_attr_is_tiny_and_a_subtitle_costs_one_title_line():
+    # N6 asks for at most 2 KB for the bounds plus the second line. Glyph
     # density sets the cost of a line (about 340 points per 8-10 characters
     # in the default face, at any size), so the guard is relative: the
-    # subtitle costs no more than the title line, and the rect stays small.
+    # subtitle costs no more than the title line, and the bounds stay small.
     one = _outside("below", [TITLE])
     two = _outside("below", [TITLE, SUB])
-    rect = re.search(r'<rect id="a4-bounds"[^>]*/>', two).group(0)
-    assert len(rect) < 200
+    bounds = re.search(r'data-kp-a4-bounds="[^"]*"', two).group(0)
+    assert len(bounds) < 200
     title_group = re.search(r'<g data-kp-text="Title here">.*?</g>', two).group(0)
     assert len(two) - len(one) <= 1.2 * len(title_group)
 
