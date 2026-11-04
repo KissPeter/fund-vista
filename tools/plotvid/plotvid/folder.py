@@ -149,16 +149,16 @@ def _outro(cfg: config.Config, size: tuple[int, int], work: Path) -> Path:
     return path
 
 
-def _still(path: Path, size: tuple[int, int], out: Path, rotate: str) -> Path:
-    """Full-size photo turned as the videos are (``render.rotate``), then scaled to
-    fit the output frame with all of it visible. The space left over is a blurred
-    copy of the photo. ffmpeg re-decodes a still on every frame of its 3 s hold, so
-    a 4000+ px photo is shrunk once here."""
+def _still(path: Path, size: tuple[int, int], out: Path) -> Path:
+    """Full-size photo, turned to portrait when the output frame is portrait, then
+    scaled to fit the frame with all of it visible. The space left over is a blurred
+    copy of the photo. Orientation comes from the pixels only: the camera's tag is
+    not reliable. ffmpeg re-decodes a still on every frame of its 3 s hold, so a
+    4000+ px photo is shrunk once here."""
     with Image.open(path) as img:
-        tagged = EXIF_ORIENTATION in img.getexif()
-        img = ImageOps.exif_transpose(img)
-        extra = probe.resolve_rotation(rotate, tagged, *img.size)
-        img = img.rotate(-extra, expand=True).convert("RGB")  # PIL turns counter-clockwise
+        img = img.convert("RGB")
+        if size[1] > size[0] and img.width > img.height:
+            img = img.rotate(90, expand=True)  # PIL turns counter-clockwise, as the videos are
         backdrop = ImageOps.fit(img, size, method=Image.Resampling.BILINEAR)
         backdrop = backdrop.filter(ImageFilter.GaussianBlur(radius=max(size) // 40))
         fit = ImageOps.contain(img, size, method=Image.Resampling.LANCZOS)
@@ -180,7 +180,7 @@ def _slideshow(shots: list[tuple[dt.datetime, tuple[int, int], Path]], size: tup
         return None
     stills = work / f"{label}_stills"
     stills.mkdir(exist_ok=True)
-    slides = [render.Part(kind="image", path=_still(p, size, stills / f"{i:03d}.jpg", cfg.render.rotate),
+    slides = [render.Part(kind="image", path=_still(p, size, stills / f"{i:03d}.jpg"),
                           duration_s=slide_s, has_audio=False)
               for i, (_, _, p) in enumerate(shots)]
     video = work / f"{label}.mp4"
