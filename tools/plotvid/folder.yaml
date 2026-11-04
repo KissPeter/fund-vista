@@ -1,0 +1,77 @@
+# Generic plotvid config for `python -m plotvid.folder FOLDER`. The script sets
+# sources and out_dir per folder; outro paths resolve against this file's folder.
+plot: pen-pixel
+sources: []           # set per folder by the script
+out_dir: work         # set per folder by the script
+
+detect:
+  sample_rate: 48000
+  hop_s: 0.005          # envelope resolution
+  window_s: 0.02133     # 1024 samples at 48 kHz
+  band_lo_hz: 8000      # servo burst band; motor tones and direction changes sit below
+  band_hi_hz: 15000
+  tick_s: 0.025         # running median; strips 1-2 frame spikes only
+  smooth_s: 0.04        # moving average shaping a burst into one hump
+  baseline_s: 0.5       # baseline window is +-baseline_s ...
+  baseline_percentile: 20   # ... at this percentile (low keeps dense detail trains visible)
+  min_prominence_db: 6.0
+  min_gap_s: 0.1        # events closer than this count as one
+  width_drop_db: 6.0    # burst width = contiguous time within this of the peak
+  min_width_s: 0.012    # drops sharp ticks (servo bursts are 13-100 ms); null = off
+  ignore_before_s: 0.0
+  ignore_after_s: null
+
+ink:
+  enabled: true
+  fps: 10
+  width: 288
+  roi: null
+  ink_threshold: 25
+  paper_level: 150
+  occluder_ratio: 0.75
+  persist_s: 0.7
+  persist_frac: 0.75
+
+strokes:
+  long_percentile: 70
+  drawn_min_px: 20
+  min_drawn_share: 0.1
+  split_over_s: 20      # pen-event gaps longer than this get synthetic cut points; null = off
+  split_piece_s: 7      # each split gap becomes ceil(gap / split_piece_s) equal pieces
+
+segment:
+  min_s: 3
+  max_s: 8
+  lead_short: [2, 3]
+  pre_roll: 0.15
+  post_roll: 0.25
+  max_relax: 3
+  relax_penalty: 0.5
+  final_extra_s: 3
+
+videos:
+  count: auto           # the most clips (up to max_count) that each reach min_total_s
+  max_count: 12
+  parts: 3              # story parts (equal time ranges of the plotting timeline)
+  target_s: 35          # whole clip: footage + outro
+  min_total_s: 30
+  max_total_s: 40
+  seed: 42
+  attempts: 24
+
+render:
+  fps: null
+  rotate: auto          # extra clockwise degrees: auto = 270 for untagged landscape files, else 0; or 0/90/180/270
+  crf: 20
+  preset: medium
+  audio_bitrate: 160k
+  audio_fade_s: 0.02
+  transition: crossfade # crossfade | cut
+  crossfade_s: 0.5
+  crossfade_type: fade
+  watermark: assets/watermark.svg  # logo bottom right on every clip, not the outro; null = none
+
+outro:
+  path: assets/outro.svg     # SVG (converted to PNG at the output size) or an image or video
+  seconds: 2.5          # for a video, null = its full length
+  text: drawn by a pen plotter

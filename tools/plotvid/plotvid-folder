@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# plotvid-folder FOLDER [--slide-s S] [--config YAML]
+# Videos and photos in FOLDER (.../raw/<name>) -> clips in .../processed/<name>/.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" exec uv run --project "$here" python -m plotvid.folder "$@"
