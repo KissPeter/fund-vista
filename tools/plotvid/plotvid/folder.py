@@ -33,7 +33,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import yaml
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from plotvid import assign, cli, config, events, probe, render
 
@@ -147,16 +147,20 @@ def _outro(cfg: config.Config, size: tuple[int, int], work: Path) -> Path:
 
 
 def _still(path: Path, size: tuple[int, int], out: Path, rotate: str) -> Path:
-    """Full-size photo turned as the videos are (``render.rotate``), then cropped to
-    the output frame. ffmpeg re-decodes a still on every frame of its 3 s hold, so
+    """Full-size photo turned as the videos are (``render.rotate``), then scaled to
+    fit the output frame with all of it visible. The space left over is a blurred
+    copy of the photo. ffmpeg re-decodes a still on every frame of its 3 s hold, so
     a 4000+ px photo is shrunk once here."""
     with Image.open(path) as img:
         tagged = EXIF_ORIENTATION in img.getexif()
         img = ImageOps.exif_transpose(img)
         extra = probe.resolve_rotation(rotate, tagged, *img.size)
         img = img.rotate(-extra, expand=True).convert("RGB")  # PIL turns counter-clockwise
-        img = ImageOps.fit(img, size, method=Image.Resampling.LANCZOS)
-        img.save(out, quality=95)
+        backdrop = ImageOps.fit(img, size, method=Image.Resampling.BILINEAR)
+        backdrop = backdrop.filter(ImageFilter.GaussianBlur(radius=max(size) // 40))
+        fit = ImageOps.contain(img, size, method=Image.Resampling.LANCZOS)
+        backdrop.paste(fit, ((size[0] - fit.width) // 2, (size[1] - fit.height) // 2))
+        backdrop.save(out, quality=95)
     return out
 
 
