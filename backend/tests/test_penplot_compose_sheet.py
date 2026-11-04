@@ -7,17 +7,21 @@ tests run over the session live server, like the other /v1 suites.
 from __future__ import annotations
 
 import base64
+import hashlib
 import re
 import time
 import xml.etree.ElementTree as ET
 
 import pytest
+from pydantic import ValidationError
 
 from backend.penplot import compose_sheet as cs
+from backend.penplot import labels
 from backend.penplot.errors import PenPlotError
 from backend.penplot.schemas import (
     ComposeContextPads,
     ComposeLabelParams,
+    ComposeLayout,
     ComposePageParams,
     ComposeSheetRequest,
     ContextTableParams,
@@ -299,7 +303,7 @@ def test_compose_page_fields_reuse_page_params_constraints():
 
 
 def test_compose_label_fields_reuse_label_params_constraints():
-    assert set(ComposeLabelParams.model_fields) == set(LabelParams.model_fields) - {"enabled", "text"}
+    assert set(ComposeLabelParams.model_fields) == set(LabelParams.model_fields) - {"enabled", "text", "lines"}
     for name, info in ComposeLabelParams.model_fields.items():
         assert _constraints(info) == _constraints(LabelParams.model_fields[name]), name
 
@@ -443,3 +447,101 @@ def test_http_oversize_is_413(http_client):
     resp = _post(http_client, {"svg": svg})
     assert resp.status_code == 413, resp.text
     assert resp.json()["error"]["code"] == "payload_too_large"
+
+
+# -- title placement outside the border (below / above) -----------------------
+
+#: Pinned before the placement change: the inside sheet must stay byte-identical.
+FRAMED_INSIDE_SHA256 = "dde9ba18ba685ad9ab3c9ba7eae81bd7ea72167b6eaeabec7c341fc34f321bfb"
+TITLE, SUB = "Title here", "Sub line"
+
+
+def _outside(placement, lines, orientation="portrait", frame=False):
+    layout = {"page": {"orientation": orientation, "frame": frame},
+              "label": {"placement": placement}}
+    return _compose(layout=layout, lines=lines)
+
+
+def _strip():
+    return labels.label_outside_mm(TITLE, subtitle=SUB, height_mm=5.0)
+
+
+def test_inside_sheet_is_byte_identical_to_the_golden():
+    svg = _compose(layout={"page": {"frame": True}}, lines=[TITLE, SUB])
+    assert hashlib.sha256(svg.encode()).hexdigest() == FRAMED_INSIDE_SHA256
+
+
+def test_unknown_placement_is_rejected_for_compose():
+    with pytest.raises(ValidationError):
+        ComposeLayout.model_validate({"label": {"placement": "left"}})
+
+
+@pytest.mark.parametrize("placement", ["below", "above"])
+@pytest.mark.parametrize("orientation", ["portrait", "landscape"])
+def test_outside_sheet_is_a4_with_bounds_on_the_root_and_no_rect(placement, orientation):
+    root = _root(_outside(placement, [TITLE, SUB], orientation))
+    w, h = (297.0, 210.0) if orientation == "landscape" else (210.0, 297.0)
+    assert root.attrib["width"] == f"{w:g}mm" and root.attrib["height"] == f"{h:g}mm"
+    # vpype plots an invisible rect, so the bounds live on the root instead.
+    assert root.attrib["data-kp-a4-bounds"] == f"0 0 {w:g} {h:g}"
+    assert root.find(f".//{NS}rect[@id='a4-bounds']") is None
+
+
+def test_outside_below_moves_the_frame_and_the_lettering_to_the_strip():
+    root = _root(_outside("below", [TITLE, SUB], frame=True))
+    frame = _marked(root, "data-kp-frame")[0]
+    assert abs(_bounds(_xy(frame))[3] - (H - MARGIN - _strip())) < TOL
+    assert abs(_text_bounds(root, SUB)[3] - (H - MARGIN)) < TOL
+    assert _text_bounds(root, TITLE)[3] < _text_bounds(root, SUB)[1]
+
+
+def test_outside_above_moves_the_frame_and_the_lettering_to_the_strip():
+    root = _root(_outside("above", [TITLE, SUB], frame=True))
+    frame = _marked(root, "data-kp-frame")[0]
+    assert abs(_bounds(_xy(frame))[1] - (MARGIN + _strip())) < TOL
+    assert abs(_text_bounds(root, TITLE)[1] - MARGIN) < TOL
+
+
+@pytest.mark.parametrize("placement", ["below", "above"])
+def test_outside_subtitle_is_six_tenths_of_the_title(placement):
+    root = _root(_outside(placement, [TITLE, SUB]))
+    t = _text_bounds(root, TITLE)
+    u = _text_bounds(root, SUB)
+    assert abs((u[3] - u[1]) / (t[3] - t[1]) - 0.6) < 0.02
+    assert root.find(f".//{NS}g[@data-kp-label-placement='{placement}']") is not None
+
+
+@pytest.mark.parametrize("placement", ["below", "above"])
+def test_outside_artwork_and_sheet_have_no_band_and_keep_clear(placement):
+    root = _root(_outside(placement, [TITLE, SUB], frame=True))
+    assert _marked(root, "data-kp-title-block") == []
+    art = _marked(root, "data-kp-artwork")[0]
+    y, height = float(art.attrib["y"]), float(art.attrib["height"])
+    if placement == "below":
+        assert y + height <= H - MARGIN - _strip() - labels.LABEL_ARTWORK_GAP_MM + TOL
+    else:
+        assert y >= MARGIN + _strip() + labels.LABEL_ARTWORK_GAP_MM - TOL
+
+
+def test_outside_sheet_is_deterministic():
+    assert _outside("below", [TITLE, SUB]) == _outside("below", [TITLE, SUB])
+    assert _outside("above", [TITLE]) == _outside("above", [TITLE])
+
+
+def test_a4_bounds_attr_is_tiny_and_a_subtitle_costs_one_title_line():
+    # N6 asks for at most 2 KB for the bounds plus the second line. Glyph
+    # density sets the cost of a line (about 340 points per 8-10 characters
+    # in the default face, at any size), so the guard is relative: the
+    # subtitle costs no more than the title line, and the bounds stay small.
+    one = _outside("below", [TITLE])
+    two = _outside("below", [TITLE, SUB])
+    bounds = re.search(r'data-kp-a4-bounds="[^"]*"', two).group(0)
+    assert len(bounds) < 200
+    title_group = re.search(r'<g data-kp-text="Title here">.*?</g>', two).group(0)
+    assert len(two) - len(one) <= 1.2 * len(title_group)
+
+
+def test_outside_title_only_is_one_line():
+    root = _root(_outside("above", [TITLE]))
+    group = root.find(f".//{NS}g[@data-kp-label-placement='above']")
+    assert len(list(group)) == 1
