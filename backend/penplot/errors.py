@@ -6,7 +6,7 @@ Wire format (stable, versioned under /v1)::
 
 ``code`` is a machine-readable snake_case token (what the spec's clients
 switch on); ``message`` is human-readable and safe to display. Internal
-tracebacks never leave the server — they go to logs with a request id.
+tracebacks never leave the server - they go to logs with a request id.
 """
 
 from __future__ import annotations
@@ -24,6 +24,10 @@ class ErrorCode:
     IMAGE_TOO_LARGE = "image_too_large"
     RATE_LIMITED = "rate_limited"
     TOKEN_SIGNING_UNAVAILABLE = "token_signing_unavailable"
+    # compose-sheet, artwork "inline": markup the plotted sheet must not carry.
+    ARTWORK_UNSAFE = "artwork_unsafe"
+    ARTWORK_NOT_PLOTTABLE = "artwork_not_plottable"
+    SHEET_NOT_PLOTTABLE = "sheet_not_plottable"
 
 
 class PenPlotError(Exception):

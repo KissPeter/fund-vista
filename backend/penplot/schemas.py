@@ -654,6 +654,14 @@ class ComposeSheetRequest(BaseModel):
         description="Title then subtitle. Blank entries are dropped.",
     )
     context_table: ComposeContextTable = Field(default_factory=ComposeContextTable)
+    artwork: Literal["image", "inline"] = Field(
+        default="image",
+        description=(
+            "How the artwork is embedded. image: one base64 <image> (the preview). "
+            "inline: the artwork's own vector markup in one transformed <g>, "
+            "plottable; the sheet then carries no <image> and no <text>."
+        ),
+    )
 
     @model_validator(mode="after")
     def _no_control_chars(self) -> ComposeSheetRequest:

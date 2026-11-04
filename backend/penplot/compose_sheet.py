@@ -5,9 +5,13 @@ shop's ``galleryCompose.ts``). This module moves that composition onto the
 server so the plot geometry lives in one place. Layer order matches the shop
 mock, bottom of the stack last:
 
-1. the artwork, embedded byte-for-byte as one ``<image>`` (base64 data URI,
-   so nothing in the artwork is re-parsed, re-simplified or re-escaped), fitted
-   into the free area with its own aspect ratio;
+1. the artwork, fitted into the free area with its own aspect ratio. Default
+   ``artwork="image"``: embedded byte-for-byte as one ``<image>`` (base64 data
+   URI, so nothing in the artwork is re-parsed, re-simplified or re-escaped).
+   ``artwork="inline"``: the artwork's own vector markup in one transformed
+   ``<g data-kp-artwork>`` at the same box, so the plotter draws it. The inline
+   sheet is checked for plottability (no ``<image>``, no ``<text>``, something
+   for ``parse_svg_vectors`` to draw), see ``_inline_artwork``;
 2. the whole-page margin frame (``labels.page_frame_rect``) when enabled;
 3. the title-block band (``labels._band_rect``) when there is a title and the
    border is on, drawn on top of the frame and never replacing it;
@@ -51,7 +55,7 @@ from backend.penplot.methods import Polyline
 from backend.penplot.raster import looks_like_svg
 from backend.penplot.router import get_settings, require_rate_limit
 from backend.penplot.schemas import ComposeContextPads, ComposeSheetRequest
-from backend.penplot.svg_vector import parse_svg_vectors
+from backend.penplot.svg_vector import WARNING_EMBEDDED_RASTERS_IGNORED, parse_svg_vectors
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +125,170 @@ def _artwork_element(
         f'<image data-kp-artwork="1" href="{uri}" x="{_fmt(x)}" y="{_fmt(y)}" '
         f'width="{_fmt(width)}" height="{_fmt(height)}" />'
     )
+
+
+#: Elements the inline artwork MUST NOT carry: active or external content.
+#: ``style`` is refused too: parse_svg_vectors ignores CSS, and a selector in
+#: the artwork would restyle the frame and lettering the sheet draws.
+_UNSAFE_TAGS = frozenset({
+    "script", "foreignobject", "style", "iframe", "embed", "object",
+    "animate", "animatemotion", "animatetransform", "animatecolor", "set",
+})
+#: Elements the plotted sheet MUST NOT carry: not plottable as polylines.
+_UNPLOTTABLE_TAGS = frozenset({"image", "text"})
+#: Prefix on every id of the inline artwork: no id of the artwork can equal a sheet id.
+ART_ID_PREFIX = "kp-art-"
+#: Root attributes that describe the artwork's own viewport, not its paint.
+_ROOT_GEOMETRY_ATTRS = frozenset({
+    "x", "y", "width", "height", "viewbox", "preserveaspectratio", "version", "transform",
+})
+_PROLOG_RE = re.compile(
+    r"<\?[\s\S]*?\?>|<!DOCTYPE[^>\[]*(?:\[[\s\S]*?\])?\s*>|<!--[\s\S]*?-->", re.IGNORECASE,
+)
+_START_TAG_RE = re.compile(r"""<svg\b(?:[^>"']|"[^"]*"|'[^']*')*>""")
+_ATTR_RE = re.compile(r"""\s([^\s=/>]+)\s*=\s*("[^"]*"|'[^']*')""")
+_END_SVG_RE = re.compile(r"</svg\s*>\s*$")
+_NUMBER_LIST_RE = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+_URL_RE = re.compile(r"""url\(\s*["']?([^)"'\s]*)""", re.IGNORECASE)
+_ID_ATTR_RE = re.compile(r"""(\sid\s*=\s*)(["'])([^"']*)\2""")
+_ID_REF_RE = re.compile(r"""((?:\shref|\sxlink:href)\s*=\s*["']|url\(\s*["']?)#([^"'\s)]+)""")
+
+
+def _artwork_error(code: str, message: str) -> PenPlotError:
+    return PenPlotError(status=422, code=code, message=message)
+
+
+def _local_name(name: str) -> str:
+    """Lower-case local name of a tag or attribute (``{ns}href`` -> ``href``)."""
+    return name.split("}")[-1].lower()
+
+
+def _assert_inline_safe(root) -> None:
+    """Refuse the artwork markup an inline sheet must not carry.
+
+    Same rules as the shop's ``assertSafeSvg``, plus the plottability rules:
+    no script, foreignObject, CSS style, animation or embedded object, no
+    event handler, no external href or url(), no javascript: URL. No ``image``
+    or ``text`` (not plottable as polylines), no nested ``svg`` (AxiDraw does
+    not descend into one). Internal ``#id`` references are kept.
+    """
+    for el in root.iter():
+        if not isinstance(el.tag, str):
+            continue
+        tag = _local_name(el.tag)
+        if tag in _UNSAFE_TAGS:
+            raise _artwork_error(ErrorCode.ARTWORK_UNSAFE, f"Artwork contains a <{tag}> element.")
+        if tag in _UNPLOTTABLE_TAGS or (tag == "svg" and el is not root):
+            raise _artwork_error(
+                ErrorCode.ARTWORK_NOT_PLOTTABLE,
+                f"Artwork contains a <{tag}> element, which cannot be plotted.",
+            )
+        for name, value in el.attrib.items():
+            attr = _local_name(name)
+            if attr.startswith("on"):
+                raise _artwork_error(ErrorCode.ARTWORK_UNSAFE, "Artwork contains an event handler.")
+            if attr == "href" and not value.strip().startswith("#"):
+                raise _artwork_error(ErrorCode.ARTWORK_UNSAFE, "Artwork contains an external href.")
+            if "javascript:" in value.lower():
+                raise _artwork_error(ErrorCode.ARTWORK_UNSAFE, "Artwork contains a javascript: URL.")
+            if any(not target.startswith("#") for target in _URL_RE.findall(value)):
+                raise _artwork_error(ErrorCode.ARTWORK_UNSAFE, "Artwork contains an external url().")
+
+
+def _num(value: float) -> str:
+    """A matrix term at 6 decimals, trailing zeros dropped (``-0`` folded to ``0``)."""
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return "0" if text in ("", "-0") else text
+
+
+def _inline_viewbox(root, vp_w: float, vp_h: float) -> tuple[float, float, float, float]:
+    """The root viewBox; without one the artwork's own size (viewport px)."""
+    raw = root.attrib.get("viewBox") or root.attrib.get("viewbox")
+    nums = [float(n) for n in _NUMBER_LIST_RE.findall(raw)] if raw else []
+    if len(nums) == 4 and nums[2] > 0 and nums[3] > 0:
+        return (nums[0], nums[1], nums[2], nums[3])
+    return (0.0, 0.0, vp_w, vp_h)
+
+
+def _prefix_ids(markup: str, ids: set[str]) -> str:
+    """Prefix the artwork's own ids and every internal reference to them."""
+    if not ids:
+        return markup
+
+    def own(m: re.Match[str]) -> str:
+        quote, value = m.group(2), m.group(3)
+        if value not in ids:
+            return m.group(0)
+        return f"{m.group(1)}{quote}{ART_ID_PREFIX}{value}{quote}"
+
+    def ref(m: re.Match[str]) -> str:
+        if m.group(2) not in ids:
+            return m.group(0)
+        return f"{m.group(1)}#{ART_ID_PREFIX}{m.group(2)}"
+
+    return _ID_REF_RE.sub(ref, _ID_ATTR_RE.sub(own, markup))
+
+
+def _inline_artwork(data: bytes, root, box: art_placement.Rect, vp_w: float, vp_h: float) -> str:
+    """The artwork's own vector markup as ONE transformed ``<g>`` in ``box``.
+
+    Port of the shop's ``inlineArtwork``: prolog, DOCTYPE and comments are
+    dropped; the root's other attributes (paint, style, xml:space, xmlns:*)
+    move onto the group; the root viewBox is fitted into ``box`` with
+    ``xMidYMid meet`` and baked into the matrix. The fit is the one the
+    ``<image>`` form gets, so the two modes draw the art at the same place.
+    """
+    _assert_inline_safe(root)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _artwork_error(
+            ErrorCode.ARTWORK_NOT_PLOTTABLE, "Inline artwork must be a UTF-8 SVG document.",
+        ) from exc
+    body = _PROLOG_RE.sub("", text)
+    start = _START_TAG_RE.search(body)
+    if start is None:
+        raise _artwork_error(ErrorCode.ARTWORK_NOT_PLOTTABLE, "Artwork has no <svg> root.")
+    tag = start.group(0)
+    vbx, vby, vbw, vbh = _inline_viewbox(root, vp_w, vp_h)
+    bx, by, bw, bh = box
+    s = min(bw / vbw, bh / vbh)
+    tx = bx + (bw - vbw * s) / 2 - vbx * s
+    ty = by + (bh - vbh * s) / 2 - vby * s
+    kept = "".join(
+        f" {name}={value}"
+        for name, value in _ATTR_RE.findall(tag)
+        if name != "xmlns"
+        and not name.startswith("data-kp-")
+        and name.lower() not in _ROOT_GEOMETRY_ATTRS
+    )
+    open_tag = (
+        f'<g{kept} data-kp-artwork="1" '
+        f'transform="matrix({_num(s)} 0 0 {_num(s)} {_num(tx)} {_num(ty)})"'
+    )
+    if tag.endswith("/>"):
+        markup = f"{open_tag} />"
+    else:
+        inner = _END_SVG_RE.sub("", body[start.end():])
+        markup = f"{open_tag}>{inner}</g>"
+    ids = {el.attrib["id"] for el in root.iter() if "id" in el.attrib}
+    return _prefix_ids(markup, ids)
+
+
+def _assert_plottable(sheet: str) -> None:
+    """Plottability gate for an inline sheet: no <image>, no <text>, one root,
+    and parse_svg_vectors finds something to plot."""
+    sheet_gone = _artwork_error(
+        ErrorCode.SHEET_NOT_PLOTTABLE, "The sheet has nothing that can be plotted.",
+    )
+    if re.search(r"<(?:image|text)[\s>/]", sheet) or len(re.findall(r"<svg[\s>]", sheet)) != 1:
+        raise sheet_gone
+    try:
+        _polylines, _w, _h, warnings = parse_svg_vectors(sheet.encode("utf-8"))
+    except PenPlotError as exc:
+        raise sheet_gone from exc
+    if WARNING_EMBEDDED_RASTERS_IGNORED in warnings:
+        raise sheet_gone
 
 
 def _validate_svg(data: bytes, max_bytes: int):
@@ -403,9 +571,12 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
                 f'{escape(payload, {chr(34): "&quot;", chr(39): "&#39;"})}"'
             )
     parts: list[str] = []
-    parts.append(
-        _artwork_element(data, x=box[0], y=box[1], width=box[2], height=box[3])
-    )
+    if body.artwork == "inline":
+        parts.append(_inline_artwork(data, root, box, vp_w, vp_h))
+    else:
+        parts.append(
+            _artwork_element(data, x=box[0], y=box[1], width=box[2], height=box[3])
+        )
 
     # Page furniture: the margin frame (inset by the strip when the title is
     # outside), then the title-block band on top of it (inside only).
@@ -520,6 +691,8 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
         + "".join(parts)
         + "</svg>"
     )
+    if body.artwork == "inline":
+        _assert_plottable(sheet)
     log.info(
         "compose.sheet svg_bytes=%d lines=%d context_rows=%d frame=%s border=%s",
         len(data), len(lines), len(ctx_rows), body.layout.page.frame, border,
