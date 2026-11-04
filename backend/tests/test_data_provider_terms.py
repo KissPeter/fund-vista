@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+import httpx
 import pytest
 
 import backend.airports.overpass as airports_overpass
@@ -477,3 +478,43 @@ def test_attribution_in_metadata_never_in_artwork():
     )
     assert "OurAirports" not in svg2 and "OpenStreetMap" not in svg2
     assert 'id="footer"' not in svg2
+
+
+def test_ourairports_uses_smart_client_retries_502_once(monkeypatch):
+    """Default client is the shared smart client: a transient 502 is retried
+    on the same host, a 429 is not (surfaces as OurAirportsError)."""
+    from backend.airports import ourairports
+    from backend.http import upstream
+
+    async def fake_get(_key: str):
+        return None
+
+    async def fake_set(key: str, value: str, ttl_s=None):
+        return True
+
+    monkeypatch.setattr(airports_cache_mod, "cache_get", fake_get)
+    monkeypatch.setattr(airports_cache_mod, "cache_set", fake_set)
+
+    statuses = [502, 200]
+    calls: list[str] = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        status = statuses.pop(0) if statuses else 429
+        return httpx.Response(status, text="ident,name\nLHBP,Budapest\n")
+
+    monkeypatch.setattr(upstream.tls, "async_transport", lambda: httpx.MockTransport(handler))
+
+    async def no_sleep(_s):
+        return None
+
+    import httpx_retries.retry as retry_mod
+    monkeypatch.setattr(retry_mod.asyncio, "sleep", no_sleep)
+
+    text, hit = asyncio.run(ourairports._fetch_csv("airports"))
+    assert "LHBP" in text and hit is False
+    assert len(calls) == 2  # 502 then 200
+
+    with pytest.raises(ourairports.OurAirportsError, match="429"):
+        asyncio.run(ourairports._fetch_csv("airports"))
+    assert len(calls) == 3  # 429 not retried

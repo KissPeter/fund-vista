@@ -20,7 +20,7 @@ import httpx
 from backend.citymap.cache import cache_get, cache_set, citymap_cache_key
 from backend.citymap.config import settings
 from backend.citymap.overpass import BBox
-from backend.http import tls
+from backend.http import upstream
 
 log = logging.getLogger(__name__)
 
@@ -102,8 +102,11 @@ async def geocode_city(city: str) -> dict:
     await _throttle_nominatim()
     params = {"format": "jsonv2", "q": city, "limit": 1, "addressdetails": 0}
     try:
-        async with tls.async_client(
-            timeout=settings.nominatim_timeout_s, headers=_headers()
+        async with upstream.smart_client(
+            "nominatim",
+            timeout=settings.nominatim_timeout_s,
+            retries=1,
+            headers=_headers(),
         ) as client:
             resp = await client.get(settings.nominatim_url, params=params)
     except httpx.HTTPError as exc:
@@ -178,8 +181,11 @@ async def search_places(query: str, limit: int = 5) -> dict:
     await _throttle_nominatim()
     params = {"format": "jsonv2", "q": query, "limit": limit, "addressdetails": 0}
     try:
-        async with tls.async_client(
-            timeout=settings.nominatim_timeout_s, headers=_headers()
+        async with upstream.smart_client(
+            "nominatim",
+            timeout=settings.nominatim_timeout_s,
+            retries=1,
+            headers=_headers(),
         ) as client:
             resp = await client.get(settings.nominatim_url, params=params)
     except httpx.HTTPError as exc:

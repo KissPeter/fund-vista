@@ -16,24 +16,25 @@ must keep bboxes small and cache (router does both).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
-import random
+import re
 
 import httpx
 from defusedxml import ElementTree as DET
 
 from backend.citymap.config import settings
 from backend.citymap.overpass import BBox
-from backend.http import tls
+from backend.http import upstream
+from backend.http.mirror_health import osm_api_mirrors
 
 log = logging.getLogger(__name__)
 
-# Retryable OSM statuses (5xx/429/408 + network errors). 400 = too many
-# nodes / bbox invalid -> subdivide (dense) or fail fast, never blind-retry.
-_RETRYABLE_STATUS: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504, 509})
+# Retries/backoff/Retry-After/logging live in the shared smart client
+# (backend.http.upstream). 400 = too many nodes / bbox invalid -> subdivide
+# (dense) or fail fast. 429 parks the endpoint (see _get_cell_elements).
 _BODY_SNIPPET_LEN = 200
+_RETRY_IN_RE = re.compile(r"try again in\s+(\d+(?:\.\d+)?)\s*seconds?", re.I)
 
 
 class OsmApiError(Exception):
@@ -141,20 +142,27 @@ async def fetch_osm_api(
 
     Cells that answer HTTP 400 (node-density limit in city centers) are
     subdivided into quadrants down to ``osm_api_min_deg`` before giving up.
-    Transient failures (HTTP 408/429/5xx + network errors) are retried per
-    cell with exponential backoff.
+    Transient failures are retried by the shared smart client. A 429 is
+    never retried: the endpoint is parked for the server's hint and every
+    call fails fast while it is parked.
 
     Raises :class:`OsmApiError` when every cell fails or answers unusable
     XML so the router can map it to a 502 envelope.
     """
     own_client = client is None
-    client = client or tls.async_client(timeout=settings.osm_api_timeout_s)
+    client = client or upstream.smart_client(
+        "osm-api",
+        timeout=settings.osm_api_timeout_s,
+        retries=settings.osm_api_retries,
+        backoff_s=settings.osm_api_retry_backoff_s,
+    )
     try:
         south, west, north, east = bbox
         if max(north - south, east - west) > settings.max_bbox_deg:
             raise OsmApiError(
                 f"bbox exceeds max_bbox_deg ({settings.max_bbox_deg})"
             )
+        await _raise_if_parked()
         cells = chunk_bbox(bbox, settings.osm_api_max_deg)
         failures: list[str] = []
         parsed: list[list[dict]] = []
@@ -222,73 +230,70 @@ async def _fetch_recursive(
         for quad in split_quadrants(cell):
             await _fetch_recursive(quad, client, failures, parsed)
     except (httpx.HTTPError, OsmApiError) as exc:
-        failures.append(f"cell {_cell_param(cell)}: {_format_exc(exc)}")
+        failures.append(f"cell {_cell_param(cell)}: {exc!r}")
         log.warning("osm_api.fail bbox=%s error=%r", _cell_param(cell), exc)
 
 
+async def _raise_if_parked() -> None:
+    """Fail without touching the network while the endpoint is parked."""
+    _, parked = await osm_api_mirrors.split([settings.osm_api_url])
+    if parked:
+        raise OsmApiError(
+            f"OSM API parked after HTTP 429 for another {math.ceil(parked[0][1])}s"
+        )
+
+
+def _cooldown_seconds(resp: httpx.Response) -> float:
+    """Server hint (Retry-After, else "try again in N seconds"), clamped."""
+    hint = upstream.retry_after_seconds(resp)
+    if hint is None:
+        match = _RETRY_IN_RE.search(_body_snippet(resp, limit=1000))
+        hint = float(match.group(1)) if match else None
+    if hint is None or hint <= 0:
+        hint = settings.osm_api_cooldown_s
+    return min(hint, settings.osm_api_max_cooldown_s)
+
+
 async def _get_cell_elements(cell: BBox, client: httpx.AsyncClient) -> list[dict]:
-    """GET one cell with retries. 400 -> _DenseCellError (subdivide)."""
+    """GET one cell. 400 -> _DenseCellError (subdivide); 429 -> park + fail."""
     param = _cell_param(cell)
-    max_attempts = max(1, settings.osm_api_retries + 1)
-    last_error: str = ""
-    for attempt in range(max_attempts):
-        try:
-            resp = await client.get(
-                settings.osm_api_url,
-                params={"bbox": param},
-                headers={"User-Agent": settings.user_agent},
-            )
-        except httpx.HTTPError as exc:
-            last_error = f"cell {param}: {_format_exc(exc)}"
-            if attempt + 1 < max_attempts:
-                log.warning(
-                    "osm_api.retry bbox=%s error=%r attempt=%d/%d",
-                    param, exc, attempt + 1, max_attempts,
-                )
-                await asyncio.sleep(_backoff(settings.osm_api_retry_backoff_s, attempt))
-                continue
-            raise OsmApiError(last_error) from exc
-        if resp.status_code == 400:
-            raise _DenseCellError(f"cell {param} answered HTTP 400", _body_snippet(resp))
-        if resp.status_code != 200:
-            last_error = f"cell {param} answered HTTP {resp.status_code}"
-            snippet = _body_snippet(resp)
-            if snippet:
-                last_error += f" ({snippet})"
-            if resp.status_code in _RETRYABLE_STATUS and attempt + 1 < max_attempts:
-                log.warning(
-                    "osm_api.retry bbox=%s http=%d attempt=%d/%d",
-                    param, resp.status_code, attempt + 1, max_attempts,
-                )
-                await asyncio.sleep(_backoff(settings.osm_api_retry_backoff_s, attempt))
-                continue
-            log.warning("osm_api.fail http=%d bbox=%s", resp.status_code, param)
-            raise OsmApiError(last_error)
-        return parse_osm_xml(resp.text)
-    raise OsmApiError(last_error or f"cell {param}: retries exhausted")
+    await _raise_if_parked()
+    try:
+        resp = await client.get(
+            settings.osm_api_url,
+            params={"bbox": param},
+            headers={"User-Agent": settings.user_agent},
+        )
+    except httpx.HTTPError as exc:
+        raise OsmApiError(f"cell {param}: {exc!r}") from exc
+    if resp.status_code == 400:
+        raise _DenseCellError(f"cell {param} answered HTTP 400", _body_snippet(resp))
+    if resp.status_code == 429:
+        seconds = _cooldown_seconds(resp)
+        await osm_api_mirrors.park(settings.osm_api_url, seconds)
+        log.warning("osm_api.parked http=429 bbox=%s seconds=%.0f", param, seconds)
+        raise OsmApiError(
+            f"cell {param} answered HTTP 429; OSM API parked for {math.ceil(seconds)}s"
+        )
+    if resp.status_code != 200:
+        msg = f"cell {param} answered HTTP {resp.status_code}"
+        snippet = _body_snippet(resp)
+        if snippet:
+            msg += f" ({snippet})"
+        log.warning("osm_api.fail http=%d bbox=%s", resp.status_code, param)
+        raise OsmApiError(msg)
+    return parse_osm_xml(resp.text)
 
 
-def _format_exc(exc: BaseException) -> str:
-    """Never return an empty string (httpx timeouts often stringify to '')."""
-    msg = str(exc).strip()
-    name = type(exc).__name__
-    return f"{name}: {msg}" if msg else f"{name} (no detail)"
-
-
-def _body_snippet(resp: httpx.Response) -> str:
+def _body_snippet(resp: httpx.Response, limit: int = _BODY_SNIPPET_LEN) -> str:
     """First ~200 chars of an error body (e.g. 'too many nodes')."""
     try:
         text = resp.text.strip().replace("\n", " ")
     except Exception:
         return ""
-    if len(text) > _BODY_SNIPPET_LEN:
-        return text[:_BODY_SNIPPET_LEN] + "…"
+    if len(text) > limit:
+        return text[:limit] + "…"
     return text
-
-
-def _backoff(base_s: float, attempt: int) -> float:
-    """Exponential backoff with a small jitter."""
-    return base_s * (2**attempt) + random.uniform(0, 0.25)
 
 
 __all__ = [

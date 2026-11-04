@@ -46,7 +46,15 @@ def _wait_for_health(base_url: str, proc: subprocess.Popen, timeout_s: float = 3
         except Exception as exc:  # server not up yet
             last_err = str(exc)
         time.sleep(0.25)
-    raise RuntimeError(f"uvicorn never became healthy: {last_err}")
+    # Still alive but not serving: kill it so its stderr can be read, and
+    # report that instead of the bare "Connection refused".
+    proc.kill()
+    proc.wait(timeout=10)
+    stderr_tail = (proc.stderr.read() if proc.stderr else b"").decode(errors="replace")[-4000:]
+    raise RuntimeError(
+        f"uvicorn never became healthy: {last_err}; process alive for "
+        f"{timeout_s:.0f}s without serving. stderr:\n{stderr_tail}"
+    )
 
 
 @pytest.fixture(scope="session")
@@ -95,3 +103,13 @@ def http_client(live_server: str):
     """Plain httpx client pointed at the live server (60s for flow method)."""
     with httpx.Client(base_url=live_server, timeout=60.0) as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def _reset_overpass_mirror_parks():
+    """A 429/5xx parks a mirror process-wide; never leak that across tests."""
+    from backend.http.mirror_health import overpass_mirrors
+
+    overpass_mirrors.reset()
+    yield
+    overpass_mirrors.reset()

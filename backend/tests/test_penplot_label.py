@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+import statistics
+import time
+
+import pytest
+from pydantic import ValidationError
+
 from backend.penplot import labels
+from backend.penplot.pipeline import effective_params_dump, params_hash
+from backend.penplot.schemas import ConvertParams, LabelParams
+from backend.penplot.stages.layout_svg import layout, layout_scale
 from backend.tests.helpers import default_params, png_bytes, upload
 
 PAGE_W, PAGE_H, MARGIN = 210.0, 297.0, 10.0
@@ -47,7 +56,7 @@ def test_align_fill_spans_inner_width():
 
 
 def test_label_sits_inside_bottom_margin():
-    # Comma tail hangs below the cap baseline — anchoring uses the real bbox.
+    # Comma tail hangs below the cap baseline - anchoring uses the real bbox.
     lines, _ = labels.render_label(
         "A,", height_mm=5.0, align="right",
         page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
@@ -511,7 +520,7 @@ def test_solid_panorama_stays_above_the_band_over_http(http_client):
 
     from PIL import Image as PILImage
 
-    # Worst case: ink everywhere — hatch fills the whole image area.
+    # Worst case: ink everywhere - hatch fills the whole image area.
     img = PILImage.new("RGB", (400, 60), "black")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -540,3 +549,257 @@ def test_solid_panorama_stays_above_the_band_over_http(http_client):
             spanning += 1
     # Only the page frame spans the band top; nothing overflows the strip.
     assert spanning == 1
+
+
+def test_strip_bottom_gap_clears_pen_width():
+    # Descenders must not touch the frame bottom: gap is at least the pad.
+    for font in labels.LABEL_FONTS:
+        m = labels._strip_metrics("Budapest Liszt Ferenc", height_mm=5.0, font=font)
+        assert m is not None
+        _, pad, gap = m
+        assert gap >= pad and gap >= labels.BORDER_GAP_MIN_MM
+
+
+# -- title placement outside the border (below / above) -----------------------
+
+SHEETS = ((210.0, 297.0), (297.0, 210.0))  # A4 portrait, A4 landscape
+
+
+def _ys(lines):
+    return [y for pl in lines for _, y in pl]
+
+
+def _ink_h(lines):
+    ys = _ys(lines)
+    return max(ys) - min(ys)
+
+
+def _outside(text, placement, subtitle="", *, w=PAGE_W, h=PAGE_H, height=5.0,
+             align="right"):
+    return labels.render_label_rows(
+        text, height_mm=height, align=align, page_w=w, page_h=h, margin_mm=MARGIN,
+        placement=placement, subtitle=subtitle,
+    )
+
+
+def test_inside_default_is_explicit_inside_and_joins_subtitle():
+    default, _ = labels.render_label(
+        "AB - CD", height_mm=5.0, align="right", page_w=PAGE_W, page_h=PAGE_H,
+        margin_mm=MARGIN,
+    )
+    explicit, _ = labels.render_label(
+        "AB", subtitle="CD", height_mm=5.0, align="right", page_w=PAGE_W,
+        page_h=PAGE_H, margin_mm=MARGIN, placement="inside",
+    )
+    assert default == explicit
+
+
+def test_unknown_placement_is_rejected():
+    with pytest.raises(ValidationError):
+        LabelParams.model_validate({"placement": "left"})
+    with pytest.raises(ValueError):
+        _outside("AB", "inside")
+
+
+def test_label_lines_are_capped_and_checked():
+    assert LabelParams.model_validate({"lines": ["Title", "Sub"]}).lines == ["Title", "Sub"]
+    for bad in (["a", "b", "c"], ["x" * 42], ["bad\nline"]):
+        with pytest.raises(ValidationError):
+            LabelParams.model_validate({"lines": bad})
+
+
+def test_cache_key_drops_only_the_inside_placement():
+    base = ConvertParams.model_validate(default_params("hatch") | {"label": {"enabled": True, "text": "T"}})
+    inside = ConvertParams.model_validate(
+        default_params("hatch") | {"label": {"enabled": True, "text": "T", "placement": "inside"}})
+    below = ConvertParams.model_validate(
+        default_params("hatch") | {"label": {"enabled": True, "text": "T", "placement": "below"}})
+    assert effective_params_dump(inside, False) == effective_params_dump(base, False)
+    assert "placement" not in effective_params_dump(base, False)["label"]
+    assert effective_params_dump(below, False)["label"]["placement"] == "below"
+    assert params_hash(base) == params_hash(inside)
+    assert params_hash(below) != params_hash(base)
+
+
+def test_outside_render_is_deterministic():
+    assert _outside("Budapest", "below", "Map") == _outside("Budapest", "below", "Map")
+    assert _outside("Budapest", "above", "Map") == _outside("Budapest", "above", "Map")
+
+
+@pytest.mark.parametrize("placement", ["below", "above"])
+def test_outside_lettering_sits_on_the_margin(placement):
+    rows, _ = _outside("Budapest", placement, "Map 1:5000")
+    title, sub = rows
+    assert max(_ys(title)) < min(_ys(sub))  # title first, subtitle after it
+    if placement == "below":
+        assert abs(max(_ys(sub)) - (PAGE_H - MARGIN)) < 1e-6
+    else:
+        assert abs(min(_ys(title)) - MARGIN) < 1e-6
+
+
+@pytest.mark.parametrize("placement", ["below", "above"])
+def test_outside_has_no_band(placement):
+    plain, _ = labels.render_label(
+        "AB", subtitle="CD", height_mm=5.0, align="right", page_w=PAGE_W,
+        page_h=PAGE_H, margin_mm=MARGIN, placement=placement, border=False,
+    )
+    boxed, _ = labels.render_label(
+        "AB", subtitle="CD", height_mm=5.0, align="right", page_w=PAGE_W,
+        page_h=PAGE_H, margin_mm=MARGIN, placement=placement, border=True,
+    )
+    assert plain == boxed
+
+
+@pytest.mark.parametrize("placement", ["below", "above"])
+def test_frame_inset_equals_the_strip(placement):
+    strip = labels.label_outside_mm("Budapest", subtitle="Map", height_mm=5.0)
+    if placement == "below":
+        frame = labels.page_frame_rect(
+            PAGE_W, PAGE_H, MARGIN, 2.0, bottom_mm=PAGE_H - MARGIN - strip)
+        assert abs(max(_ys([frame])) - (PAGE_H - MARGIN - strip)) < 1e-6
+        assert abs(min(_ys([frame])) - MARGIN) < 1e-6
+        rows, _ = _outside("Budapest", placement, "Map")
+        assert min(_ys(rows[0] + rows[1])) > PAGE_H - MARGIN - strip
+    else:
+        frame = labels.page_frame_rect(
+            PAGE_W, PAGE_H, MARGIN, 2.0, top_mm=MARGIN + strip)
+        assert abs(min(_ys([frame])) - (MARGIN + strip)) < 1e-6
+        assert abs(max(_ys([frame])) - (PAGE_H - MARGIN)) < 1e-6
+        rows, _ = _outside("Budapest", placement, "Map")
+        assert max(_ys(rows[0] + rows[1])) < MARGIN + strip
+
+
+def test_strip_is_pad_title_gap_subtitle_pad():
+    h = 5.0
+    rows, _ = _outside("Budapest", "below", "Map", height=h)
+    title_h, sub_h = _ink_h(rows[0]), _ink_h(rows[1])
+    pad = max(h * labels.BORDER_PAD_RATIO, labels.BORDER_PAD_MIN_MM)
+    both = labels.label_outside_mm("Budapest", subtitle="Map", height_mm=h)
+    assert abs(both - (2 * pad + title_h + labels.OUTSIDE_LINE_GAP_MM + sub_h)) < 1e-6
+    only = labels.label_outside_mm("Budapest", height_mm=h)
+    assert abs(only - (2 * pad + title_h)) < 1e-6
+    assert labels.label_outside_mm("", height_mm=h) == 0.0
+
+
+def test_subtitle_cap_height_is_six_tenths_of_the_title():
+    rows, _ = _outside("H", "below", "H")
+    assert abs(_ink_h(rows[1]) / _ink_h(rows[0]) - 0.6) < 1e-6
+    assert labels.SUBTITLE_HEIGHT_RATIO == 0.6
+
+
+def test_no_subtitle_draws_one_line_and_a_shorter_strip():
+    rows, _ = _outside("Budapest", "above")
+    assert len(rows) == 1
+    with_sub = labels.label_outside_mm("Budapest", subtitle="Map", height_mm=5.0)
+    assert labels.label_outside_mm("Budapest", height_mm=5.0) < with_sub
+
+
+@pytest.mark.parametrize("placement", ["below", "above"])
+def test_artwork_keeps_clear_of_the_title_strip(placement):
+    strip = labels.label_outside_mm("Budapest", subtitle="Map", height_mm=5.0)
+    reserve = strip + labels.LABEL_ARTWORK_GAP_MM
+    art = [[(0.0, 0.0), (400.0, 0.0), (400.0, 200.0), (0.0, 200.0), (0.0, 0.0)]]
+    key = "reserve_bottom_mm" if placement == "below" else "reserve_top_mm"
+    laid, _, _ = layout(
+        art, 400, 200, size="A4", orientation="portrait", margin_mm=MARGIN,
+        padding_mm=5.0, **{key: reserve},
+    )
+    if placement == "below":
+        assert max(_ys(laid)) <= PAGE_H - MARGIN - strip
+    else:
+        assert min(_ys(laid)) >= MARGIN + strip
+
+
+def test_layout_scale_matches_layout_with_a_top_reserve():
+    # Tall artwork: the height, not the width, limits the scale.
+    art = [[(0.0, 0.0), (200.0, 0.0), (200.0, 1000.0), (0.0, 1000.0), (0.0, 0.0)]]
+    laid, _, _ = layout(
+        art, 200, 1000, size="A4", orientation="portrait", margin_mm=MARGIN,
+        padding_mm=5.0, reserve_top_mm=20.0,
+    )
+    xs = [x for x, _ in laid[0]]
+    scale = layout_scale(200, 1000, "A4", "portrait", MARGIN, 0.0, 5.0, 20.0)
+    assert abs((max(xs) - min(xs)) / 200.0 - scale) < 1e-6
+    assert scale < layout_scale(200, 1000, "A4", "portrait", MARGIN, 0.0, 5.0)
+
+
+def test_unsupported_glyph_in_subtitle_still_warns():
+    _, warnings = _outside("Budapest", "below", "Map\u2603")
+    assert any(w.startswith(labels.WARNING_UNSUPPORTED) for w in warnings)
+
+
+@pytest.mark.parametrize("w,h", SHEETS)
+@pytest.mark.parametrize("placement", ["below", "above"])
+@pytest.mark.parametrize("subtitle", ["", "W" * 41])
+@pytest.mark.parametrize("align", ["left", "right", "fill"])
+def test_outside_stays_inside_the_sheet(w, h, placement, subtitle, align):
+    rows, _ = _outside("W" * 41, placement, subtitle, w=w, h=h, height=25.0, align=align)
+    points = [pt for row in rows for pl in row for pt in pl]
+    assert points
+    for x, y in points:
+        assert MARGIN - 1e-6 <= x <= w - MARGIN + 1e-6
+        assert MARGIN - 1e-6 <= y <= h - MARGIN + 1e-6
+
+
+def test_outside_render_time_stays_close_to_inside():
+    def timed(**kw):
+        samples = []
+        for _ in range(5):
+            t0 = time.perf_counter()
+            labels.render_label(
+                "Budapest - Center", height_mm=5.0, align="right", page_w=PAGE_W,
+                page_h=PAGE_H, margin_mm=MARGIN, subtitle="Map 1:5000", **kw)
+            samples.append(time.perf_counter() - t0)
+        return statistics.median(samples)
+
+    timed(placement="inside")  # warm the glyph caches
+    inside = timed(placement="inside")
+    outside = timed(placement="below")
+    assert outside <= 1.2 * inside + 0.005
+
+
+def _convert_svg(label, page=None):
+    import io
+    import xml.etree.ElementTree as ET
+
+    from PIL import Image
+
+    from backend.penplot.pipeline import ConvertParams, run_convert
+    from backend.penplot.router import get_settings
+
+    data = png_bytes()
+    w, h = Image.open(io.BytesIO(data)).size
+    body = default_params("hatch") | {"label": label} | ({"page": page} if page else {})
+    res = run_convert(
+        image_id="title-placement-test", image_bytes=data, is_vector=False,
+        src_w=w, src_h=h, params=ConvertParams.model_validate(body),
+        settings=get_settings(),
+    )
+    return res.svg_text, ET.fromstring(res.svg_text)
+
+
+def test_convert_lines_inside_match_the_legacy_text():
+    by_text, _ = _convert_svg({"enabled": True, "text": "Budapest - Map 1:5000"})
+    by_lines, _ = _convert_svg({"enabled": True, "lines": ["Budapest", "Map 1:5000"]})
+    assert by_lines == by_text
+
+
+def test_convert_outside_sheet_carries_bounds_on_the_root_and_no_rect():
+    _, root = _convert_svg(
+        {"enabled": True, "lines": ["Budapest", "Map 1:5000"], "placement": "below"},
+        page={"frame": True},
+    )
+    assert root.attrib["data-kp-a4-bounds"] == "0 0 210.000 297.000"
+    assert not [el for el in root.iter() if el.attrib.get("id") == "a4-bounds"]
+
+
+def test_stats_table_top_reserve_clears_an_above_title():
+    from backend.penplot.stats_table import layout_stats_table
+
+    rows = [("highways", 12), ("roads", 340)]
+    kw = dict(position="top-left", page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN)
+    lines, _, keepout = layout_stats_table(rows, reserve_top_mm=20.0, **kw)
+    assert min(_ys(lines)) >= MARGIN + 20.0
+    assert keepout is not None and keepout[1] >= MARGIN + 20.0
+    free, _, _ = layout_stats_table(rows, **kw)
+    assert min(_ys(free)) < MARGIN + 20.0

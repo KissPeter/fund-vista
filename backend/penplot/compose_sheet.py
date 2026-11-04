@@ -138,19 +138,37 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     margin = page.margin_mm
     pad = page.padding_mm
     lines = [line for line in body.lines if line.strip()]
+    title = lines[0] if lines else ""
+    subtitle = lines[1] if len(lines) > 1 else ""
     table = body.context_table
     ctx_rows = [(row.label, row.value) for row in table.rows] if table.enabled else []
 
-    # Title block: one stacked row per line, along the bottom edge.
+    # Title block. Inside the border it is one stacked row per line along the
+    # bottom edge (the band). Outside (below/above) it is a strip on that side
+    # with no band: the artwork and the frame keep clear of the strip.
     line_h = style.height_mm
-    label_band = len(lines) * (line_h + LINE_GAP_MM)
-    band_top = h - margin - label_band
+    outside = style.placement != "inside"
+    below = style.placement == "below"
+    strip = 0.0
+    if outside and lines:
+        strip = labels.label_outside_mm(
+            title, subtitle=subtitle, height_mm=line_h, font=style.font,
+        )
+    if outside:
+        reserve = strip + labels.LABEL_ARTWORK_GAP_MM if strip > 0.0 else 0.0
+        reserve_bottom = reserve if below else 0.0
+        reserve_top = 0.0 if below else reserve
+    else:
+        reserve_bottom = len(lines) * (line_h + LINE_GAP_MM)
+        reserve_top = 0.0
+    band_top = h - margin - reserve_bottom
 
-    # Artwork: centred in [margin+pad, band_top] x [margin+pad, w-margin-pad],
+    # Artwork: centred in [margin+pad+top, band_top] x [margin+pad, w-margin-pad],
     # keeping its own aspect when the root declares its size.
+    art_top = margin + pad + reserve_top
     art_bottom = band_top
     area_w = w - 2 * (margin + pad)
-    area_h = art_bottom - margin - pad
+    area_h = art_bottom - art_top
     box_w, box_h = area_w, area_h
     raw_w = _root_length(root, "width")
     raw_h = _root_length(root, "height")
@@ -161,25 +179,59 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
         else:
             box_w = area_h * art_aspect
     art_x = (w - box_w) / 2
-    art_y = (art_bottom + margin + pad - box_h) / 2
-    parts: list[str] = [
+    art_y = art_top + (area_h - box_h) / 2
+    parts: list[str] = []
+    parts.append(
         _artwork_element(data, x=art_x, y=art_y, width=box_w, height=box_h)
-    ]
+    )
 
-    # Page furniture: the margin frame, then the title-block band on top of it.
+    # Page furniture: the margin frame (inset by the strip when the title is
+    # outside), then the title-block band on top of it (inside only).
     if page.frame:
-        frame = labels.page_frame_rect(w, h, margin, page.frame_radius_mm)
+        frame = labels.page_frame_rect(
+            w, h, margin, page.frame_radius_mm,
+            top_mm=margin + strip if style.placement == "above" else None,
+            bottom_mm=h - margin - strip if below else None,
+        )
         parts.append(_path(frame, ink, 'data-kp-frame="1"'))
-    border = bool(lines) and style.border
+    border = bool(lines) and style.border and not outside
     if border:
         band = labels._band_rect(
             margin, band_top, w - margin, h - margin, style.border_radius_mm,
         )
         parts.append(_path(band, ink, 'data-kp-title-block="1"'))
 
-    # Lettering: each line is anchored on its own row by render_label's
+    # Lettering: inside, each line is anchored on its own row by render_label's
     # bottom-anchor, with the row's bottom passed as the virtual page bottom.
-    if lines:
+    # Outside, the title and subtitle are one stacked block on the margin.
+    if outside and lines:
+        rows, _warnings = labels.render_label_rows(
+            title,
+            height_mm=line_h,
+            align=style.align,
+            page_w=w,
+            page_h=h,
+            margin_mm=margin,
+            placement=style.placement,
+            font=style.font,
+            pad_left_mm=style.pad_left_mm,
+            pad_right_mm=style.pad_right_mm,
+            subtitle=subtitle,
+        )
+        rows_svg = [
+            f'<g data-kp-text="{escape(text_, {chr(34): "&quot;"})}">'
+            + "".join(_polyline(pl, ink) for pl in strokes)
+            + "</g>"
+            for text_, strokes in zip((title, subtitle), rows)
+        ]
+        if rows_svg:
+            parts.append(
+                f'<g data-kp-label="1" data-kp-label-font="{style.font}" '
+                f'data-kp-label-placement="{style.placement}">'
+                + "".join(rows_svg)
+                + "</g>"
+            )
+    elif lines:
         rows_svg: list[str] = []
         for i, line in enumerate(lines):
             row_bottom = band_top + i * (line_h + LINE_GAP_MM) + line_h + LINE_GAP_MM / 2
@@ -212,7 +264,8 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
             page_w=w,
             page_h=h,
             margin_mm=margin,
-            reserve_bottom_mm=label_band,
+            reserve_bottom_mm=reserve_bottom,
+            reserve_top_mm=reserve_top,
             pad_left_mm=table.pads.left,
             pad_right_mm=table.pads.right,
             pad_top_mm=table.pads.top,
@@ -249,10 +302,13 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
 
     width_mm = f"{w:g}"
     height_mm = f"{h:g}"
+    # Outside placements carry the sheet bounds on the root, not in a rect:
+    # vpype plots an invisible rect (fill and stroke none) as a path.
+    bounds_attr = f' data-kp-a4-bounds="0 0 {width_mm} {height_mm}"' if outside else ""
     sheet = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_mm}mm" '
         f'height="{height_mm}mm" viewBox="0 0 {width_mm} {height_mm}" '
-        f'data-kp-compose="1">'
+        f'data-kp-compose="1"{bounds_attr}>'
         + "".join(parts)
         + "</svg>"
     )

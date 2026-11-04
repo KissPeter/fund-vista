@@ -18,6 +18,8 @@ from redis.exceptions import RedisError
 
 from backend.version import backend_built, backend_version
 from backend.citymap.cache import configure_citymap_redis
+from backend.http.mirror_health import configure_mirror_health_redis
+from backend.logging_config import configure_logging
 from backend.citymap.router import router as citymap_router
 from backend.citymap.ui import ui_router as citymap_ui_router
 from backend.airports.cache import configure_airports_redis
@@ -33,7 +35,7 @@ from backend.traffic.router import router as traffic_router
 from backend.penplot.compose_sheet import router as compose_sheet_router
 from backend.penplot.errors import PenPlotError
 from backend.penplot.ratelimit import configure_redis
-from backend.http import tls
+from backend.http import tls, upstream
 from backend.penplot.router import (
     penplot_error_handler,
     router as penplot_router,
@@ -96,7 +98,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-logging.basicConfig(level=settings.log_level)
+configure_logging(settings.log_level)
 logging.getLogger("fund-vista").info(
     "CORS allow_origins=%s allow_origin_regex=%s",
     settings.cors_allow_origins,
@@ -174,7 +176,9 @@ _install_upstream_mock()
 
 # Guarded client: a corrupted certifi CA bundle would otherwise make the
 # constructor raise OSError on every /{prefix}/{path} proxy request.
-http_client = tls.async_client(timeout=httpx.Timeout(30.0))
+http_client = upstream.smart_client(
+    "proxy", timeout=30.0, retries=1, allowed_methods=("GET", "HEAD", "OPTIONS"),
+)
 redis_client: Optional[Redis] = None
 
 
@@ -211,6 +215,7 @@ async def _startup() -> None:
         configure_wordmark_redis(redis_client)
         configure_jobs_redis(redis_client)
         configure_traffic_redis(redis_client)
+        configure_mirror_health_redis(redis_client)
     except Exception as exc:
         redis_client = None
         configure_redis(None)
@@ -219,6 +224,7 @@ async def _startup() -> None:
         configure_wordmark_redis(None)
         configure_jobs_redis(None)
         configure_traffic_redis(None)
+        configure_mirror_health_redis(None)
         print(f"Redis unavailable, continuing without cache: {exc}")
 
 

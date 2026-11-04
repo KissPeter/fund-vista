@@ -3,7 +3,7 @@
 A label is one line of plotter text set directly in page-millimetre space and
 appended to the laid-out geometry *before* quantize, so it snaps to the same
 0.02 mm grid, joins travel sorting and is counted in stats like any other
-stroke. Single-stroke (centerline) glyphs from ``hershey_fonts`` — never
+stroke. Single-stroke (centerline) glyphs from ``hershey_fonts`` - never
 outlined/filled shapes, so the pen draws each stem exactly once.
 
 Faces mirror Drawscape's hershey-text select (``futural`` default, ``futuram``,
@@ -13,9 +13,9 @@ the compact caps/digits/punct face.
 Placement: bottom strip just inside the page margins (classic title-block
 corner). Horizontal alignment within the inner width:
 
-- ``left`` — line starts at the left margin;
-- ``right`` — line ends at the right margin (default);
-- ``fill`` — glyphs are stretched horizontally to span the full inner width.
+- ``left`` - line starts at the left margin;
+- ``right`` - line ends at the right margin (default);
+- ``fill`` - glyphs are stretched horizontally to span the full inner width.
 
 A line that is naturally wider than the inner width is scaled down to fit
 (``left``/``right``); an empty/blank text is a silent no-op. Characters
@@ -25,21 +25,21 @@ outside the face set are skipped and reported once via
 Border: when ``border`` is true (default) a blueprint title-block band is
 drawn: one closed rect around the lettering, spanning the full inner width
 from the top of the title strip down to the bottom margin. The top edge is
-the straight divider the band replaced — square corners landing exactly on
-the page-frame verticals — while the bottom corners follow the sheet corners
+the straight divider the band replaced - square corners landing exactly on
+the page-frame verticals - while the bottom corners follow the sheet corners
 (``border_radius_mm``, 0 is sharp). The pads inset the lettering inside the
-band, never the band itself. The band is page furniture of its own — the
+band, never the band itself. The band is page furniture of its own - the
 whole-page margin frame (``page_frame_rect()``) is drawn separately and
 independently, so a sheet can carry the frame, the band or both. One more
 pen-down stroke, same chain as the text.
 
 Outline faces (``excalifont``, ``comic-shanns``, ``nunito``) are TTF outlines
-traced to polylines — the pen draws every stem twice (once per outline side),
+traced to polylines - the pen draws every stem twice (once per outline side),
 unlike the single-stroke Hershey faces. They flow through the same layout,
 strip, border and cleanup code; only the glyph source differs. Glyphs that
 rasterize empty are skipped with the same ``label_unsupported_characters``
 warning (note: a TTF ``.notdef`` tofu box is non-empty, so truly-missing
-glyphs in these large-coverage faces plot as tofu rather than warning —
+glyphs in these large-coverage faces plot as tofu rather than warning -
 same as any text renderer).
 """
 
@@ -83,10 +83,17 @@ _outline_cache: dict[str, dict] = {}
 DEFAULT_BORDER_RADIUS_MM = 2.0
 BORDER_PAD_RATIO = 0.3
 BORDER_PAD_MIN_MM = 1.0
+BORDER_GAP_MIN_MM = 1.2
 CORNER_SEGMENTS = 8
 # Breathing room between artwork and the strip so the cleanup chain
 # (linemerge, default 0.5 mm) can't fuse image strokes into band/frame.
 LABEL_ARTWORK_GAP_MM = 1.0
+#: Subtitle cap height as a share of the title cap height (outside the border).
+SUBTITLE_HEIGHT_RATIO = 0.6
+#: Gap between the title and the subtitle lines outside the border, in mm.
+OUTSIDE_LINE_GAP_MM = 1.0
+#: Title placements: ``inside`` (band in the border) or outside it.
+LABEL_PLACEMENTS = ("inside", "below", "above")
 
 
 def _outline_face(name: str) -> dict:
@@ -220,7 +227,9 @@ def _strip_metrics(
         return None
     text_h = max(ys) - min(ys)
     pad = max(height_mm * BORDER_PAD_RATIO, BORDER_PAD_MIN_MM)
-    gap = min(pad * 0.5, 2.0)
+    # Clearance between the lowest stroke (descenders) and the frame bottom;
+    # at pen width it must be a full pad, or p/g/y touch the frame.
+    gap = min(max(pad, BORDER_GAP_MIN_MM), 2.5)
     return text_h, pad, gap
 
 
@@ -231,7 +240,7 @@ def label_reserve_mm(
 
     The pipeline reserves this from the image area so artwork bottoms out
     exactly on the band (border) or the text top (borderless). Blank or
-    fully-unsupported text reserves nothing — matching render_label's no-op.
+    fully-unsupported text reserves nothing - matching render_label's no-op.
     """
     m = _strip_metrics(text, height_mm=height_mm, font=font)
     if m is None:
@@ -287,30 +296,48 @@ def _band_rect(
 
 
 def page_frame_rect(
-    page_w: float, page_h: float, margin_mm: float, radius_mm: float
+    page_w: float, page_h: float, margin_mm: float, radius_mm: float,
+    *, top_mm: float | None = None, bottom_mm: float | None = None,
 ) -> Polyline:
-    """Whole-page margin frame (rounded), independent of any label."""
-    return _rounded_rect(
-        margin_mm, margin_mm, page_w - margin_mm, page_h - margin_mm, radius_mm
-    )
+    """Whole-page margin frame (rounded), independent of any label.
+
+    ``top_mm``/``bottom_mm`` move the top and bottom edges (the frame gives up
+    the title strip when the title sits outside the border); the default is
+    the margin rect.
+    """
+    top = margin_mm if top_mm is None else top_mm
+    bottom = page_h - margin_mm if bottom_mm is None else bottom_mm
+    return _rounded_rect(margin_mm, top, page_w - margin_mm, bottom, radius_mm)
 
 
-def render_label(
-    text: str,
-    *,
-    height_mm: float,
-    align: str,
-    page_w: float,
-    page_h: float,
-    margin_mm: float,
-    font: str = DEFAULT_FONT,
-    border: bool = True,
-    pad_left_mm: float = 0.0,
-    pad_right_mm: float = 0.0,
-    border_radius_mm: float = DEFAULT_BORDER_RADIUS_MM,
-) -> tuple[list[Polyline], list[str]]:
-    """Lay out one line of label text in mm space. See module docstring."""
-    warnings: list[str] = []
+def label_outside_mm(
+    text: str, *, subtitle: str = "", height_mm: float, font: str = DEFAULT_FONT
+) -> float:
+    """Vertical mm of the title block outside the border (below or above).
+
+    ``pad + title + gap + subtitle + pad``; the subtitle is drawn at
+    ``SUBTITLE_HEIGHT_RATIO`` of the title height and the gap drops out with
+    it. 0 when nothing draws. The frame inset and the artwork reserve both
+    use this strip.
+    """
+    m = _strip_metrics(text, height_mm=height_mm, font=font)
+    if m is None:
+        return 0.0
+    title_h, pad, _ = m
+    sub_h, gap = 0.0, 0.0
+    if subtitle:
+        sm = _strip_metrics(
+            subtitle, height_mm=height_mm * SUBTITLE_HEIGHT_RATIO, font=font)
+        if sm is not None:
+            sub_h, gap = sm[0], OUTSIDE_LINE_GAP_MM
+    return pad + title_h + gap + sub_h + pad
+
+
+def _glyph_strokes(
+    text: str, height_mm: float, font: str
+) -> tuple[list[Polyline], float, list[str]]:
+    """One line of strokes in mm (x from 0, unanchored), its advance and the
+    characters the face lacks."""
     cap_height, space_advance, glyphs = _resolve_face(font, list(text))
     s = max(height_mm, 1e-9) / cap_height
     lines: list[Polyline] = []
@@ -328,19 +355,20 @@ def render_label(
         for stroke in glyph["lines"]:
             lines.append([(cursor + x * s, y * s) for x, y in stroke])
         cursor += glyph["advance"] * s
-    if missing:
-        shown = "".join(sorted(missing))[:20]
-        warnings.append(f"{WARNING_UNSUPPORTED}:{shown}")
-    if not lines:
-        return [], warnings
+    return lines, cursor, missing
 
-    line_w = cursor
+
+def _fit_line(
+    lines: list[Polyline], *, align: str, page_w: float, margin_mm: float,
+    pad_left_mm: float, pad_right_mm: float,
+) -> list[Polyline]:
+    """Horizontal placement of one line inside the margins (x only).
+
+    Text insets from the margin verticals. Oversized pads collapse to a tiny
+    centered slot so an over-wide line scales down instead of inverting.
+    """
     inner_left = margin_mm
     inner_right = page_w - margin_mm
-    inner_w = max(inner_right - inner_left, 1e-9)
-    # Text insets from the margin verticals; the band always spans the full
-    # inner width. Oversized pads collapse to a tiny centered slot so an
-    # over-wide line scales down instead of inverting.
     text_left = inner_left + max(pad_left_mm, 0.0)
     text_right = inner_right - max(pad_right_mm, 0.0)
     if text_left >= text_right:
@@ -372,6 +400,121 @@ def render_label(
         dx = text_right - max_x
         if dx != 0.0:
             lines = [[(x + dx, y) for x, y in pl] for pl in lines]
+    return lines
+
+
+def _shift_y(lines: list[Polyline], dy: float) -> list[Polyline]:
+    return [[(x, y + dy) for x, y in pl] for pl in lines]
+
+
+def render_label_rows(
+    text: str,
+    *,
+    height_mm: float,
+    align: str,
+    page_w: float,
+    page_h: float,
+    margin_mm: float,
+    placement: str,
+    font: str = DEFAULT_FONT,
+    pad_left_mm: float = 0.0,
+    pad_right_mm: float = 0.0,
+    subtitle: str = "",
+) -> tuple[list[list[Polyline]], list[str]]:
+    """Title (and subtitle) outside the border, one stroke list per line.
+
+    ``below`` anchors the subtitle's bottom ink on the bottom margin (the
+    title stacks above it); ``above`` anchors the title's top ink on the top
+    margin (the subtitle stacks below it). There is no band outside. Rows
+    are ``[title]`` or ``[title, subtitle]``; ``[]`` when nothing draws.
+    """
+    if placement not in ("below", "above"):
+        raise ValueError(f"unknown outside placement: {placement!r}")
+    title, _, t_missing = _glyph_strokes(text, height_mm, font)
+    sub: list[Polyline] = []
+    s_missing: list[str] = []
+    if subtitle:
+        sub, _, s_missing = _glyph_strokes(
+            subtitle, height_mm * SUBTITLE_HEIGHT_RATIO, font)
+    warnings: list[str] = []
+    missing = sorted(set(t_missing) | set(s_missing))
+    if missing:
+        warnings.append(f"{WARNING_UNSUPPORTED}:{''.join(missing)[:20]}")
+    if not title:
+        return [], warnings
+
+    fit = dict(align=align, page_w=page_w, margin_mm=margin_mm,
+               pad_left_mm=pad_left_mm, pad_right_mm=pad_right_mm)
+    title = _fit_line(title, **fit)
+    if sub:
+        sub = _fit_line(sub, **fit)
+    gap = OUTSIDE_LINE_GAP_MM if sub else 0.0
+    ys_t = [y for pl in title for _, y in pl]
+    if placement == "below":
+        bottom = page_h - margin_mm
+        if sub:
+            ys_s = [y for pl in sub for _, y in pl]
+            sub = _shift_y(sub, bottom - max(ys_s))
+            title_bottom = min(y for pl in sub for _, y in pl) - gap
+        else:
+            title_bottom = bottom
+        title = _shift_y(title, title_bottom - max(ys_t))
+    else:
+        title = _shift_y(title, margin_mm - min(ys_t))
+        if sub:
+            ys_s = [y for pl in sub for _, y in pl]
+            title_bottom = max(y for pl in title for _, y in pl) + gap
+            sub = _shift_y(sub, title_bottom - min(ys_s))
+    rows = [title, sub] if sub else [title]
+    return rows, warnings
+
+
+def render_label(
+    text: str,
+    *,
+    height_mm: float,
+    align: str,
+    page_w: float,
+    page_h: float,
+    margin_mm: float,
+    font: str = DEFAULT_FONT,
+    border: bool = True,
+    pad_left_mm: float = 0.0,
+    pad_right_mm: float = 0.0,
+    border_radius_mm: float = DEFAULT_BORDER_RADIUS_MM,
+    placement: str = "inside",
+    subtitle: str = "",
+) -> tuple[list[Polyline], list[str]]:
+    """Lay out one line of label text in mm space. See module docstring.
+
+    ``placement="inside"`` (default) is the band at the bottom of the border.
+    ``below``/``above`` draw the title (and ``subtitle``) outside the border
+    through :func:`render_label_rows`; ``border`` does not apply there.
+    """
+    if placement != "inside":
+        rows, warnings = render_label_rows(
+            text, height_mm=height_mm, align=align, page_w=page_w,
+            page_h=page_h, margin_mm=margin_mm, placement=placement,
+            font=font, pad_left_mm=pad_left_mm, pad_right_mm=pad_right_mm,
+            subtitle=subtitle,
+        )
+        return [pl for row in rows for pl in row], warnings
+    if subtitle:
+        text = f"{text} - {subtitle}"
+    lines, _, missing = _glyph_strokes(text, height_mm, font)
+    warnings: list[str] = []
+    if missing:
+        shown = "".join(sorted(missing))[:20]
+        warnings.append(f"{WARNING_UNSUPPORTED}:{shown}")
+    if not lines:
+        return [], warnings
+
+    inner_left = margin_mm
+    inner_right = page_w - margin_mm
+    lines = _fit_line(
+        lines, align=align, page_w=page_w, margin_mm=margin_mm,
+        pad_left_mm=pad_left_mm, pad_right_mm=pad_right_mm,
+    )
 
     # Anchor the line's bbox bottom just inside the bottom margin.
     ys = [y for pl in lines for _, y in pl]
@@ -381,12 +524,12 @@ def render_label(
         # Blueprint title-block band: lift the text off the sheet bottom, then
         # close one band around the lettering, spanning the FULL inner width
         # so its straight top edge lands square on the page-frame verticals
-        # (the pre-#1089 divider junction — no radius where it meets the
+        # (the pre-#1089 divider junction - no radius where it meets the
         # frame). Only the bottom corners are rounded, following the sheet's
         # rounded corners. The pads inset the lettering, never the band.
         # pad/gap come from _strip_metrics so label_reserve_mm (image-area
         # reservation) always agrees. The whole-page margin frame is a
-        # separate element (page_frame_rect) — the band never draws the
+        # separate element (page_frame_rect) - the band never draws the
         # margin rect.
         m = _strip_metrics(text, height_mm=height_mm, font=font)
         assert m is not None  # lines non-empty implies drawable glyphs

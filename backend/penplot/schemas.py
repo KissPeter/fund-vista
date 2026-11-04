@@ -13,7 +13,15 @@ import re
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, create_model, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    create_model,
+    field_validator,
+    model_validator,
+)
 
 MethodName = Literal["contour", "centerline", "hatch", "flow"]
 PageSizeName = Literal["A4", "A3", "A5", "Letter", "a4", "a3", "a5", "letter"]
@@ -24,7 +32,7 @@ Orientation = Literal["portrait", "landscape"]
 LineColorName = Literal["black", "white", "red", "blue", "green"]
 # Display-only page background (paper texture preview). Vendored files in
 # backend/penplot/backgrounds/ (white e-commerce frames pre-trimmed);
-# "none" is plain paper. Independent of line_color — any combination works.
+# "none" is plain paper. Independent of line_color - any combination works.
 BackgroundName = Literal["none", "dark-texture", "light-texture"]
 
 
@@ -53,6 +61,9 @@ class PageParams(BaseModel):
 
 
 LabelAlign = Literal["left", "right", "fill"]
+#: Where the title sits: ``inside`` the border (band, default) or outside it,
+#: ``below`` or ``above`` the page (frame gives up the strip, sheet stays A4).
+LabelPlacement = Literal["inside", "below", "above"]
 LabelFont = Literal[
     "znikoslsvginot", "futural", "futuram", "simplex",
     "excalifont", "comic-shanns", "nunito",
@@ -82,6 +93,22 @@ class LabelParams(BaseModel):
     align: LabelAlign = "right"
     height_mm: float = Field(default=5.0, gt=0.0, le=25.0)
     font: LabelFont = "znikoslsvginot"
+    placement: LabelPlacement = Field(
+        default="inside",
+        description=(
+            "inside: title band in the border (default). below/above: title "
+            "and subtitle outside the border, no band; the page frame shrinks "
+            "by the title strip on that side. The sheet stays A4."
+        ),
+    )
+    lines: list[str] | None = Field(
+        default=None,
+        description=(
+            "Title, then optional subtitle (at most two lines, 41 characters "
+            "each). When set it replaces ``text``; the subtitle is drawn smaller "
+            "outside the border and after ' - ' inside it."
+        ),
+    )
     border: bool = Field(
         default=True,
         description=(
@@ -96,6 +123,20 @@ class LabelParams(BaseModel):
         default=2.0, ge=0.0, le=20.0,
         description="Corner radius of the title-block frame; 0 is sharp.",
     )
+
+    @field_validator("lines")
+    @classmethod
+    def _lines_ok(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        if len(value) > 2:
+            raise ValueError("at most two lines (title, subtitle)")
+        for line in value:
+            if len(line) > 41:
+                raise ValueError("a label line is at most 41 characters")
+            if _CONTROL_CHARS.search(line):
+                raise ValueError("control characters are not allowed in label lines")
+        return value
     pad_left_mm: float = Field(
         default=0.0, ge=0.0, le=20.0,
         description="Text inset from the left frame vertical.",
@@ -107,7 +148,7 @@ class LabelParams(BaseModel):
 
 
 # Measured machine feedrates (mm/min): pen-down drawing, pen-up travel.
-# Deliberately NOT request parameters (2026-10-27) — the plot-time estimate
+# Deliberately NOT request parameters (2026-10-27) - the plot-time estimate
 # (and the shop price derived from it + distance) stays comparable across
 # converts and can't be inflated by clients. SPEC_V1.md PART Q.
 DRAW_SPEED_MM_MIN: float = 2000.0
@@ -130,7 +171,7 @@ class StatsTableRow(BaseModel):
 
     Keys are the raw layer ids (``highways``); the renderer capitalizes
     the first letter for the drawn cell (``Highways``). Values are the
-    ``path_counts`` integers from the citymap/airport import response —
+    ``path_counts`` integers from the citymap/airport import response -
     the frontend filters to non-zero layers before sending.
     """
 
@@ -187,7 +228,7 @@ class StatsTableParams(BaseModel):
     enabled: bool = False
     position: StatsTablePosition = "top-right"
     rows: list[StatsTableRow] = Field(default_factory=list, max_length=20)
-    # Per-side insets (mm) from the inner margin rect — extra breathing
+    # Per-side insets (mm) from the inner margin rect - extra breathing
     # room between the table and the page edge/label strip, 0 keeps the
     # default 1 mm table gap.
     pad_left_mm: float = Field(default=0.0, ge=0.0, le=20.0)
@@ -255,7 +296,7 @@ class ConvertParams(BaseModel):
     """Slider state. Defaults match the spec §2.3 example.
 
     Line generation is multi-select: ``methods`` lists every generator to run
-    (in order — hatch shading first, contour outlines last is the classic
+    (in order - hatch shading first, contour outlines last is the classic
     combination). Outputs are concatenated before the shared optimize chain.
     The singular ``method`` is a deprecated alias kept for old clients: it
     maps to a one-element ``methods`` and is cleared afterwards so the
@@ -292,8 +333,8 @@ class ConvertParams(BaseModel):
             "Erase ink strokes thinner than this many pixels (source "
             "resolution) via morphological opening on the ink mask, applied "
             "after thresholding and before line generation. Removes "
-            "hatch/cross-hatch texture — decorative or baked into the "
-            "source image's own shading — while leaving bolder strokes "
+            "hatch/cross-hatch texture - decorative or baked into the "
+            "source image's own shading - while leaving bolder strokes "
             "(outlines, solid fills) intact; unlike remove_background this "
             "is texture-width-based, not a background/foreground guess. "
             "0 disables."
@@ -321,7 +362,7 @@ class ConvertParams(BaseModel):
         default=4, ge=0, le=50,
         description=(
             "Centerline method only: drop skeleton branches shorter than this "
-            "many pixels (source resolution) — thinning spurs from stroke "
+            "many pixels (source resolution) - thinning spurs from stroke "
             "edges and noise. 0 disables pruning. Ignored by other methods."
         ),
     )
@@ -330,7 +371,7 @@ class ConvertParams(BaseModel):
         description=(
             "Chaikin corner-cutting passes over the merged polylines (mm "
             "space), rounding faceted contour/centerline corners into smooth "
-            "curves — the stand-in for potrace alphamax/opttolerance and "
+            "curves - the stand-in for potrace alphamax/opttolerance and "
             "vtracer spline mode. 0 disables (identity)."
         ),
     )
@@ -472,7 +513,7 @@ class ConvertStats(BaseModel):
 class ConvertResponse(BaseModel):
     image_id: str
     svg_url: str
-    # Equivalent vpype recipe (same stages/tolerances), NOT byte-reproducing —
+    # Equivalent vpype recipe (same stages/tolerances), NOT byte-reproducing -
     # see backend/penplot/SPEC_V1.md, "Implementation & divergence log".
     vpype_command: str
     stats: ConvertStats
@@ -480,7 +521,7 @@ class ConvertResponse(BaseModel):
 
 
 class ResultMetaResponse(BaseModel):
-    """Stats of a stored convert result — the shop prices a design from these."""
+    """Stats of a stored convert result - the shop prices a design from these."""
 
     stats: ConvertStats
     warnings: list[str] = Field(default_factory=list)
@@ -543,7 +584,7 @@ _COMPOSE_PAGE_FIELDS = {
 _COMPOSE_LABEL_FIELDS = {
     name: (info.annotation, info)
     for name, info in LabelParams.model_fields.items()
-    if name not in ("enabled", "text")
+    if name not in ("enabled", "text", "lines")
 }
 
 ComposePageParams = create_model(

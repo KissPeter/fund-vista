@@ -93,6 +93,7 @@ def layout_stats_table(
     page_h: float,
     margin_mm: float,
     reserve_bottom_mm: float = 0.0,
+    reserve_top_mm: float = 0.0,
     pad_left_mm: float = 0.0,
     pad_right_mm: float = 0.0,
     pad_top_mm: float = 0.0,
@@ -104,10 +105,10 @@ def layout_stats_table(
     Returns ``(lines, warnings, keepout)``. ``keepout`` is the rectangle the
     artwork must be knocked out of (``knockout.knock_out``): from the page
     margin corner the table is anchored to, across the inset strip, to the far
-    edges of the table plus ``TABLE_GAP_MM`` — a clean cartouche. ``None`` when
+    edges of the table plus ``TABLE_GAP_MM`` - a clean cartouche. ``None`` when
     nothing was drawn.
 
-    ``rows`` are (raw layer key, path count) pairs — already filtered to
+    ``rows`` are (raw layer key, path count) pairs - already filtered to
     non-zero layers by the caller. ``display_keys=False`` draws the key text
     verbatim (gallery context rows: spec labels keep their own casing); values
     may then be strings. ``position`` is one of ``top-left``,
@@ -150,7 +151,7 @@ def layout_stats_table(
 
     inner_left = margin_mm + TABLE_GAP_MM + max(pad_left_mm, 0.0)
     inner_right = page_w - margin_mm - TABLE_GAP_MM - max(pad_right_mm, 0.0)
-    inner_top = margin_mm + TABLE_GAP_MM + max(pad_top_mm, 0.0)
+    inner_top = margin_mm + TABLE_GAP_MM + max(reserve_top_mm, 0.0) + max(pad_top_mm, 0.0)
     inner_bottom = (
         page_h - margin_mm - TABLE_GAP_MM - max(reserve_bottom_mm, 0.0) - max(pad_bottom_mm, 0.0)
     )
@@ -195,7 +196,7 @@ def layout_stats_table(
     area_bottom = page_h - margin_mm - max(reserve_bottom_mm, 0.0)
     keepout: Rect = (
         margin_mm if pos.endswith("left") else x0 - TABLE_GAP_MM,
-        margin_mm if pos.startswith("top") else y0 - TABLE_GAP_MM,
+        margin_mm + max(reserve_top_mm, 0.0) if pos.startswith("top") else y0 - TABLE_GAP_MM,
         t_x1 + TABLE_GAP_MM if pos.endswith("left") else page_w - margin_mm,
         t_y1 + TABLE_GAP_MM if pos.startswith("top") else area_bottom,
     )

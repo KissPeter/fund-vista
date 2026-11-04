@@ -41,6 +41,18 @@ class AirportsSettings(BaseSettings):
     overpass_timeout_s: float = 30.0
     overpass_retries: int = 1
     overpass_retry_backoff_s: float = 1.0
+    # Connect timeout is separate: a blackholed mirror must fail in seconds,
+    # not burn the full read timeout before failover.
+    overpass_connect_timeout_s: float = 5.0
+    # Wall clock for the whole mirror walk (see backend.http.overpass_client).
+    overpass_budget_s: float = 60.0
+    # 429/503 means "stay away": the mirror is parked for the server's
+    # Retry-After (capped at max_park_s) or default_park_s when it gave no
+    # hint, shared across workers via Redis. Hard failures (403, 5xx, no
+    # answer) park it for fail_park_s.
+    overpass_default_park_s: float = 60.0
+    overpass_max_park_s: float = 300.0
+    overpass_fail_park_s: float = 30.0
     # Overpass fair use (same public infra as citymap): one unioned query
     # per render, sequential mirror failover, tile/payload caching, and at
     # most this many concurrent upstream POSTs per worker.

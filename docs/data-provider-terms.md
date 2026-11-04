@@ -74,9 +74,17 @@ Backend compliance:
 - One unioned query per render (`union_members` + `wrap_query`,
   `[timeout:25]`); airport context layers fire exactly one second query and
   only when selected.
-- Per-mirror retries on retryable failures only (HTTP 408/429/5xx +
-  network errors, `overpass_retries = 1`, exponential backoff + jitter);
-  400/403/404 fail fast to the next mirror, never retried.
+- Both modules share one client (`backend/http/overpass_client.py`) on the
+  shared smart HTTP client (`backend/http/upstream.py`, `httpx-retries`).
+  Same-mirror retries only for transient 408/5xx and connect failures
+  (`overpass_retries = 1`, exponential backoff + jitter) and truncated
+  payloads; 400/403/404 fail fast to the next mirror.
+- **429 / 503 are respected, never retried in place**: the mirror is parked
+  for the server's `Retry-After` (cap `overpass_max_park_s`, default
+  `overpass_default_park_s` when absent), in Redis so all workers and both
+  modules skip it. If every mirror is parked the client waits for the
+  soonest one only if it fits `overpass_budget_s`, else fails to the
+  fallback/error path. Hard failures park a mirror for `overpass_fail_park_s`.
 - Short HTTP timeout (`overpass_timeout_s = 30.0`) so a hung mirror fails
   over to the OSM Main API fallback (citymap) instead of holding a worker.
 - `User-Agent` identifies the app on every POST (Overpass answers 406 to

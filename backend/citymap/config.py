@@ -38,11 +38,24 @@ class CitymapSettings(BaseSettings):
     # buildings over a large bbox). Keep this short so we fail over to the
     # OSM Main API quickly instead of holding a worker for 2 minutes.
     overpass_timeout_s: float = 30.0
-    # Per-mirror retries on retryable failures (HTTP 408/429/5xx + network
-    # errors). 400/403/404 fail fast for that mirror (no retry — retrying
-    # won't help). Backoff is exponential: backoff_s * 2**attempt + jitter.
+    # Same-mirror retries: transient 408/5xx + connect failures (smart
+    # client) and truncated/invalid payloads. 429/503 are never retried in
+    # place — they park the mirror (below). 400/403/404 fail fast.
+    # Backoff is exponential: backoff_s * 2**attempt + jitter.
     overpass_retries: int = 1
     overpass_retry_backoff_s: float = 1.0
+    # Connect timeout is separate: a blackholed mirror must fail in seconds,
+    # not burn the full read timeout before failover.
+    overpass_connect_timeout_s: float = 5.0
+    # Wall clock for the whole mirror walk (see backend.http.overpass_client).
+    overpass_budget_s: float = 60.0
+    # 429/503 means "stay away": the mirror is parked for the server's
+    # Retry-After (capped at max_park_s) or default_park_s when it gave no
+    # hint, shared across workers via Redis. Hard failures (403, 5xx, no
+    # answer) park it for fail_park_s.
+    overpass_default_park_s: float = 60.0
+    overpass_max_park_s: float = 300.0
+    overpass_fail_park_s: float = 30.0
     # OSM Main API v0.6 /map fallback (different infra from Overpass, so it
     # survives Overpass outages). Zero new deps: OSM XML -> Overpass-like
     # elements, reused by split_elements/render unchanged.
@@ -53,8 +66,16 @@ class CitymapSettings(BaseSettings):
     osm_api_timeout_s: float = 30.0
     osm_api_max_deg: float = 0.1
     osm_api_min_deg: float = 0.025
+    # Same-cell retries come from the smart client (transient 408/5xx +
+    # connect failures). 429 is never retried: the editing API answers
+    # "You have downloaded too much data. Please try again in N seconds",
+    # so the endpoint is parked for that hint (Retry-After header, else the
+    # N in the body, else osm_api_cooldown_s), capped at osm_api_max_cooldown_s,
+    # shared across workers via Redis.
     osm_api_retries: int = 2
     osm_api_retry_backoff_s: float = 0.5
+    osm_api_cooldown_s: float = 60.0
+    osm_api_max_cooldown_s: float = 900.0
     nominatim_url: str = "https://nominatim.openstreetmap.org/search"
     nominatim_timeout_s: float = 15.0
     # Nominatim usage policy (operations.osmfoundation.org/policies/nominatim):
