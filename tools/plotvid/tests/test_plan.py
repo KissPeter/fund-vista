@@ -71,6 +71,34 @@ def test_split_off_when_none():
     assert times == [0.0, 69.0] and flags == [False, False]
 
 
+def test_split_lead_in_with_duration_cuts_from_start():
+    times, flags = events.split_long_gaps([36.6, 52.9, 54.6], StrokesConfig(), duration_s=56.0)
+    assert times[0] == 0.0 and flags[0] is True  # lead-in 36.6 s -> 6 pieces
+    assert [t for t, f in zip(times, flags) if not f] == [36.6, 52.9, 54.6]
+    assert [b - a for a, b in itertools.pairwise(times[:7])] == pytest.approx([6.1] * 6)
+
+
+def test_split_tail_with_duration_cuts_to_end():
+    times, flags = events.split_long_gaps([0.0, 1.0], StrokesConfig(), duration_s=40.0)
+    assert times[-1] == 40.0 and flags[-1] is True
+    assert [t for t, f in zip(times, flags) if not f] == [0.0, 1.0]
+
+
+def test_split_no_events_is_one_gap_over_duration():
+    times, flags = events.split_long_gaps([], StrokesConfig(), duration_s=50.0)
+    assert times[0] == 0.0 and times[-1] == 50.0 and len(times) == 9  # 8 pieces of 6.25 s
+    assert flags == [True] + [True] * 7 + [True]
+
+
+def test_split_no_events_short_source_untouched():
+    assert events.split_long_gaps([], StrokesConfig(), duration_s=15.0) == ([], [])
+
+
+def test_split_edges_need_duration():
+    times, flags = events.split_long_gaps([36.6, 52.9], StrokesConfig())
+    assert times == [36.6, 52.9] and flags == [False, False]
+
+
 def test_split_keeps_original_events_and_flags_only_inserted():
     original = [0.0, 1.0, 70.0, 71.0, 200.0]
     times, flags = events.split_long_gaps(original, StrokesConfig())

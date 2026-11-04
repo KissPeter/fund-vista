@@ -73,9 +73,10 @@ class StrokesConfig:
     # is deemed unreliable and every stroke is labelled unknown (= any event
     # may cut).
     min_drawn_share: float = 0.1
-    # Gaps between consecutive pen events longer than this get evenly spaced
-    # synthetic cut points, so a dense line with no pen-up move still yields
-    # usable segments. None = off.
+    # Gaps longer than this (between pen events, from the start to the first
+    # event, from the last event to the end; no events = the whole source) get
+    # evenly spaced synthetic cut points, so a dense line with no pen-up move
+    # still yields usable segments. None = off.
     split_over_s: float | None = 20.0
     # A split gap becomes ceil(gap / split_piece_s) equal pieces.
     split_piece_s: float = 7.0

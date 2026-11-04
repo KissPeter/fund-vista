@@ -36,7 +36,7 @@ strokes:
   long_percentile: 70
   drawn_min_px: 20
   min_drawn_share: 0.1
-  split_over_s: 20      # pen-event gaps longer than this get synthetic cut points; null = off
+  split_over_s: 20      # gaps longer than this (incl. start and end of the source) get synthetic cut points; null = off
   split_piece_s: 7      # each split gap becomes ceil(gap / split_piece_s) equal pieces
 
 segment:
