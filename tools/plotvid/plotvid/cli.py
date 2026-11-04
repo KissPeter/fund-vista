@@ -116,8 +116,9 @@ def _cache_path(cfg: config.Config, info: probe.SourceInfo) -> Path:
 def analyse_source(cfg: config.Config, info: probe.SourceInfo, want_clean: bool) -> dict:
     """Pen events, per-stroke new ink and (optionally) the clean final-frame time.
 
-    Gaps over ``strokes.split_over_s`` get synthetic events (see
-    ``events.split_long_gaps``) before the ink check, so ink is measured per
+    Gaps over ``strokes.split_over_s`` get synthetic events, including the
+    lead-in and tail of the source (see ``events.split_long_gaps``), before
+    the ink check, so ink is measured per
     piece. The returned ``events`` include them and ``synthetic`` flags them.
 
     Cached under out_dir/cache, keyed by path, size, mtime and the detect
@@ -132,8 +133,8 @@ def analyse_source(cfg: config.Config, info: probe.SourceInfo, want_clean: bool)
         else:
             x = media.extract_audio(info.path, cfg.detect.sample_rate)
             data["events"] = [e.time_s for e in audio.detect(x, cfg.detect).events]
-    times, synthetic = events.split_long_gaps(data["events"], cfg.strokes)
-    ink_for = [cfg.strokes.split_over_s, cfg.strokes.split_piece_s]
+    times, synthetic = events.split_long_gaps(data["events"], cfg.strokes, info.duration_s)
+    ink_for = [cfg.strokes.split_over_s, cfg.strokes.split_piece_s, "edges"]
     if data.get("ink_for") != ink_for:  # also invalidates caches from before the split
         data["new_ink"], data["ecc_failures"] = None, None
         data["ink_for"] = ink_for
