@@ -105,6 +105,13 @@ def make_clip(path: Path, created: str | None, size: str = "320x180",
                     "-i", str(plain), "-c", "copy", str(path)], check=True)
 
 
+# The -display_rotation input option appeared in FFmpeg 6.0; the CI runner ships 5.1.
+needs_display_rotation = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or "display_rotation" not in subprocess.run(
+        ["ffmpeg", "-hide_banner", "-h", "full"], capture_output=True, text=True).stdout,
+    reason="ffmpeg lacks the -display_rotation option (needs FFmpeg 6.0+)")
+
+
 def test_rotation_swaps_display_size():
     # Phone portrait clips: coded 1024x576 with a -90 display matrix.
     stream = {"side_data_list": [{"side_data_type": "Display Matrix", "rotation": -90}]}
@@ -186,21 +193,27 @@ def test_extra_rotation_swaps_display_size_and_sets_filter():
 
 @needs_ffmpeg
 def test_probe_auto_rotation_only_for_untagged_landscape(tmp_path):
-    landscape, portrait, tagged = tmp_path / "land.mp4", tmp_path / "port.mp4", tmp_path / "tag.mp4"
+    landscape, portrait = tmp_path / "land.mp4", tmp_path / "port.mp4"
     make_clip(landscape, None, "320x180")
     make_clip(portrait, None, "180x320")
-    make_clip(tagged, None, "320x180", display_rotation=-90)
     info = probe.probe(landscape)
     assert info.extra_rotation == 270 and info.display_size == (180, 320)
     assert info.rotate_filter == "transpose=2"
     info = probe.probe(portrait)
     assert info.extra_rotation == 0 and info.display_size == (180, 320)
-    info = probe.probe(tagged)
-    assert info.rotation == -90 and info.extra_rotation == 0 and info.display_size == (180, 320)
     assert probe.probe(landscape, "0").extra_rotation == 0
     assert probe.probe(landscape, "0").display_size == (320, 180)
     assert probe.probe(portrait, "90").extra_rotation == 90
     assert probe.order_sources([landscape], "270")[0].display_size == (180, 320)
+
+
+@needs_ffmpeg
+@needs_display_rotation
+def test_probe_tagged_display_matrix_is_not_auto_rotated(tmp_path):
+    tagged = tmp_path / "tag.mp4"
+    make_clip(tagged, None, "320x180", display_rotation=-90)
+    info = probe.probe(tagged)
+    assert info.rotation == -90 and info.extra_rotation == 0 and info.display_size == (180, 320)
 
 
 def test_output_size_for_rotated_landscape_source_needs_no_crop():
