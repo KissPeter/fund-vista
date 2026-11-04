@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from backend.cancel import race_cancel
 from backend.citymap.cache import cache_get_many, cache_set_many
 from backend.citymap.config import settings
+from backend.citymap.layers import LAYER_ORDER
 from backend.citymap.osm_api import OsmApiError, fetch_osm_api, merge_elements
 from backend.citymap.overpass import (
     BBox,
@@ -33,6 +34,7 @@ from backend.citymap.tiles import (
     clip_elements,
     covering_rects,
     rect_bbox,
+    tile_bbox,
     tile_deg_for_bbox,
     tiles_for_bbox,
 )
@@ -41,75 +43,133 @@ from backend.http import error_response
 log = logging.getLogger(__name__)
 
 
+# Cheap, structural layers first; the heavy ``buildings`` layer last so a
+# timeout on it costs only itself, never the roads already fetched.
+_FETCH_ORDER: tuple[str, ...] = tuple(
+    [name for name in LAYER_ORDER if name != "buildings"] + ["buildings"]
+)
+
+
+def _overlaps(a: BBox, b: BBox) -> bool:
+    """Whether two ``(south, west, north, east)`` boxes share area."""
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
 async def _fetch_missing(
     missing: dict[str, set[tuple[int, int]]], deg: float, warnings: list[str],
     request: Request | None = None,
     endpoint: str = "/v1/citymap/render",
     started_mono: float = 0.0,
-) -> tuple[dict[str, list[dict]] | None, set[tuple[int, int]], JSONResponse | None]:
-    """Fetch the missing ``(layer -> tiles)`` work in as few queries as we can.
+) -> tuple[
+    dict[tuple[str, tuple[int, int]], list[dict]], list[str], JSONResponse | None
+]:
+    """Fetch the missing ``(layer -> tiles)`` work one layer at a time.
 
-    Missing tiles are decomposed into rectangles and unioned into a single
-    Overpass query, so a cold render still costs one round-trip exactly as
-    it used to — only a warm one gets cheaper.
+    Layers are fetched in :data:`_FETCH_ORDER` and each layer's tiles are
+    cached the moment they arrive, so the map builds up layer by layer: a
+    failure (or client abort) on a later layer never discards the earlier
+    ones, and a retry only asks for what is still missing.
 
-    P2: the Overpass ``httpx`` fetch is raced against a disconnect watcher
-    (``race_cancel``) — on abort the fetch task is cancelled and 499 raised
-    with no partial cache write.
+    P2: every upstream fetch is raced against a disconnect watcher
+    (``race_cancel``) — on abort the fetch task is cancelled and 499 raised;
+    layers stored before the abort stay cached (each is complete on its own).
 
-    Returns ``(elements per layer, tiles fully covered by the fetch, error)``.
-    The covered set matters: a way whose nodes straddle the edge of the
-    fetched region would otherwise be filed under an outside tile, and
-    caching that tile would pin a payload missing everything else there.
+    Returns ``(payloads for the requested missing tiles, incomplete layers,
+    error)``. A layer is incomplete when its fetch failed outright or the OSM
+    API fallback lost some cells. Tiles the fetch did not fully cover are
+    NEVER cached — caching them as empty would pin a blank area as a real
+    answer. The error is set only when no layer could be fetched at all.
     """
-    all_tiles: set[tuple[int, int]] = set()
-    for tiles in missing.values():
-        all_tiles |= tiles
-    rects = covering_rects(all_tiles)
-    layers = sorted(missing)
+    payloads: dict[tuple[str, tuple[int, int]], list[dict]] = {}
+    incomplete: list[str] = []
+    errors: list[JSONResponse] = []
+    fetched_any = False
+    # The OSM Main API is not layer-aware: read it once for every missing
+    # tile and let each layer filter, instead of N reads of the same cells.
+    osm_all: tuple[list[dict], list[BBox]] | OsmApiError | None = None
 
-    covered: set[tuple[int, int]] = set()
-    for row0, col0, row1, col1 in rects:
-        for r in range(row0, row1 + 1):
-            for c in range(col0, col1 + 1):
-                covered.add((r, c))
-
-    members: list[str] = []
-    for rect in rects:
-        members.extend(union_members(rect_bbox(rect, deg), layers))
-    try:
-        # Checkpoint 2/3 boundary: race the Overpass fetch so abort stops
-        # the httpx wait instead of running to completion (P2.3).
-        elements = await race_cancel(
-            request, fetch_overpass(wrap_query(members)),
-            endpoint=endpoint, stage="overpass", started_mono=started_mono,
-        )
-    except OverpassError as exc:
-        log.warning("citymap overpass failed, trying OSM API: %s", exc.detail)
-        chunks: list[list[dict]] = []
+    for layer in (name for name in _FETCH_ORDER if name in missing):
+        rects = covering_rects(missing[layer])
+        covered: set[tuple[int, int]] = {
+            (r, c)
+            for row0, col0, row1, col1 in rects
+            for r in range(row0, row1 + 1)
+            for c in range(col0, col1 + 1)
+        }
+        members: list[str] = []
+        for rect in rects:
+            members.extend(union_members(rect_bbox(rect, deg), [layer]))
+        failed_cells: list[BBox] = []
         try:
-            for rect in rects:
-                chunks.append(await race_cancel(
-                    request, fetch_osm_api(rect_bbox(rect, deg)),
-                    endpoint=endpoint, stage="overpass",
-                    started_mono=started_mono,
-                ))
-        except OsmApiError as exc2:
-            return None, set(), error_response(
-                502,
-                "overpass_unavailable",
-                f"Map data fetch failed (Overpass: {exc.detail}; "
-                f"OSM API: {exc2.detail}). "
-                "(Upstreams busy — retry in a minute, with fewer layers or a smaller area).",
+            # Checkpoint 2/3 boundary: race the Overpass fetch so abort stops
+            # the httpx wait instead of running to completion (P2.3).
+            elements = await race_cancel(
+                request, fetch_overpass(wrap_query(members)),
+                endpoint=endpoint, stage="overpass", started_mono=started_mono,
             )
-        elements = merge_elements(chunks)
-        warnings.append("osm_api_fallback")
+        except OverpassError as exc:
+            log.warning(
+                "citymap overpass failed for %s, trying OSM API: %s", layer, exc.detail
+            )
+            if osm_all is None:
+                all_tiles: set[tuple[int, int]] = set()
+                for tiles in missing.values():
+                    all_tiles |= tiles
+                chunks: list[list[dict]] = []
+                cells: list[BBox] = []
+                try:
+                    for rect in covering_rects(all_tiles):
+                        got = await race_cancel(
+                            request, fetch_osm_api(rect_bbox(rect, deg)),
+                            endpoint=endpoint, stage="overpass",
+                            started_mono=started_mono,
+                        )
+                        cells.extend(getattr(got, "failed_cells", ()))
+                        chunks.append(got)
+                    osm_all = (merge_elements(chunks), cells)
+                except OsmApiError as exc2:
+                    osm_all = exc2
+            if isinstance(osm_all, OsmApiError):
+                errors.append(error_response(
+                    502,
+                    "overpass_unavailable",
+                    f"Map data fetch failed (Overpass: {exc.detail}; "
+                    f"OSM API: {osm_all.detail}). "
+                    "(Upstreams busy — retry in a minute, with fewer layers or a smaller area).",
+                ))
+                incomplete.append(layer)
+                continue
+            elements, failed_cells = osm_all
+            if "osm_api_fallback" not in warnings:
+                warnings.append("osm_api_fallback")
+            covered = {
+                t for t in covered
+                if not any(_overlaps(tile_bbox(t, deg), cell) for cell in failed_cells)
+            }
 
-    # One query returns every layer at once, and the OSM Main API fallback
-    # is not layer-aware at all, so each tile key gets only its own layer —
-    # otherwise the per-layer reuse this scheme buys would be a lie.
-    per_layer = {layer: _select_layer(elements, layer) for layer in layers}
-    return per_layer, covered, None
+        fetched_any = True
+        if not missing[layer] <= covered:
+            incomplete.append(layer)
+        # A way straddling the edge of the fetched region would otherwise be
+        # filed under an outside tile; limit_to keeps only covered tiles.
+        by_tile = assign_to_tiles(
+            _select_layer(elements, layer), deg, limit_to=covered
+        )
+        # Cache every tile the fetch covered, not just the ones this request
+        # lacked — the rectangle is already paid for and the neighbours are
+        # what the next pan will ask for. A covered tile with no features of
+        # this layer is a real answer, not a miss.
+        writes = {
+            _tile_key(tile, deg, layer): json.dumps(by_tile.get(tile, []))
+            for tile in covered
+        }
+        await cache_set_many(writes, settings.tile_cache_ttl_hours * 3600)
+        for tile in missing[layer] & covered:
+            payloads[(layer, tile)] = by_tile.get(tile, [])
+
+    if not fetched_any and errors:
+        return payloads, incomplete, errors[0]
+    return payloads, incomplete, None
 
 
 def _select_layer(elements: list[dict], layer: str) -> list[dict]:
@@ -200,27 +260,19 @@ async def _load_raw(
         warnings.append("overpass_cache_hit")
 
     if missing:
-        per_layer, covered, err = await _fetch_missing(
+        fetched, incomplete, err = await _fetch_missing(
             missing, deg, warnings,
             request=request, endpoint=endpoint, started_mono=started_mono,
         )
         if err is not None:
             return None, err
-        assert per_layer is not None
-        writes: dict[str, str] = {}
-        for layer, elements in per_layer.items():
-            by_tile = assign_to_tiles(elements, deg, limit_to=covered)
-            # Cache every tile the fetch covered, not just the ones this
-            # request lacked — the rectangle is already paid for and the
-            # neighbours are what the next pan will ask for. A covered tile
-            # with no features of this layer is a real answer, not a miss;
-            # storing the empty list stops it being re-fetched forever.
-            for tile in covered:
-                payload = by_tile.get(tile, [])
-                writes[_tile_key(tile, deg, layer)] = json.dumps(payload)
-                if tile in missing[layer]:
-                    payloads[(layer, tile)] = payload
-        await cache_set_many(writes, settings.tile_cache_ttl_hours * 3600)
+        payloads.update(fetched)
+        if incomplete:
+            # Some layers/areas are blank because upstream failed, not
+            # because the map is empty: flag it so callers neither cache the
+            # finished SVG nor present it as final.
+            warnings.append("partial_data")
+            warnings.extend(f"layers_pending:{name}" for name in incomplete)
 
     # Assemble in a fixed (layer, tile) order rather than in whatever order
     # the cache answered. Assembly order decides the order of <path>
