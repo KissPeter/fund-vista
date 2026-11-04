@@ -576,7 +576,9 @@ def test_table_top_right_over_ink_is_moved_clear():
     root = _root(_compose(svg=art.decode(), lines=["Title"], context_table=TABLE_TOP_RIGHT))
     attrs = _placement(root)
     assert attrs["data-kp-art-overlap"] == "0"
-    assert float(attrs["data-kp-art-dx"]) != 0 or float(attrs["data-kp-art-scale"]) < 1
+    assert float(attrs["data-kp-art-dx"]) != 0 or float(attrs["data-kp-art-dy"]) != 0 \
+        or float(attrs["data-kp-art-scale"]) < 1
+    _assert_drawn_ink_clears_table(root, art)
 
 
 def test_ink_only_bottom_left_is_not_moved():
@@ -610,6 +612,7 @@ def test_seiran_three_view_clears_a_twelve_row_table_top_right():
     w, h = float(img.attrib["width"]), float(img.attrib["height"])
     assert x >= MARGIN - TOL and x + w <= W - MARGIN + TOL
     assert y >= MARGIN - TOL and y + h <= H - MARGIN + TOL
+    _assert_drawn_ink_clears_table(root, SEIRAN.read_bytes())
 
 
 # -- independent clearance check and table fixes ----------------------------------
@@ -679,6 +682,8 @@ FRAME_CASES = {
     "percent-size": ('width="100%" height="100%" viewBox="0 0 200 300"', (150, 0, 50, 60)),
     "single-width": ('width="200" viewBox="0 0 200 300"', (150, 0, 50, 60)),
     "mixed-units": ('width="100mm" height="50" viewBox="0 0 756 100"', (600, 0, 156, 40)),
+    # Non-zero viewBox origin: the ink at (250, 100) is the viewport's top-right.
+    "viewbox-origin": ('viewBox="100 100 200 300"', (250, 100, 50, 60)),
 }
 
 
@@ -787,6 +792,37 @@ def test_each_listed_table_fix_clears_the_overlap_when_applied():
             assert "data-kp-art-overlap" not in root.attrib
             assert not _marked(root, "data-kp-context-border")
             continue
+        assert _placement(root)["data-kp-art-overlap"] == "0", fix
+        _assert_drawn_ink_clears_table(root, WIDE_INK)
+
+
+#: A row whose characters the table font cannot draw (U+2603 is not in the
+#: svgfont face), so layout_stats_table draws no text for it.
+UNDRAWABLE_ROW = {"label": "☃", "value": "☃"}
+
+
+def test_removing_rows_that_leave_only_undrawable_text_is_not_a_fix():
+    # Keeping the three undrawable rows and removing the one drawable row would
+    # leave no drawable glyph: the table vanishes and the overlap reads as gone.
+    # That is not a fix, so no removeRows suggestion may be listed for it.
+    req = copy.deepcopy(OVERLAP_REQ)
+    req["context_table"]["rows"] = [UNDRAWABLE_ROW] * 3 + [LONG_ROWS[0]]
+    root = _compose_dict(req)
+    assert _placement(root)["data-kp-art-overlap"] == "1"
+    fixes = json.loads(root.attrib["data-kp-table-fixes"])
+    assert not [f for f in fixes if f["kind"] == "removeRows"]
+    assert fixes[-1] == {"kind": "disableTable"}
+
+
+def test_every_listed_table_fix_keeps_the_table_drawn():
+    req = copy.deepcopy(OVERLAP_REQ)
+    req["context_table"]["rows"] = [UNDRAWABLE_ROW] * 3 + [LONG_ROWS[0]]
+    fixes = json.loads(_compose_dict(req).attrib["data-kp-table-fixes"])
+    for fix in fixes:
+        root = _compose_dict(_apply_fix(req, fix))
+        if fix["kind"] == "disableTable":
+            continue
+        assert _marked(root, "data-kp-context-border"), fix
         assert _placement(root)["data-kp-art-overlap"] == "0", fix
         _assert_drawn_ink_clears_table(root, WIDE_INK)
 

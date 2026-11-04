@@ -47,6 +47,7 @@ from fastapi import APIRouter, Depends, Response
 
 from backend.penplot import art_placement, labels, stats_table
 from backend.penplot.errors import ErrorCode, PenPlotError
+from backend.penplot.methods import Polyline
 from backend.penplot.raster import looks_like_svg
 from backend.penplot.router import get_settings, require_rate_limit
 from backend.penplot.schemas import ComposeContextPads, ComposeSheetRequest
@@ -168,7 +169,7 @@ class _Plan:
     below: bool
     strip: float
     band_top: float
-    table_lines: list
+    table_lines: list[Polyline]
     area: art_placement.Rect
     box: art_placement.Rect
     placed: art_placement.ArtPlacement
@@ -181,7 +182,7 @@ def _artwork(root, polylines, vp_w: float, vp_h: float, *, with_mask: bool) -> _
 
 
 def _plan_sheet(body: ComposeSheetRequest, art: _Artwork) -> _Plan:
-    """The sheet layout for one request: area, art box, table rect and placement.
+    """The sheet layout for one request: area, art box, table strokes and placement.
 
     Pure and deterministic. Compose draws the plan and the table-fix suggestions
     test candidate requests with this same function, so they cannot drift.
@@ -297,7 +298,11 @@ def suggest_table_fixes(body: ComposeSheetRequest, art: _Artwork) -> list[dict]:
         return []
 
     def clears(candidate: ComposeSheetRequest) -> bool:
-        return not _plan_sheet(candidate, art).placed.overlap
+        # A candidate clears only if its table still draws. The table is
+        # dropped when no remaining cell has a drawable glyph, and then there
+        # is no table left to overlap, which must not count as a fix.
+        plan = _plan_sheet(candidate, art)
+        return bool(plan.table_lines) and not plan.placed.overlap
 
     current = body.context_table.position
     fixes: list[dict] = []
@@ -393,7 +398,10 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
             payload = json.dumps(
                 suggest_table_fixes(body, art), separators=(",", ":"),
             )
-            art_attrs += f' data-kp-table-fixes="{escape(payload, {chr(34): "&quot;"})}"'
+            art_attrs += (
+                f' data-kp-table-fixes="'
+                f'{escape(payload, {chr(34): "&quot;", chr(39): "&#39;"})}"'
+            )
     parts: list[str] = []
     parts.append(
         _artwork_element(data, x=box[0], y=box[1], width=box[2], height=box[3])

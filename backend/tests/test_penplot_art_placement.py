@@ -304,3 +304,47 @@ def test_ink_on_the_right_and_bottom_viewport_edge_is_kept():
     assert right.cells.reshape(right.rows, right.cols)[:, 9].all()
     bottom = ap.ink_mask([[(0.0, 100.0), (100.0, 100.0)]], 100.0, 100.0, cols=10)
     assert bottom.cells.reshape(bottom.rows, bottom.cols)[9, :].all()
+
+
+# -- long strokes: clipped to the grid before sampling -----------------------------
+
+
+def test_far_line_masks_the_same_as_the_finite_line():
+    # The stroke runs far outside the viewport. Clipping to the grid first makes
+    # the in-grid sampling identical to the finite line's, so the masks match.
+    # (Before the clip, the far line's sampling was capped and inked 12 cells
+    # where the finite line inked 192.)
+    finite = ap.ink_mask([[(-1000.0, 10.0), (1000.0, 10.0)]], 100.0, 100.0, cols=64)
+    far = ap.ink_mask([[(-1000000.0, 10.0), (1000000.0, 10.0)]], 100.0, 100.0, cols=64)
+    assert finite is not None and far is not None
+    assert far.cells.sum() > 0
+    assert np.array_equal(far.cells, finite.cells)
+
+
+def test_diagonal_far_line_masks_the_same_as_the_finite_line():
+    finite = ap.ink_mask([[(-500.0, -500.0), (500.0, 500.0)]], 100.0, 100.0, cols=64)
+    far = ap.ink_mask([[(-1000000.0, -1000000.0), (1000000.0, 1000000.0)]], 100.0, 100.0, cols=64)
+    assert finite is not None and far is not None
+    assert np.array_equal(far.cells, finite.cells)
+
+
+def test_segment_wholly_off_the_viewport_marks_nothing():
+    # Off the left, off the top and off the right of a 100 x 100 viewport. The
+    # segments are not clamped into the edge cells any more.
+    off_left = ap.ink_mask([[(-100.0, 50.0), (-10.0, 50.0)]], 100.0, 100.0, cols=10)
+    off_top = ap.ink_mask([[(50.0, -100.0), (50.0, -10.0)]], 100.0, 100.0, cols=10)
+    off_right = ap.ink_mask([[(150.0, 0.0), (150.0, 100.0)]], 100.0, 100.0, cols=10)
+    for mask in (off_left, off_top, off_right):
+        assert mask is not None
+        assert not mask.cells.any()
+
+
+def test_segment_crossing_the_viewport_inks_its_in_grid_part():
+    # Crosses a 10 x 10 grid at y = 5 cells from far outside on the left. The
+    # line inks row 5, dilated to rows 4..6 across the whole grid width.
+    mask = ap.ink_mask([[(-1000.0, 50.0), (1000.0, 50.0)]], 100.0, 100.0, cols=10)
+    assert mask is not None
+    grid = _cells(mask)
+    assert grid[4:7, :].all()
+    assert not grid[:4].any()
+    assert not grid[7:].any()

@@ -93,6 +93,32 @@ def _js_round(value: float) -> int:
     return math.floor(value + 0.5)
 
 
+def _clip_to_grid(
+    ax: np.ndarray, ay: np.ndarray, bx: np.ndarray, by: np.ndarray, cols: int, rows: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Liang-Barsky clip of segments to the closed rectangle ``[0, cols] x [0, rows]``.
+
+    Vectorised over segments. Returns the clipped endpoints ``(ax, ay, bx, by)``
+    and ``keep``, which is False for segments that miss the rectangle (their
+    clipped endpoints are then meaningless and must not be used).
+    """
+    dx = bx - ax
+    dy = by - ay
+    t0 = np.zeros(ax.shape)
+    t1 = np.ones(ax.shape)
+    keep = np.ones(ax.shape, dtype=bool)
+    # Each edge is p * t <= q for the points inside it: left, right, top, bottom.
+    for p, q in ((-dx, ax), (dx, cols - ax), (-dy, ay), (dy, rows - ay)):
+        parallel = p == 0
+        keep &= ~(parallel & (q < 0))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            r = q / p
+        t0 = np.where(~parallel & (p < 0), np.maximum(t0, r), t0)
+        t1 = np.where(~parallel & (p > 0), np.minimum(t1, r), t1)
+    keep &= t0 <= t1
+    return ax + t0 * dx, ay + t0 * dy, ax + t1 * dx, ay + t1 * dy, keep
+
+
 def ink_mask(
     polylines: Sequence[Sequence[tuple[float, float]]],
     width_px: float,
@@ -103,8 +129,9 @@ def ink_mask(
 
     ``polylines`` are in viewport-px space (as returned by
     ``svg_vector.parse_svg_vectors``); ``width_px``/``height_px`` are that
-    viewport. Every segment is walked at half-cell steps so no gaps show along
-    long lines, then the mask is dilated by one cell (8-neighbourhood).
+    viewport. Each segment is clipped to the grid, then walked at half-cell steps
+    so no gaps show along long lines, then the mask is dilated by one cell
+    (8-neighbourhood).
     Returns ``None`` when the viewport is degenerate. The work is vectorised,
     so it is O(segments) in numpy rather than a Python loop per sample.
     """
@@ -143,18 +170,14 @@ def ink_mask(
     seg_a, seg_b = seg_a[finite], seg_b[finite]
     ax, ay = seg_a[:, 0], seg_a[:, 1]
     bx, by = seg_b[:, 0], seg_b[:, 1]
-    # Drop segments wholly outside the grid on one axis. The far edge counts as
-    # inside: ink on the viewport's right or bottom edge sits at cols / rows and
-    # clips into the last cell, so a full-bleed edge must still be inked.
-    visible = ~(
-        (np.maximum(ax, bx) < 0) | (np.minimum(ax, bx) > cols)
-        | (np.maximum(ay, by) < 0) | (np.minimum(ay, by) > rows)
-    )
-    ax, ay, bx, by = ax[visible], ay[visible], bx[visible], by[visible]
-    steps = np.minimum(
-        4 * (cols + rows),
-        np.ceil(np.maximum(np.abs(bx - ax), np.abs(by - ay)) * 2),
-    ).astype(np.int64)
+    # Clip each segment to the grid BEFORE sampling. The step count then follows
+    # the in-grid length (so the spacing stays at half a cell however far the
+    # stroke runs), and samples outside the viewport are never clamped into an
+    # edge cell. The far edge counts as inside: ink on the viewport's right or
+    # bottom edge sits at cols / rows and must still ink the last cell.
+    ax, ay, bx, by, keep = _clip_to_grid(ax, ay, bx, by, cols, rows)
+    ax, ay, bx, by = ax[keep], ay[keep], bx[keep], by[keep]
+    steps = np.ceil(np.maximum(np.abs(bx - ax), np.abs(by - ay)) * 2).astype(np.int64)
 
     def mark(u: np.ndarray, v: np.ndarray) -> None:
         c = np.clip(np.floor(u), 0, cols - 1).astype(np.int64)
