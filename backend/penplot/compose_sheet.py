@@ -20,6 +20,9 @@ box and the title rows sit on the A4 sheet), which mirrors the shop mock.
 When a context table is drawn, the artwork is placed clear of the table's real
 ink (``art_placement.place_art_around_table``: slide, then shrink), and the
 root carries ``data-kp-art-dx/dy/scale/overlap`` describing that placement.
+When nothing clears (overlap=1), the root also carries ``data-kp-table-fixes``:
+the single-change fixes that do clear it (``suggest_table_fixes``, a port of the
+shop's ``suggestTableFixes``). Compose and the suggestions share ``_plan_sheet``.
 
 Validation is the same gate ``POST /v1/images`` applies to an SVG: the size
 cap (``max_upload_bytes``, 413), a sniff that the bytes are an SVG document,
@@ -33,8 +36,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import re
+from dataclasses import dataclass
 from xml.sax.saxutils import escape
 
 from defusedxml import ElementTree as DefusedET
@@ -44,7 +49,7 @@ from backend.penplot import art_placement, labels, stats_table
 from backend.penplot.errors import ErrorCode, PenPlotError
 from backend.penplot.raster import looks_like_svg
 from backend.penplot.router import get_settings, require_rate_limit
-from backend.penplot.schemas import ComposeSheetRequest
+from backend.penplot.schemas import ComposeContextPads, ComposeSheetRequest
 from backend.penplot.svg_vector import parse_svg_vectors
 
 log = logging.getLogger(__name__)
@@ -142,17 +147,46 @@ def _validate_svg(data: bytes, max_bytes: int):
     return DefusedET.fromstring(data), polylines, width_px, height_px
 
 
-def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
-    """Compose the A4 gallery sheet SVG. Pure and deterministic.
+@dataclass(frozen=True)
+class _Artwork:
+    """What the layout needs from the artwork: its declared size and its ink mask."""
 
-    Raises :class:`PenPlotError` (422 invalid input, 413 oversize) and never
-    returns a partial sheet.
+    root_w: float | None
+    root_h: float | None
+    mask: art_placement.InkMask | None
+
+
+@dataclass(frozen=True)
+class _Plan:
+    """One sheet layout: the geometry compose draws and the table fixes test."""
+
+    w: float
+    h: float
+    margin: float
+    pad: float
+    outside: bool
+    below: bool
+    strip: float
+    band_top: float
+    table_lines: list
+    area: art_placement.Rect
+    box: art_placement.Rect
+    placed: art_placement.ArtPlacement
+
+
+def _artwork(root, polylines, vp_w: float, vp_h: float, *, with_mask: bool) -> _Artwork:
+    """Artwork facts for the layout. The ink mask is built once per request."""
+    mask = art_placement.ink_mask(polylines, vp_w, vp_h) if with_mask else None
+    return _Artwork(_root_length(root, "width"), _root_length(root, "height"), mask)
+
+
+def _plan_sheet(body: ComposeSheetRequest, art: _Artwork) -> _Plan:
+    """The sheet layout for one request: area, art box, table rect and placement.
+
+    Pure and deterministic. Compose draws the plan and the table-fix suggestions
+    test candidate requests with this same function, so they cannot drift.
     """
-    data = body.svg.encode("utf-8")
-    root, polylines, vp_w, vp_h = _validate_svg(data, max_svg_bytes)
-
     page, style = body.layout.page, body.layout.label
-    ink = body.ink_hex
     w, h = sheet_size_mm(page.orientation)
     margin = page.margin_mm
     pad = page.padding_mm
@@ -183,7 +217,7 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     band_top = h - margin - reserve_bottom
 
     # Context table, laid out before the artwork so the art can avoid it. The
-    # drawing itself is emitted at the end, unchanged.
+    # drawing itself is emitted by compose, unchanged.
     table_lines: list = []
     if ctx_rows:
         table_lines, _warnings, _keepout = stats_table.layout_stats_table(
@@ -204,41 +238,162 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     # Artwork: centred in [margin+pad+top, band_top] x [margin+pad, w-margin-pad],
     # keeping its own aspect when the root declares its size.
     art_top = margin + pad + reserve_top
-    art_bottom = band_top
     area_w = w - 2 * (margin + pad)
-    area_h = art_bottom - art_top
+    area_h = band_top - art_top
     box_w, box_h = area_w, area_h
-    raw_w = _root_length(root, "width")
-    raw_h = _root_length(root, "height")
-    if raw_w is not None and raw_h is not None:
-        art_aspect = raw_w / raw_h
+    if art.root_w is not None and art.root_h is not None:
+        art_aspect = art.root_w / art.root_h
         if art_aspect > area_w / area_h:
             box_h = area_w / art_aspect
         else:
             box_w = area_h * art_aspect
     art_x = (w - box_w) / 2
     art_y = art_top + (area_h - box_h) / 2
+    box = (art_x, art_y, box_w, box_h)
+    area = (margin + pad, art_top, area_w, area_h)
 
     # Placement around the table's real ink (shop parity: the table is the
     # outer border box of the drawn table, and the mask comes from the
     # artwork's own polylines). No table: the box is kept as it is.
-    art_attrs = ""
-    box = (art_x, art_y, box_w, box_h)
+    placed = art_placement.ArtPlacement(box, 0.0, 0.0, 1.0, False)
     if table_lines:
-        area = (margin + pad, art_top, area_w, area_h)
         placed = art_placement.place_art_around_table(
-            area,
-            box,
-            art_placement.ink_mask(polylines, vp_w, vp_h),
-            _outer_rect(table_lines[0]),
+            area, box, art.mask, _outer_rect(table_lines[0]),
         )
-        box = placed.box
+    return _Plan(
+        w=w, h=h, margin=margin, pad=pad, outside=outside, below=below,
+        strip=strip, band_top=band_top, table_lines=table_lines,
+        area=area, box=box, placed=placed,
+    )
+
+
+#: Table corners in the shop's order (``CORNERS`` in the shop's galleryCompose.ts).
+CORNERS: tuple[str, ...] = ("top-left", "top-right", "bottom-left", "bottom-right")
+
+
+def _with_table(body: ComposeSheetRequest, **fields) -> ComposeSheetRequest:
+    table = body.context_table.model_copy(update=fields)
+    return body.model_copy(update={"context_table": table})
+
+
+def _with_page(body: ComposeSheetRequest, **fields) -> ComposeSheetRequest:
+    page = body.layout.page.model_copy(update=fields)
+    return body.model_copy(update={"layout": body.layout.model_copy(update={"page": page})})
+
+
+def _with_label(body: ComposeSheetRequest, **fields) -> ComposeSheetRequest:
+    label = body.layout.label.model_copy(update=fields)
+    return body.model_copy(update={"layout": body.layout.model_copy(update={"label": label})})
+
+
+def suggest_table_fixes(body: ComposeSheetRequest, art: _Artwork) -> list[dict]:
+    """Single-change fixes that clear the art/table overlap, cheapest first.
+
+    Port of the shop's ``suggestTableFixes``: same order, kinds and fields. Each
+    candidate changes ONE field of the request and is judged by the same
+    :func:`_plan_sheet` that compose draws. Empty unless the layout overlaps.
+    """
+    if not _plan_sheet(body, art).placed.overlap:
+        return []
+
+    def clears(candidate: ComposeSheetRequest) -> bool:
+        return not _plan_sheet(candidate, art).placed.overlap
+
+    current = body.context_table.position
+    fixes: list[dict] = []
+
+    # 1. The other three corners.
+    for corner in CORNERS:
+        if corner != current and clears(_with_table(body, position=corner)):
+            fixes.append({"kind": "corner", "corner": corner})
+
+    # 2. All four table pads at 0 (the slider minimum).
+    no_pads = ComposeContextPads(left=0, right=0, top=0, bottom=0)
+    if clears(_with_table(body, pads=no_pads)):
+        fixes.append({"kind": "pads"})
+
+    # 3. Drop the last rows one at a time (n = 1 .. rows-1), the current corner
+    # first, then the others; the smallest n with its corner wins.
+    rows = body.context_table.rows
+    corner_order = [current, *(c for c in CORNERS if c != current)]
+    removed = next(
+        (
+            (n, corner)
+            for n in range(1, len(rows))
+            for corner in corner_order
+            if clears(_with_table(body, position=corner, rows=rows[: len(rows) - n]))
+        ),
+        None,
+    )
+    if removed is not None:
+        n, corner = removed
+        fixes.append({"kind": "removeRows", "n": n, "corner": corner})
+
+    # 4. Flip portrait / landscape.
+    flipped = "landscape" if body.layout.page.orientation == "portrait" else "portrait"
+    if clears(_with_page(body, orientation=flipped)):
+        fixes.append({"kind": "orientation", "orientation": flipped})
+
+    # 5. Page margin and padding at their slider minimums (0 mm).
+    if clears(_with_page(body, margin_mm=0.0, padding_mm=0.0)):
+        fixes.append({"kind": "margins"})
+
+    # 6. Title block outside the frame: only when it is inside now. The first
+    # outside side that clears is the suggestion (the UI applies it as is).
+    if body.layout.label.placement == "inside":
+        outside = next(
+            (p for p in ("below", "above") if clears(_with_label(body, placement=p))),
+            None,
+        )
+        if outside is not None:
+            fixes.append({"kind": "labelOutside", "placement": outside})
+
+    # 7. Remove the table altogether.
+    fixes.append({"kind": "disableTable"})
+    return fixes
+
+
+def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
+    """Compose the A4 gallery sheet SVG. Pure and deterministic.
+
+    Raises :class:`PenPlotError` (422 invalid input, 413 oversize) and never
+    returns a partial sheet.
+    """
+    data = body.svg.encode("utf-8")
+    root, polylines, vp_w, vp_h = _validate_svg(data, max_svg_bytes)
+
+    style = body.layout.label
+    ink = body.ink_hex
+    lines = [line for line in body.lines if line.strip()]
+    title = lines[0] if lines else ""
+    subtitle = lines[1] if len(lines) > 1 else ""
+    table = body.context_table
+    ctx_rows = [(row.label, row.value) for row in table.rows] if table.enabled else []
+
+    art = _artwork(root, polylines, vp_w, vp_h, with_mask=bool(ctx_rows))
+    plan = _plan_sheet(body, art)
+    w, h = plan.w, plan.h
+    margin = plan.margin
+    outside, below, strip = plan.outside, plan.below, plan.strip
+    band_top = plan.band_top
+    table_lines = plan.table_lines
+    line_h = style.height_mm
+    box = plan.placed.box
+
+    art_attrs = ""
+    if table_lines:
+        placed = plan.placed
         art_attrs = (
             f' data-kp-art-dx="{_signed(placed.dx):.2f}"'
             f' data-kp-art-dy="{_signed(placed.dy):.2f}"'
             f' data-kp-art-scale="{placed.scale:.3f}"'
             f' data-kp-art-overlap="{1 if placed.overlap else 0}"'
         )
+        if placed.overlap:
+            payload = json.dumps(
+                suggest_table_fixes(body, art), separators=(",", ":"),
+            )
+            art_attrs += f' data-kp-table-fixes="{escape(payload, {chr(34): "&quot;"})}"'
     parts: list[str] = []
     parts.append(
         _artwork_element(data, x=box[0], y=box[1], width=box[2], height=box[3])
@@ -246,9 +401,9 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
 
     # Page furniture: the margin frame (inset by the strip when the title is
     # outside), then the title-block band on top of it (inside only).
-    if page.frame:
+    if body.layout.page.frame:
         frame = labels.page_frame_rect(
-            w, h, margin, page.frame_radius_mm,
+            w, h, margin, body.layout.page.frame_radius_mm,
             top_mm=margin + strip if style.placement == "above" else None,
             bottom_mm=h - margin - strip if below else None,
         )
@@ -359,7 +514,7 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     )
     log.info(
         "compose.sheet svg_bytes=%d lines=%d context_rows=%d frame=%s border=%s",
-        len(data), len(lines), len(ctx_rows), page.frame, border,
+        len(data), len(lines), len(ctx_rows), body.layout.page.frame, border,
     )
     return sheet
 

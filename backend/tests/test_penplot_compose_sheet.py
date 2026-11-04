@@ -7,7 +7,9 @@ tests run over the session live server, like the other /v1 suites.
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
+import json
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -29,6 +31,7 @@ from backend.penplot.schemas import (
     LabelParams,
     PageParams,
 )
+from backend.penplot.svg_vector import parse_svg_vectors
 from backend.tests.helpers import perf_budget
 
 NS = "{http://www.w3.org/2000/svg}"
@@ -607,3 +610,223 @@ def test_seiran_three_view_clears_a_twelve_row_table_top_right():
     w, h = float(img.attrib["width"]), float(img.attrib["height"])
     assert x >= MARGIN - TOL and x + w <= W - MARGIN + TOL
     assert y >= MARGIN - TOL and y + h <= H - MARGIN + TOL
+
+
+# -- independent clearance check and table fixes ----------------------------------
+#
+# The helpers below never call the placement code. They take the artwork's
+# parsed polylines (svg_vector), the <image> box as it is drawn and the table
+# border as it is drawn, and check the drawn ink against the table on their own.
+
+CLEAR_MM = 2.0
+SAMPLE_MM = 0.2
+CORNERS = ("top-left", "top-right", "bottom-left", "bottom-right")
+#: Documented order of the table fixes (the shop's suggestTableFixes order).
+FIX_ORDER = ["corner", "pads", "removeRows", "orientation", "margins", "labelOutside", "disableTable"]
+LONG_ROWS = [
+    {"label": "Hosszu cimke szoveg", "value": "Egy nagyon hosszu ertek ami szeles tablazatot ad"}
+    for _ in range(12)
+]
+
+
+def _drawn_rect(box, vp_w: float, vp_h: float):
+    """Where the artwork viewport is drawn inside the <image> box (fitted, centred)."""
+    x, y, w, h = box
+    s = min(w / vp_w, h / vp_h)
+    cw, ch = vp_w * s, vp_h * s
+    return (x + (w - cw) / 2, y + (h - ch) / 2, cw, ch)
+
+
+def _drawn_ink(polylines, vp_w: float, vp_h: float, rect) -> list[tuple[float, float]]:
+    """Every polyline point and segment sample, in sheet mm, sampled at SAMPLE_MM."""
+    rx, ry, rw, rh = rect
+    kx, ky = rw / vp_w, rh / vp_h
+    out: list[tuple[float, float]] = []
+    for pl in polylines:
+        for i, (ax, ay) in enumerate(pl):
+            out.append((rx + ax * kx, ry + ay * ky))
+            if i + 1 < len(pl):
+                bx, by = pl[i + 1]
+                steps = max(1, int(max(abs(bx - ax) * kx, abs(by - ay) * ky) / SAMPLE_MM))
+                for k in range(1, steps):
+                    t = k / steps
+                    out.append((rx + (ax + (bx - ax) * t) * kx, ry + (ay + (by - ay) * t) * ky))
+    return out
+
+
+def _assert_drawn_ink_clears_table(root: ET.Element, art: bytes) -> None:
+    img = _image(root)
+    box = tuple(float(img.attrib[k]) for k in ("x", "y", "width", "height"))
+    polylines, vp_w, vp_h, _warnings = parse_svg_vectors(art)
+    x0, y0, x1, y1 = _bounds(_xy(_marked(root, "data-kp-context-border")[0]))
+    for px, py in _drawn_ink(polylines, vp_w, vp_h, _drawn_rect(box, vp_w, vp_h)):
+        near = x0 - CLEAR_MM < px < x1 + CLEAR_MM and y0 - CLEAR_MM < py < y1 + CLEAR_MM
+        assert not near, f"drawn ink at ({px:.2f}, {py:.2f}) is within {CLEAR_MM} mm of the table"
+
+
+def _framed_art(root_attrs: str, ink: tuple[float, float, float, float]) -> bytes:
+    x, y, w, h = ink
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" {root_attrs}>'
+        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="#000"/></svg>'
+    ).encode()
+
+
+#: Root forms that the mask frame has to get right. The ink sits in the top-right
+#: corner of the viewport, where the table is drawn.
+FRAME_CASES = {
+    "viewbox-only": ('viewBox="0 0 200 300"', (150, 0, 50, 60)),
+    "percent-size": ('width="100%" height="100%" viewBox="0 0 200 300"', (150, 0, 50, 60)),
+    "single-width": ('width="200" viewBox="0 0 200 300"', (150, 0, 50, 60)),
+    "mixed-units": ('width="100mm" height="50" viewBox="0 0 756 100"', (600, 0, 156, 40)),
+}
+
+
+@pytest.mark.parametrize("case", sorted(FRAME_CASES))
+def test_drawn_ink_clears_the_table_for_each_root_form(case):
+    root_attrs, ink = FRAME_CASES[case]
+    art = _framed_art(root_attrs, ink)
+    root = _root(_compose(svg=art.decode(), lines=["Title"], context_table=TABLE_TOP_RIGHT))
+    assert _placement(root)["data-kp-art-overlap"] == "0"
+    _assert_drawn_ink_clears_table(root, art)
+
+
+CORNER_INK = {
+    "top-left": (0, 0, 50, 60),
+    "top-right": (150, 0, 50, 60),
+    "bottom-left": (0, 240, 50, 60),
+    "bottom-right": (150, 240, 50, 60),
+}
+
+
+@pytest.mark.parametrize("corner", CORNERS)
+def test_ink_in_each_table_corner_is_moved_clear(corner):
+    art = _art_svg('<rect x="{}" y="{}" width="{}" height="{}" fill="#000"/>'.format(*CORNER_INK[corner]))
+    root = _root(_compose(
+        svg=art.decode(), lines=["Title"],
+        context_table={"enabled": True, "position": corner, "rows": ROWS},
+    ))
+    attrs = _placement(root)
+    assert attrs["data-kp-art-overlap"] == "0"
+    assert float(attrs["data-kp-art-dx"]) != 0 or float(attrs["data-kp-art-dy"]) != 0 \
+        or float(attrs["data-kp-art-scale"]) < 1
+    _assert_drawn_ink_clears_table(root, art)
+
+
+WIDE_INK = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200">'
+    b'<rect x="0" y="0" width="300" height="200" fill="#000"/></svg>'
+)
+#: Full-page ink with a 12-row table, landscape: nothing fits, so the art stays.
+OVERLAP_REQ = {
+    "svg": WIDE_INK.decode(),
+    "lines": ["Title"],
+    "layout": {"page": {"orientation": "landscape", "margin_mm": 10, "padding_mm": 10}},
+    "context_table": {
+        "enabled": True, "position": "top-right", "rows": LONG_ROWS,
+        "pads": {"left": 20, "right": 20, "top": 20, "bottom": 20},
+    },
+}
+
+
+def _compose_dict(req: dict) -> ET.Element:
+    body = ComposeSheetRequest.model_validate(req)
+    return _root(cs.compose_sheet_svg(body, max_svg_bytes=25 * 1024 * 1024))
+
+
+def _apply_fix(req: dict, fix: dict) -> dict:
+    """The request with exactly one field changed, as the fix describes."""
+    out = copy.deepcopy(req)
+    table = out.setdefault("context_table", {})
+    page = out.setdefault("layout", {}).setdefault("page", {})
+    label = out["layout"].setdefault("label", {})
+    kind = fix["kind"]
+    if kind == "corner":
+        table["position"] = fix["corner"]
+    elif kind == "pads":
+        table["pads"] = {"left": 0, "right": 0, "top": 0, "bottom": 0}
+    elif kind == "removeRows":
+        table["rows"] = table["rows"][: len(table["rows"]) - fix["n"]]
+        table["position"] = fix["corner"]
+    elif kind == "orientation":
+        page["orientation"] = fix["orientation"]
+    elif kind == "margins":
+        page["margin_mm"] = 0
+        page["padding_mm"] = 0
+    elif kind == "labelOutside":
+        label["placement"] = fix["placement"]
+    elif kind == "disableTable":
+        table["enabled"] = False
+    else:  # pragma: no cover - the test fails on an unknown kind
+        raise AssertionError(kind)
+    return out
+
+
+def test_overlap_lists_the_table_fixes_in_the_documented_order():
+    root = _compose_dict(OVERLAP_REQ)
+    assert _placement(root)["data-kp-art-overlap"] == "1"
+    fixes = json.loads(root.attrib["data-kp-table-fixes"])
+    assert fixes == [
+        {"kind": "corner", "corner": "bottom-left"},
+        {"kind": "corner", "corner": "bottom-right"},
+        {"kind": "removeRows", "n": 1, "corner": "bottom-left"},
+        {"kind": "orientation", "orientation": "portrait"},
+        {"kind": "margins"},
+        {"kind": "labelOutside", "placement": "below"},
+        {"kind": "disableTable"},
+    ]
+    ranks = [FIX_ORDER.index(f["kind"]) for f in fixes]
+    assert ranks == sorted(ranks)
+
+
+def test_each_listed_table_fix_clears_the_overlap_when_applied():
+    fixes = json.loads(_compose_dict(OVERLAP_REQ).attrib["data-kp-table-fixes"])
+    for fix in fixes:
+        root = _compose_dict(_apply_fix(OVERLAP_REQ, fix))
+        if fix["kind"] == "disableTable":
+            assert "data-kp-art-overlap" not in root.attrib
+            assert not _marked(root, "data-kp-context-border")
+            continue
+        assert _placement(root)["data-kp-art-overlap"] == "0", fix
+        _assert_drawn_ink_clears_table(root, WIDE_INK)
+
+
+def test_table_fixes_absent_when_the_art_clears_the_table():
+    art = _art_svg('<rect x="0" y="200" width="60" height="100" fill="#000"/>')
+    root = _root(_compose(svg=art.decode(), lines=["Title"], context_table=TABLE_TOP_RIGHT))
+    assert "data-kp-table-fixes" not in root.attrib
+
+
+def test_table_fixes_absent_without_a_table():
+    root = _root(_compose(
+        svg=_art_svg('<rect x="150" y="0" width="50" height="60" fill="#000"/>').decode(),
+        lines=["Title"], context_table={"enabled": False, "rows": ROWS},
+    ))
+    assert "data-kp-table-fixes" not in root.attrib
+    assert "data-kp-art-overlap" not in root.attrib
+
+
+def _five_mb_overlapping_art() -> str:
+    """A 5 MiB artwork with ink over the whole sheet, so the table overlaps."""
+    head = '<svg xmlns="http://www.w3.org/2000/svg" width="210" height="297" viewBox="0 0 210 297"><path d="M 0 0 '
+    target = 5 * 1024 * 1024 - len(head) - 60
+    parts: list[str] = []
+    size = i = 0
+    while size < target:
+        seg = f"L {i % 200} {(i * 7) % 297} "
+        parts.append(seg)
+        size += len(seg)
+        i += 1
+    return head + "".join(parts) + '" fill="none" stroke="#123456"/></svg>'
+
+
+def test_direct_performance_overlap_with_fixes_under_two_seconds():
+    req = ComposeSheetRequest.model_validate({
+        "svg": _five_mb_overlapping_art(), "lines": ["Title"],
+        "context_table": {"enabled": True, "position": "top-right", "rows": LONG_ROWS},
+    })
+    cs.compose_sheet_svg(req, max_svg_bytes=25 * 1024 * 1024)  # warm caches
+    started = time.perf_counter()
+    svg = cs.compose_sheet_svg(req, max_svg_bytes=25 * 1024 * 1024)
+    assert time.perf_counter() - started < perf_budget(2.0)
+    assert "data-kp-table-fixes" in _root(svg).attrib

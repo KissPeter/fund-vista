@@ -10,7 +10,8 @@ this module.
 Geometry is in sheet mm. Rects are ``(x, y, w, h)`` tuples. The ink mask is a
 coarse occupancy grid over the artwork: cell (c, r) covers
 ``[c/cols, (c+1)/cols) x [r/rows, (r+1)/rows)`` of the artwork, and because the
-artwork is aspect-fit into its box the mask maps linearly onto the box.
+artwork is aspect-fit into its box the mask maps linearly onto the content
+rect (the viewport fitted and centred in the box), not onto the whole box.
 
 Placement, first success wins:
 
@@ -48,11 +49,32 @@ _CHUNK_SAMPLES = 1 << 20
 
 @dataclass(frozen=True)
 class InkMask:
-    """Coarse ink occupancy: ``cells`` is row-major, ``rows * cols`` booleans."""
+    """Coarse ink occupancy: ``cells`` is row-major, ``rows * cols`` booleans.
+
+    ``aspect`` is the artwork viewport's width / height. The `<image>` draws
+    the viewport aspect-fitted (centred, ``meet``) inside its box, so the mask
+    maps onto that content rect, not onto the box itself. ``None`` means the
+    mask fills the box it is mapped onto.
+    """
 
     cols: int
     rows: int
     cells: np.ndarray
+    aspect: float | None = None
+
+
+def content_rect(box: Rect, aspect: float) -> Rect:
+    """The viewport of aspect ``aspect`` fitted and centred inside ``box``.
+
+    Mirrors the SVG default ``preserveAspectRatio="xMidYMid meet"`` that the
+    `<image>` applies to the artwork inside its box.
+    """
+    bx, by, bw, bh = box
+    if bw / bh > aspect:
+        w = bh * aspect
+        return (bx + (bw - w) / 2, by, w, bh)
+    h = bw / aspect
+    return (bx, by + (bh - h) / 2, bw, h)
 
 
 @dataclass(frozen=True)
@@ -97,8 +119,9 @@ def ink_mask(
     lengths = np.fromiter((len(pl) for pl in polylines), dtype=np.int64, count=len(polylines))
     lengths = lengths[lengths > 0]
     total = int(lengths.sum())
+    aspect = width_px / height_px
     if total == 0:
-        return InkMask(cols, rows, cells)
+        return InkMask(cols, rows, cells, aspect)
     pts = np.fromiter(
         chain.from_iterable(chain.from_iterable(polylines)),
         dtype=float, count=2 * total,
@@ -111,6 +134,7 @@ def ink_mask(
     # One-point polylines are a single ink cell; longer ones contribute the
     # segments between consecutive points that belong to the same polyline.
     singles = pts[starts[lengths == 1]]
+    singles = singles[np.isfinite(singles).all(axis=1)]
     seg_ok = np.ones(total - 1, dtype=bool)
     seg_ok[ends[:-1] - 1] = False
     seg_a = pts[:-1][seg_ok]
@@ -119,10 +143,12 @@ def ink_mask(
     seg_a, seg_b = seg_a[finite], seg_b[finite]
     ax, ay = seg_a[:, 0], seg_a[:, 1]
     bx, by = seg_b[:, 0], seg_b[:, 1]
-    # Drop segments wholly outside the grid on one axis (as the shop does).
+    # Drop segments wholly outside the grid on one axis. The far edge counts as
+    # inside: ink on the viewport's right or bottom edge sits at cols / rows and
+    # clips into the last cell, so a full-bleed edge must still be inked.
     visible = ~(
-        (np.maximum(ax, bx) < 0) | (np.minimum(ax, bx) >= cols)
-        | (np.maximum(ay, by) < 0) | (np.minimum(ay, by) >= rows)
+        (np.maximum(ax, bx) < 0) | (np.minimum(ax, bx) > cols)
+        | (np.maximum(ay, by) < 0) | (np.minimum(ay, by) > rows)
     )
     ax, ay, bx, by = ax[visible], ay[visible], bx[visible], by[visible]
     steps = np.minimum(
@@ -166,7 +192,7 @@ def ink_mask(
     for dr in range(3):
         for dc in range(3):
             out |= padded[dr : dr + rows, dc : dc + cols]
-    return InkMask(cols, rows, out.reshape(-1))
+    return InkMask(cols, rows, out.reshape(-1), aspect)
 
 
 def ink_overlaps_rect(
@@ -174,15 +200,20 @@ def ink_overlaps_rect(
 ) -> bool:
     """True when ink mapped onto ``box`` reaches ``rect`` grown by ``gap_mm``.
 
-    A ``None`` mask means the whole box is ink.
+    The mask maps onto the content rect of ``box`` (the viewport aspect-fitted
+    inside it, see :func:`content_rect`). A ``None`` mask means the whole box
+    is ink.
     """
     x0 = rect[0] - gap_mm
     x1 = rect[0] + rect[2] + gap_mm
     y0 = rect[1] - gap_mm
     y1 = rect[1] + rect[3] + gap_mm
-    bx, by, bw, bh = box
     if mask is None:
+        bx, by, bw, bh = box
         return bx < x1 and bx + bw > x0 and by < y1 and by + bh > y0
+    if mask.aspect is not None:
+        box = content_rect(box, mask.aspect)
+    bx, by, bw, bh = box
     rr, cc = np.nonzero(mask.cells.reshape(mask.rows, mask.cols))
     if rr.size == 0:
         return False

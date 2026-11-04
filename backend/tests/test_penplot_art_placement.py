@@ -256,3 +256,51 @@ def test_empty_polylines_give_an_empty_mask():
 def test_degenerate_viewport_gives_no_mask():
     assert ap.ink_mask([[(0.0, 0.0), (1.0, 1.0)]], 0.0, 100.0) is None
     assert ap.ink_mask([[(0.0, 0.0), (1.0, 1.0)]], 100.0, -1.0) is None
+
+
+# -- mask frame: the mask maps onto the content rect ------------------------------
+
+
+def test_content_rect_fits_and_centres_the_viewport_in_the_box():
+    box = (0.0, 0.0, 100.0, 100.0)
+    assert ap.content_rect(box, 2.0) == (0.0, 25.0, 100.0, 50.0)
+    assert ap.content_rect(box, 0.5) == (25.0, 0.0, 50.0, 100.0)
+    assert ap.content_rect(box, 1.0) == box
+
+
+def test_mask_maps_onto_the_content_rect_not_the_whole_box():
+    # A wide viewport (aspect 2) in a 100 x 100 box is drawn at y 25..75. The
+    # mask's top-left cell is therefore at y 25..35, not at the box top.
+    cells = np.zeros(5 * 10, dtype=bool)
+    cells[0] = True
+    box = (0.0, 0.0, 100.0, 100.0)
+    wide = InkMask(cols=10, rows=5, cells=cells, aspect=2.0)
+    assert ap.ink_overlaps_rect(wide, box, (0.0, 0.0, 10.0, 10.0), 0.0) is False
+    assert ap.ink_overlaps_rect(wide, box, (0.0, 25.0, 10.0, 10.0), 0.0) is True
+    # Without an aspect the mask fills the box, so the same cell is at the top.
+    filled = InkMask(cols=10, rows=5, cells=cells)
+    assert ap.ink_overlaps_rect(filled, box, (0.0, 0.0, 10.0, 10.0), 0.0) is True
+
+
+def test_ink_mask_records_the_viewport_aspect():
+    assert ap.ink_mask([[(0.0, 0.0), (10.0, 0.0)]], 200.0, 100.0, cols=10).aspect == 2.0
+    assert ap.ink_mask([], 300.0, 100.0, cols=10).aspect == 3.0
+
+
+# -- non-finite single points -------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_one_point_polyline_is_dropped(bad):
+    # Only the finite (5, 5) point inks, as one cell dilated to 3 x 3.
+    mask = ap.ink_mask([[(bad, 1.0)], [(5.0, 5.0)]], 10.0, 10.0, cols=10)
+    assert int(mask.cells.sum()) == 9
+
+
+def test_ink_on_the_right_and_bottom_viewport_edge_is_kept():
+    # A full-bleed edge sits exactly on the far side of the grid (x = cols,
+    # y = rows); it must still ink the last column and row.
+    right = ap.ink_mask([[(100.0, 0.0), (100.0, 100.0)]], 100.0, 100.0, cols=10)
+    assert right.cells.reshape(right.rows, right.cols)[:, 9].all()
+    bottom = ap.ink_mask([[(0.0, 100.0), (100.0, 100.0)]], 100.0, 100.0, cols=10)
+    assert bottom.cells.reshape(bottom.rows, bottom.cols)[9, :].all()
