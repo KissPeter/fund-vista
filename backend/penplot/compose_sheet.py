@@ -17,6 +17,9 @@ mock, bottom of the stack last:
 Geometry is not re-implemented here: every stroke comes from the functions
 named above. The only arithmetic in this module is placement (where the art
 box and the title rows sit on the A4 sheet), which mirrors the shop mock.
+When a context table is drawn, the artwork is placed clear of the table's real
+ink (``art_placement.place_art_around_table``: slide, then shrink), and the
+root carries ``data-kp-art-dx/dy/scale/overlap`` describing that placement.
 
 Validation is the same gate ``POST /v1/images`` applies to an SVG: the size
 cap (``max_upload_bytes``, 413), a sniff that the bytes are an SVG document,
@@ -37,7 +40,7 @@ from xml.sax.saxutils import escape
 from defusedxml import ElementTree as DefusedET
 from fastapi import APIRouter, Depends, Response
 
-from backend.penplot import labels, stats_table
+from backend.penplot import art_placement, labels, stats_table
 from backend.penplot.errors import ErrorCode, PenPlotError
 from backend.penplot.raster import looks_like_svg
 from backend.penplot.router import get_settings, require_rate_limit
@@ -92,6 +95,18 @@ def _root_length(root, attr: str) -> float | None:
     return value if value > 0 else None
 
 
+def _signed(value: float) -> float:
+    """Rounds to the 2 dp the attributes print, folding ``-0.00`` to ``0.00``."""
+    return round(value, 2) + 0.0
+
+
+def _outer_rect(border: list[tuple[float, float]]) -> art_placement.Rect:
+    """``(x, y, w, h)`` bounds of the table's outer border polyline."""
+    xs = [x for x, _ in border]
+    ys = [y for _, y in border]
+    return (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+
+
 def _artwork_element(
     data: bytes, *, x: float, y: float, width: float, height: float
 ) -> str:
@@ -103,7 +118,11 @@ def _artwork_element(
 
 
 def _validate_svg(data: bytes, max_bytes: int):
-    """Same gate as /v1/images for an SVG; returns the parsed root element."""
+    """Same gate as /v1/images for an SVG.
+
+    Returns ``(root, polylines, width_px, height_px)``: the parsed root element
+    and the artwork's viewport-px polylines, kept for the ink mask.
+    """
     if len(data) > max_bytes:
         raise PenPlotError(
             status=413, code=ErrorCode.PAYLOAD_TOO_LARGE,
@@ -115,12 +134,12 @@ def _validate_svg(data: bytes, max_bytes: int):
             message="Artwork must be an SVG document.",
         )
     try:
-        # Same structural and XML-safety checks as the upload path; the
-        # extracted polylines are discarded because the artwork is embedded.
-        parse_svg_vectors(data)
+        # Same structural and XML-safety checks as the upload path. The
+        # polylines are kept for the ink mask; the artwork itself is embedded.
+        polylines, width_px, height_px, _warnings = parse_svg_vectors(data)
     except PenPlotError as exc:
         raise PenPlotError(status=422, code=exc.code, message=exc.message) from exc
-    return DefusedET.fromstring(data)
+    return DefusedET.fromstring(data), polylines, width_px, height_px
 
 
 def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
@@ -130,7 +149,7 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     returns a partial sheet.
     """
     data = body.svg.encode("utf-8")
-    root = _validate_svg(data, max_svg_bytes)
+    root, polylines, vp_w, vp_h = _validate_svg(data, max_svg_bytes)
 
     page, style = body.layout.page, body.layout.label
     ink = body.ink_hex
@@ -163,6 +182,25 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
         reserve_top = 0.0
     band_top = h - margin - reserve_bottom
 
+    # Context table, laid out before the artwork so the art can avoid it. The
+    # drawing itself is emitted at the end, unchanged.
+    table_lines: list = []
+    if ctx_rows:
+        table_lines, _warnings, _keepout = stats_table.layout_stats_table(
+            ctx_rows,
+            position=table.position,
+            page_w=w,
+            page_h=h,
+            margin_mm=margin,
+            reserve_bottom_mm=reserve_bottom,
+            reserve_top_mm=reserve_top,
+            pad_left_mm=table.pads.left,
+            pad_right_mm=table.pads.right,
+            pad_top_mm=table.pads.top,
+            pad_bottom_mm=table.pads.bottom,
+            display_keys=False,
+        )
+
     # Artwork: centred in [margin+pad+top, band_top] x [margin+pad, w-margin-pad],
     # keeping its own aspect when the root declares its size.
     art_top = margin + pad + reserve_top
@@ -180,9 +218,30 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
             box_w = area_h * art_aspect
     art_x = (w - box_w) / 2
     art_y = art_top + (area_h - box_h) / 2
+
+    # Placement around the table's real ink (shop parity: the table is the
+    # outer border box of the drawn table, and the mask comes from the
+    # artwork's own polylines). No table: the box is kept as it is.
+    art_attrs = ""
+    box = (art_x, art_y, box_w, box_h)
+    if table_lines:
+        area = (margin + pad, art_top, area_w, area_h)
+        placed = art_placement.place_art_around_table(
+            area,
+            box,
+            art_placement.ink_mask(polylines, vp_w, vp_h),
+            _outer_rect(table_lines[0]),
+        )
+        box = placed.box
+        art_attrs = (
+            f' data-kp-art-dx="{_signed(placed.dx):.2f}"'
+            f' data-kp-art-dy="{_signed(placed.dy):.2f}"'
+            f' data-kp-art-scale="{placed.scale:.3f}"'
+            f' data-kp-art-overlap="{1 if placed.overlap else 0}"'
+        )
     parts: list[str] = []
     parts.append(
-        _artwork_element(data, x=art_x, y=art_y, width=box_w, height=box_h)
+        _artwork_element(data, x=box[0], y=box[1], width=box[2], height=box[3])
     )
 
     # Page furniture: the margin frame (inset by the strip when the title is
@@ -258,20 +317,6 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
 
     # Context table: rule and border strokes first, then the cell lettering.
     if ctx_rows:
-        table_lines, _warnings, _keepout = stats_table.layout_stats_table(
-            ctx_rows,
-            position=table.position,
-            page_w=w,
-            page_h=h,
-            margin_mm=margin,
-            reserve_bottom_mm=reserve_bottom,
-            reserve_top_mm=reserve_top,
-            pad_left_mm=table.pads.left,
-            pad_right_mm=table.pads.right,
-            pad_top_mm=table.pads.top,
-            pad_bottom_mm=table.pads.bottom,
-            display_keys=False,
-        )
         if table_lines:
             # Layout order: outer border, column divider, one rule per row
             # boundary, then the cell strokes.
@@ -308,7 +353,7 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     sheet = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_mm}mm" '
         f'height="{height_mm}mm" viewBox="0 0 {width_mm} {height_mm}" '
-        f'data-kp-compose="1"{bounds_attr}>'
+        f'data-kp-compose="1"{bounds_attr}{art_attrs}>'
         + "".join(parts)
         + "</svg>"
     )

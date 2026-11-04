@@ -11,6 +11,7 @@ import hashlib
 import re
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -545,3 +546,64 @@ def test_outside_title_only_is_one_line():
     root = _root(_outside("above", [TITLE]))
     group = root.find(f".//{NS}g[@data-kp-label-placement='above']")
     assert len(list(group)) == 1
+
+
+# -- art placement around the context table -------------------------------------
+
+SEIRAN = Path(__file__).parent / "fixtures" / "aichi-m6a1-seiran-3-view-line-drawing.svg"
+TABLE_TOP_RIGHT = {"enabled": True, "position": "top-right", "rows": ROWS}
+
+
+def _art_svg(*shapes: str) -> bytes:
+    """A 200 x 300 artwork (2:3) with the given shapes, drawn in its viewBox."""
+    body = "".join(shapes)
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="300" '
+        f'viewBox="0 0 200 300">{body}</svg>'
+    ).encode()
+
+
+def _placement(root: ET.Element) -> dict[str, str]:
+    return {k: v for k, v in root.attrib.items() if k.startswith("data-kp-art-")}
+
+
+def test_table_top_right_over_ink_is_moved_clear():
+    # Ink fills the artwork's top-right corner, where the table sits.
+    art = _art_svg('<rect x="150" y="0" width="50" height="60" fill="#000"/>')
+    root = _root(_compose(svg=art.decode(), lines=["Title"], context_table=TABLE_TOP_RIGHT))
+    attrs = _placement(root)
+    assert attrs["data-kp-art-overlap"] == "0"
+    assert float(attrs["data-kp-art-dx"]) != 0 or float(attrs["data-kp-art-scale"]) < 1
+
+
+def test_ink_only_bottom_left_is_not_moved():
+    art = _art_svg('<rect x="0" y="200" width="60" height="100" fill="#000"/>')
+    root = _root(_compose(svg=art.decode(), lines=["Title"], context_table=TABLE_TOP_RIGHT))
+    attrs = _placement(root)
+    assert attrs == {
+        "data-kp-art-dx": "0.00",
+        "data-kp-art-dy": "0.00",
+        "data-kp-art-scale": "1.000",
+        "data-kp-art-overlap": "0",
+    }
+
+
+def test_no_table_emits_no_placement_attributes():
+    root = _root(_compose(lines=["Title"], context_table={"enabled": False, "rows": ROWS}))
+    assert _placement(root) == {}
+
+
+def test_seiran_three_view_clears_a_twelve_row_table_top_right():
+    rows = [{"label": f"Key {i}", "value": str(1000 + i)} for i in range(12)]
+    svg = SEIRAN.read_bytes().decode()
+    root = _root(_compose(
+        svg=svg, lines=["Title"],
+        context_table={"enabled": True, "position": "top-right", "rows": rows},
+    ))
+    attrs = _placement(root)
+    assert attrs["data-kp-art-overlap"] == "0"
+    img = _image(root)
+    x, y = float(img.attrib["x"]), float(img.attrib["y"])
+    w, h = float(img.attrib["width"]), float(img.attrib["height"])
+    assert x >= MARGIN - TOL and x + w <= W - MARGIN + TOL
+    assert y >= MARGIN - TOL and y + h <= H - MARGIN + TOL
