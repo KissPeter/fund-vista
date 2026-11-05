@@ -59,6 +59,9 @@ from backend.traffic.stats import movement_stats
 
 log = logging.getLogger(__name__)
 
+#: L4 lifetime of a render whose basemap fetch failed (seconds).
+DEGRADED_RENDER_TTL_S = 120
+
 router = APIRouter(prefix="/v1/traffic", tags=["traffic-v1"])
 
 
@@ -274,7 +277,11 @@ async def render_document(
     if "airfield" in uncached:
         await _store_degraded_svg(svg_key, svg_text)
     else:
-        await _store_render(svg_key, meta_key, svg_text, counts, len(window), stats)
+        # A render with a dead basemap layer must not sit in L4 for the full TTL:
+    # every later request (and the shop's draft preview) would serve the map-less
+    # SVG for days. Keep it just long enough for the svg_url to resolve.
+    await _store_render(svg_key, meta_key, svg_text, counts, len(window), stats,
+                        ttl_s=DEGRADED_RENDER_TTL_S if failed else None)
     log.info("traffic.render icao=%s day=%s moves=%d cache_hit=False", icao, body.date, len(window))
     return {"airport": airport, "icao": icao, "counts": counts,
             "movements": len(window), "stats": stats, "svg_text": svg_text,
