@@ -35,6 +35,7 @@ is created to track a CI run, and no agent merges a PR by hand.
 | `workflow_run` on a gate workflow (completed) | the green verdict arrives here |
 | `push` on `main` | a merge invalidates the merge refs of the other PRs |
 | `workflow_dispatch` | a manual sweep (`dry_run` input: report only, merge nothing) |
+| `schedule` (every 10 minutes) | a heartbeat: a CI run the sweep dispatched with the `GITHUB_TOKEN`, and a merge it made with it, fire no `workflow_run` or `push` event, so the sweep MUST NOT depend on those events to read the verdict of a gate it dispatched itself |
 
 The workflow always checks out `main` and always runs the script from
 `main`. A pull request therefore cannot change the rules that merge it,
