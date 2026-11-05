@@ -61,6 +61,21 @@ Suite: 213 passed.
   after order-paid (the shop calls it, not this repo). Ink-split reads the
   stored design first; an order fulfilled after expiry falls back to a
   re-render and can fail with `409 design_mismatch` if the renderer changed.
+- What the image store is: `ImageStore` (`backend/penplot/store.py`) is this
+  service's own server-side filesystem cache under `PENPLOT_DATA_DIR`
+  (`images/{sha256}.{ext}` for imported or uploaded bytes, `results/...` for
+  convert output). The airport and traffic import endpoints write the cropped
+  SVG there; its sha256 is the `design_id`. This happens when the design is
+  imported, before the cart. Nothing is pushed to WooCommerce: Woo keeps the
+  signed design token (`design_id`, `exp`, `sig`) and the render params in
+  order meta, and the SVG stays here.
+- Single-host limit: the store is local disk and is not shared. Ink-split
+  finds the stored design only when it runs on the same instance (same
+  `PENPLOT_DATA_DIR`) that imported it. On another instance or a fresh host
+  the lookup misses and ink-split falls back to a re-render, with the same
+  `409 design_mismatch` risk. Fulfilment MUST therefore be served by the
+  instance that holds the store, or the data dir MUST be a shared volume.
+  Moving the store to shared storage is not planned; there is no ticket yet.
 
 ## §5 Rate limits + error codes — done with one deliberate deviation
 
