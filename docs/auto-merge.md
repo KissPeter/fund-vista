@@ -69,13 +69,15 @@ the PR only when all of the following hold:
 - `isDraft` is false.
 - The labels do not contain `automerge:block` and do not contain
   `needs-human`.
-- `mergeable` is true and `mergeable_state` is not `dirty` (conflict),
-  not `blocked` and not `unstable`.
+- `mergeable` is true and `mergeable_state` is not `dirty` (conflict) and
+  not `blocked`. The state `unstable` MUST NOT be a skip reason: GitHub sets
+  it for any failed check, including a stale red run against an older `main`
+  that never re-runs. The gate verdict below decides.
 - A gate run exists that
   - belongs to the **current head commit** of the PR,
-  - tested the PR against the **current `main`** — a `pull_request` run
-    whose `base.sha` is the current `main`, or a run dispatched on the PR
-    merge ref (`refs/pull/<n>/merge`), and
+  - tested the PR against the **current `main`**: a `pull_request` run
+    whose `base.sha` is the current `main`, or a dispatched run that merged
+    the PR head with the current `main` itself (see §6), and
   - has the blocking jobs completed and successful. The other jobs must
     be successful, skipped or neutral.
 - The legacy commit status of the head commit is not failing.
@@ -112,26 +114,42 @@ run. That has two consequences:
 
 The sweep handles both by dispatching the gate workflows by hand
 whenever it merged with the `GITHUB_TOKEN`. It also dispatches the gate for a
-PR that has no green run against the current `main` (a green run on the head
-against an older `main` does not count), and skips that PR in this sweep; a
-later sweep merges it once the verdict is in. A dispatch **cannot** target a
-PR merge ref (`--ref refs/pull/<n>/merge` answers `No ref found`), so the
-gate workflows take the input `pr_number=<n>`:
+PR that has no fresh verdict (a green run on the head against an older
+`main` does not count), and skips that PR in this sweep; a later sweep merges
+it once the verdict is in.
 
-- they check out `refs/pull/<n>/merge` themselves (the same thing the
-  `pull_request` event tests),
-- they report the verdict as the commit status
-  `automerge/merge-ref/<workflow>` on the head commit of the PR, with the
-  merge ref they tested in the description.
+The sweep MUST NOT trust GitHub's `refs/pull/<n>/merge`: GitHub does not
+rebuild it when `main` moves, so it can describe a merge against code that is
+gone. A dispatch cannot target a PR head merged with `main` either, so the
+gate workflows (`backend-tests`, `frontend-checks`) take the inputs
+`pr_number=<n>` and `main_sha=<sha>`:
 
-The sweep reads that status and merges the PR only when the status is
-green **and** names the merge ref that is current now. A stale verdict is
-ignored, exactly like a stale CI run.
+- the dispatched run MUST check out `refs/pull/<n>/head` and MUST run
+  `git merge --no-edit <main_sha>` itself,
+- it MUST record the tested head before the merge (the repository has no
+  submodules, so no `git submodule update` is needed),
+- it MUST report the verdict as the commit status
+  `automerge/merge-ref/<workflow>` on that head commit, with the description
+  `head <head sha> main <main sha>`,
+- its run name is `<workflow> [merge-ref #<n>]`, which is how the sweep tells
+  a dispatched run from the gate run of `main` and from the runs of other PRs.
 
-> The `frontend-checks` workflow (open PR #125) does not have the
-> `pr_number` input yet. With the `GITHUB_TOKEN` a frontend PR therefore
-> gets no fresh gate after a merge, and waits. With a PAT (below) it does
-> not matter.
+The sweep MUST accept a verdict only when it names the current head **and**
+the current `main`. A stale verdict is ignored, exactly like a stale CI run.
+A red verdict for the current head and `main` is final: the sweep MUST NOT
+re-dispatch it, and the refresh pass after a gate completion MUST NOT
+re-dispatch it either (a dispatched run is itself a gate run, so a red
+dispatch would otherwise re-dispatch itself in a loop). A red verdict for an
+older head or `main` does not block.
+
+The sweep MUST NOT dispatch a gate run for a PR that can never be merged: a
+draft, a PR with a block label, a PR that touches a blocked path, or a PR
+whose changed-file list cannot be read (fail closed).
+
+"A gate is already running" counts only the gate workflow's own runs: a native
+run on the PR head, or a dispatched run whose run name carries the PR number.
+It MUST NOT count other workflow runs on the `main` commit; the sweep's own
+job always runs there.
 
 **Recommended:** add a repository secret `AUTOMERGE_TOKEN` (a PAT with
 `contents: write` and `pull-requests: write`). With a PAT the push
@@ -179,4 +197,13 @@ gh run list --workflow auto-merge.yml --limit 5
 gh run view <run id> --log
 ```
 
-The run summary lists every open PR with the decision and the reason.
+The run summary lists every open PR with the decision and the reason. The
+run log has one line per PR, `#<n> <decision>: <detail>`.
+
+## 10. Visibility and dry run
+
+- The sweep MUST keep ONE status comment per skipped PR, identified by the
+  hidden marker `<!-- automerge-sweep-status -->`. It MUST update that comment
+  only when the reason changes, and MUST NOT write it for a draft.
+- A dry run (`dry_run: true`) MUST NOT dispatch any workflow and MUST NOT
+  write any comment; it only logs `would ...`.

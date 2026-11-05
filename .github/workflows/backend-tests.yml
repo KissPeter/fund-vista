@@ -14,6 +14,11 @@
 # suite misses (it caught normalize_icao 500 on its first CI-style run).
 name: backend-tests
 
+# A run dispatched for a PR is named apart from the `main` gate: both are
+# attached to the head of `main`, and the sweep must tell them apart
+# (.github/scripts/auto-merge-sweep.sh main_gate_state, active_gate_for_pr).
+run-name: "${{ inputs.pr_number && format('backend-tests [merge-ref #{0}]', inputs.pr_number) || 'backend-tests' }}"
+
 on:
   push:
     branches: [main]
@@ -26,15 +31,21 @@ on:
     paths: *backend_paths
   # Manual run, two modes:
   #   - no input: the suite on the dispatched ref.
-  #   - pr_number=<n>: the suite against `refs/pull/<n>/merge`, exactly what
-  #     the pull_request event tests. The verdict is reported as the commit
-  #     status `automerge/merge-ref/backend-tests` on the head commit of the
-  #     PR, because the run itself is attached to `main` (see
-  #     docs/auto-merge.md).
+  #   - pr_number=<n> and main_sha=<sha>: the suite against the PR head merged
+  #     with that main commit. GitHub's own merge ref is not used: it is not
+  #     rebuilt when `main` moves. The verdict is reported as the commit
+  #     status `automerge/merge-ref/backend-tests` on the PR head, described
+  #     `head <head> main <main>`, because the run itself is attached to
+  #     `main` (see docs/auto-merge.md).
   workflow_dispatch:
     inputs:
       pr_number:
-        description: "PR number: test against refs/pull/<n>/merge"
+        description: "PR number: test the PR head merged with main_sha"
+        required: false
+        type: string
+        default: ""
+      main_sha:
+        description: "main commit to merge into the PR head (with pr_number)"
         required: false
         type: string
         default: ""
@@ -50,6 +61,8 @@ permissions:
 
 jobs:
   integration:
+    outputs:
+      tested_head: ${{ steps.merge.outputs.tested_head }}
     # Pinned instead of ubuntu-latest: the label migrates to Ubuntu 26 and
     # the pinned image keeps the suite environment deterministic.
     runs-on: [self-hosted, linux, ARM64]
@@ -68,9 +81,34 @@ jobs:
           fi
       - uses: actions/checkout@v7
         with:
-          # A dispatched run with pr_number tests the merge of the PR into
-          # main, the same thing the pull_request event tests.
-          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || '' }}
+          # A dispatched run with pr_number checks out the PR head; the merge
+          # with main is made by the step below. GitHub's refs/pull/<n>/merge
+          # is not used: it is not rebuilt when `main` moves.
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || '' }}
+          fetch-depth: ${{ inputs.pr_number && '0' || '1' }}
+      - name: Merge main into the PR head
+        id: merge
+        if: ${{ inputs.pr_number != '' }}
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MAIN_SHA: ${{ inputs.main_sha }}
+        run: |
+          # Recorded before the merge: the verdict names the PR head, not the
+          # merge commit built here.
+          echo "tested_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if ! [[ "$MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::main_sha must be a full commit SHA (got '$MAIN_SHA')"
+            exit 1
+          fi
+          git cat-file -e "${MAIN_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin main
+          if ! git cat-file -e "${MAIN_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::main commit $MAIN_SHA is not in the repository"
+            exit 1
+          fi
+          if ! git -c user.name="ci" -c user.email="ci@localhost" merge --no-edit "$MAIN_SHA"; then
+            echo "::error::PR #$PR_NUMBER does not merge cleanly with main $MAIN_SHA"
+            exit 1
+          fi
 
       # actions/setup-python has no 3.13 build for the self-hosted debian/arm64
       # container: uv installs the interpreter and owns a venv instead.
@@ -140,6 +178,8 @@ jobs:
           include-hidden-files: true
 
   schemathesis:
+    outputs:
+      tested_head: ${{ steps.merge.outputs.tested_head }}
     runs-on: [self-hosted, linux, ARM64]
     steps:
       # The self-hosted runner is a Linux container without gh: fetch the binary
@@ -156,9 +196,34 @@ jobs:
           fi
       - uses: actions/checkout@v7
         with:
-          # A dispatched run with pr_number tests the merge of the PR into
-          # main, the same thing the pull_request event tests.
-          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || '' }}
+          # A dispatched run with pr_number checks out the PR head; the merge
+          # with main is made by the step below. GitHub's refs/pull/<n>/merge
+          # is not used: it is not rebuilt when `main` moves.
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || '' }}
+          fetch-depth: ${{ inputs.pr_number && '0' || '1' }}
+      - name: Merge main into the PR head
+        id: merge
+        if: ${{ inputs.pr_number != '' }}
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MAIN_SHA: ${{ inputs.main_sha }}
+        run: |
+          # Recorded before the merge: the verdict names the PR head, not the
+          # merge commit built here.
+          echo "tested_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if ! [[ "$MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::main_sha must be a full commit SHA (got '$MAIN_SHA')"
+            exit 1
+          fi
+          git cat-file -e "${MAIN_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin main
+          if ! git cat-file -e "${MAIN_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::main commit $MAIN_SHA is not in the repository"
+            exit 1
+          fi
+          if ! git -c user.name="ci" -c user.email="ci@localhost" merge --no-edit "$MAIN_SHA"; then
+            echo "::error::PR #$PR_NUMBER does not merge cleanly with main $MAIN_SHA"
+            exit 1
+          fi
 
       # actions/setup-python has no 3.13 build for the self-hosted debian/arm64
       # container: uv installs the interpreter and owns a venv instead.
@@ -217,20 +282,31 @@ jobs:
             echo "$RUNNER_TEMP/gh_${v}_linux_${arch}/bin" >> "$GITHUB_PATH"
           fi
       - name: Report the merge-ref verdict
+        # The sweep reads this status to know that the suite was green for
+        # exactly this PR head and this main. A canceled run reports nothing.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ inputs.pr_number }}
           WORKFLOW: ${{ github.workflow }}
           INTEGRATION: ${{ needs.integration.result }}
           SCHEMATHESIS: ${{ needs.schemathesis.result }}
+          HEAD_INTEGRATION: ${{ needs.integration.outputs.tested_head }}
+          HEAD_SCHEMATHESIS: ${{ needs.schemathesis.outputs.tested_head }}
+          MAIN_SHA: ${{ inputs.main_sha }}
         run: |
-          merge_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/pull/$PR_NUMBER/merge" --jq '.object.sha')"
-          head_sha="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+          tested_head="$HEAD_INTEGRATION"
+          if [ -z "$tested_head" ]; then
+            echo "::error::no PR head was checked out, nothing to report"
+            exit 1
+          fi
           state=success
           if [ "$INTEGRATION" != success ] || [ "$SCHEMATHESIS" != success ]; then
             state=failure
           fi
-          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$head_sha" \
+          # Both jobs must have tested the same head, else the verdict is red.
+          if [ -n "$HEAD_SCHEMATHESIS" ] && [ "$HEAD_SCHEMATHESIS" != "$tested_head" ]; then
+            state=failure
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$tested_head" \
             -f state="$state" \
             -f context="automerge/merge-ref/$WORKFLOW" \
-            -f description="merge ref $merge_sha"
+            -f description="head $tested_head main $MAIN_SHA"
