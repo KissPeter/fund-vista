@@ -308,7 +308,13 @@ def _reset(monkeypatch, tmp_path):
     from backend.traffic.store import FileSliceStore
     import backend.traffic.store as traffic_store
 
+    from backend.airports import sources
+
     upstream_mock.install()
+    # The Overture reader is replaced by a deterministic fake (no S3, no
+    # DuckDB); the outage window is cleared before and after every test.
+    monkeypatch.setattr(sources, "read_overture_airfield", lambda *a: [])
+    sources.reset_overture_state()
     # Settings is frozen: swap the module attribute for a copy with the
     # shared test secret (the subprocess conftest env does the same for the
     # session server).
@@ -322,6 +328,7 @@ def _reset(monkeypatch, tmp_path):
     monkeypatch.setattr(traffic_store, "default_store",
                         lambda: FileSliceStore(tmp_path / "traffic"))
     yield
+    sources.reset_overture_state()
     upstream_mock.uninstall()
 
 
