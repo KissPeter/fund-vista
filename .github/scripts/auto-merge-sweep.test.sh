@@ -355,6 +355,11 @@ expect "the refresh pass does not re-dispatch a red verdict for this head and ma
 reset_shim
 refresh_ci_after_merges 2>/dev/null
 expect "the refresh pass dispatches a PR without a verdict" "1" "$(dispatches)"
+reset_shim
+DISPATCHED_PRS=" 7 "
+refresh_ci_after_merges 2>/dev/null
+expect "the refresh pass skips a PR this sweep already dispatched" "0" "$(dispatches)"
+DISPATCHED_PRS=" "
 
 # 3. PRs that can never be merged get no dispatch.
 reset_shim
