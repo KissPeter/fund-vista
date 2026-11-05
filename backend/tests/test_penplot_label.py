@@ -44,6 +44,16 @@ def test_align_right_ends_at_margin():
     assert abs(x1 - (PAGE_W - MARGIN)) < 1e-6
 
 
+def test_align_center_is_centred_between_margins():
+    lines, _ = labels.render_label(
+        "AB", height_mm=5.0, align="center",
+        page_w=PAGE_W, page_h=PAGE_H, margin_mm=MARGIN,
+        border=False,
+    )
+    x0, _, x1, _ = _bbox(lines)
+    assert abs((x0 + x1) / 2.0 - PAGE_W / 2.0) < 1e-6
+
+
 def test_align_fill_spans_inner_width():
     lines, _ = labels.render_label(
         "AB", height_mm=5.0, align="fill",
