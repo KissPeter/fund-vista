@@ -349,7 +349,7 @@ def test_label_warnings_surfaced_over_http(http_client):
 
 def test_label_invalid_align_422(http_client):
     image_id = upload(http_client, png_bytes()).json()["image_id"]
-    params = _labeled(default_params("hatch"), align="center")
+    params = _labeled(default_params("hatch"), align="diagonal")
     resp = _convert(http_client, image_id, params)
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "invalid_params"

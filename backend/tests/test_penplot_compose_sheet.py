@@ -10,6 +10,7 @@ import base64
 import copy
 import hashlib
 import json
+import math
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -1367,3 +1368,62 @@ def test_inline_sheet_passes_the_gate_for_every_furniture_layout(placement):
     out = _compose(svg=SEIRAN_SVG, lines=["Title", "Sub"], context_table=TABLE_TOP_RIGHT,
                    layout=layout, artwork=INLINE_OK)
     assert _root(out).attrib.get("data-kp-compose") == "1"
+
+
+# -- fill artwork: cropped to the free area, not letterboxed -------------------
+
+FILL_ART = (
+    '<svg xmlns="http://www.w3.org/2000/svg" data-kp-fit="fill" viewBox="0 0 1000 707" '
+    'width="300mm" height="212mm"><g id="traffic-x" fill="none" stroke="#000" stroke-width="0.5">'
+    '<path d="M0.0,100.0 L1000.0,100.0"/>'
+    '<path d="M500.0,0.0 L500.0,707.0"><title>t</title></path>'
+    '<circle cx="2.0" cy="2.0" r="4"/></g></svg>'
+)
+
+
+def _fill_compose(placement: str):
+    layout = {"page": {"orientation": "landscape", "frame": True}, "label": {"placement": placement}}
+    return cs.compose_sheet_svg(
+        _req(svg=FILL_ART, artwork="inline", layout=layout, lines=[TITLE, SUB]),
+        max_svg_bytes=25 * 1024 * 1024,
+    )
+
+
+@pytest.mark.parametrize("placement", ["below", "above"])
+def test_fill_art_fills_the_free_area_when_the_title_is_outside(placement):
+    svg = _fill_compose(placement)
+    root = _root(svg)
+    frame = [el for el in root.iter() if "data-kp-frame" in el.attrib][0]
+    fx0, fy0, fx1, fy1 = _bounds(_xy(frame))
+    horiz = [el for el in root.iter() if el.tag.endswith("path") and "data-kp-frame" not in el.attrib
+             and "data-kp-title-block" not in el.attrib]
+    art = _marked(root, "data-kp-artwork")[0]
+    tm = [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", art.attrib["transform"])]
+    a, e = tm[0], tm[4]
+    # The horizontal stroke spans the full width of the art box: 0..1000 maps to a box
+    # as wide as the free area (the frame inset by margin + padding).
+    page = ComposeLayout.model_validate({}).page
+    inset = page.margin_mm + page.padding_mm
+    assert math.isclose(e, inset, abs_tol=0.02)
+    assert math.isclose(1000 * a, (fx1 - fx0) - 2 * page.padding_mm, abs_tol=0.05)
+    assert horiz is not None
+
+
+def test_fill_art_that_cannot_be_cropped_keeps_the_letterbox():
+    odd = FILL_ART.replace("<circle", "<rect width='1' height='1'/><circle")
+    from backend.penplot import art_fill
+    assert art_fill.crop_to_aspect(odd, 1.5) == odd
+
+
+def test_crop_clips_strokes_and_drops_circles_outside():
+    from backend.penplot import art_fill
+    out = art_fill.crop_to_aspect(FILL_ART, 1.5)
+    root = ET.fromstring(out)
+    x, y, w, h = (float(n) for n in root.attrib["viewBox"].split())
+    assert math.isclose(w / h, 1.5, rel_tol=1e-3) and math.isclose(w, 1000.0) and y > 0
+    assert "<circle" not in out  # (2,2) is outside the cropped rectangle
+    assert "<title>t</title>" in out  # inner markup rides along
+    for el in root.iter():
+        if el.tag.endswith("path"):
+            for px, py in _xy(el):
+                assert x - 0.1 <= px <= x + w + 0.1 and y - 0.1 <= py <= y + h + 0.1

@@ -308,7 +308,7 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
             seg, title = arcs[i]
             layers[k].append('<path d="M%s"><title>%s</title></path>' % (" L".join("%.1f,%.1f" % q for q in seg), title))
     out = ['<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
-           'viewBox="0 0 %.0f %.0f" width="%.0fmm" height="%.0fmm">' % (proj.width, proj.height, proj.width * 0.3, proj.height * 0.3)]
+           'data-kp-fit="fill" viewBox="0 0 %.0f %.0f" width="%.0fmm" height="%.0fmm">' % (proj.width, proj.height, proj.width * 0.3, proj.height * 0.3)]
     for k in ORDER:
         if k in MAP_LAYERS and not include_map:
             continue
