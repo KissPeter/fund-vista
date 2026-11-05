@@ -1,12 +1,12 @@
-# Two layers over the mocked app (FUNDVISTA_UPSTREAM_MODE=mock — every
+# Two layers over the mocked app (FUNDVISTA_UPSTREAM_MODE=mock - every
 # third-party call is served from in-repo fixtures and unmocked hosts fail
 # closed; see backend/upstream_mock/). Both run offline: no real data and no
 # external services. The API integration tests run against a throwaway
 # redis-server (backend/tests/redis_harness.py) and assert on the mock data
 # that lands in Redis, so the CI runner needs redis-server installed.
 #
-#   1. integration  — the full pytest live-server suite, hermetic.
-#   2. schemathesis — OpenAPI property fuzzing against the running mock-mode
+#   1. integration  - the full pytest live-server suite, hermetic.
+#   2. schemathesis - OpenAPI property fuzzing against the running mock-mode
 #                     app (not_a_server_error only; ~2.7k cases / ~2 min),
 #                     ops/schemathesis-smoke.sh; junit artifact on failure.
 #
@@ -19,16 +19,16 @@ name: backend-tests
 # (.github/scripts/auto-merge-sweep.sh main_gate_state, active_gate_for_pr).
 run-name: "${{ inputs.pr_number && format('backend-tests [merge-ref #{0}]', inputs.pr_number) || 'backend-tests' }}"
 
+# No `paths` filter: the `main` ruleset requires the checks
+# `integration (pytest)` and `schemathesis` on every pull request, and a
+# workflow skipped by a path filter reports no check at all. Each job instead
+# asks .github/scripts/backend-changes.sh whether a backend path changed; when
+# none did, the job skips the suite and still reports success
+# (docs/auto-merge.md §3).
 on:
   push:
     branches: [main]
-    paths: &backend_paths
-      - backend/**
-      - runtests.sh
-      - ops/schemathesis-smoke.sh
-      - .github/workflows/backend-tests.yml
   pull_request:
-    paths: *backend_paths
   # Manual run, two modes:
   #   - no input: the suite on the dispatched ref.
   #   - pr_number=<n> and main_sha=<sha>: the suite against the PR head merged
@@ -50,7 +50,7 @@ on:
         type: string
         default: ""
 
-# The junit-report step annotates the commit with check runs — the default
+# The junit-report step annotates the commit with check runs - the default
 # token is read-mostly, so checks:write must be granted explicitly.
 # statuses:write is for the merge-ref verdict of the dispatched run.
 permissions:
@@ -61,8 +61,11 @@ permissions:
 
 jobs:
   integration:
+    # The name MUST match the required check of the `main` ruleset and the
+    # sweep's AUTOMERGE_GATE_WORKFLOWS (.github/workflows/auto-merge.yml).
+    name: integration (pytest)
     outputs:
-      tested_head: ${{ steps.merge.outputs.tested_head }}
+      tested_head: ${{ steps.changes.outputs.tested_head }}
     # Pinned instead of ubuntu-latest: the label migrates to Ubuntu 26 and
     # the pinned image keeps the suite environment deterministic.
     runs-on: [self-hosted, linux, ARM64]
@@ -86,16 +89,33 @@ jobs:
           # is not used: it is not rebuilt when `main` moves.
           ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || '' }}
           fetch-depth: ${{ inputs.pr_number && '0' || '1' }}
+      - name: Detect backend changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          DISPATCH_PR: ${{ inputs.pr_number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          # A dispatched run names the PR head it tested, recorded before the
+          # merge below: the verdict is about the PR head, not the merge commit.
+          if [ -n "$DISPATCH_PR" ]; then
+            echo "tested_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+          bash .github/scripts/backend-changes.sh
+      - name: No backend change, the suite is skipped
+        if: ${{ steps.changes.outputs.backend != 'true' }}
+        run: |
+          echo "No backend path changed: the suite is skipped and the job reports success." >> "$GITHUB_STEP_SUMMARY"
       - name: Merge main into the PR head
         id: merge
-        if: ${{ inputs.pr_number != '' }}
+        if: ${{ inputs.pr_number != '' && steps.changes.outputs.backend == 'true' }}
         env:
           PR_NUMBER: ${{ inputs.pr_number }}
           MAIN_SHA: ${{ inputs.main_sha }}
         run: |
-          # Recorded before the merge: the verdict names the PR head, not the
-          # merge commit built here.
-          echo "tested_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           if ! [[ "$MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::main_sha must be a full commit SHA (got '$MAIN_SHA')"
             exit 1
@@ -113,19 +133,23 @@ jobs:
       # actions/setup-python has no 3.13 build for the self-hosted debian/arm64
       # container: uv installs the interpreter and owns a venv instead.
       - uses: astral-sh/setup-uv@v7
+        if: ${{ steps.changes.outputs.backend == 'true' }}
       - name: Set up Python 3.13
+        if: ${{ steps.changes.outputs.backend == 'true' }}
         run: |
           uv venv --python 3.13 "$RUNNER_TEMP/venv"
           echo "VIRTUAL_ENV=$RUNNER_TEMP/venv" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
       - name: Lockfile is current (a deploy installs from backend/uv.lock)
+        if: ${{ steps.changes.outputs.backend == 'true' }}
         working-directory: backend
         # Pinned and run through uvx: the runner's `uv` on PATH is not always
         # the one setup-uv installed, and the lock check flapped on it.
         run: uvx --from uv==0.13.5 uv lock --check
 
       - name: Install deps (uv reads backend/pyproject.toml + test group)
+        if: ${{ steps.changes.outputs.backend == 'true' }}
         working-directory: backend
         run: |
           # `pip install ./backend` cannot work here: the repo root is the
@@ -136,14 +160,17 @@ jobs:
           uv pip install -r pyproject.toml --group test
 
       - name: OCR system dep (pytesseract fallback path)
+        if: ${{ steps.changes.outputs.backend == 'true' }}
         run: command -v tesseract >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr)
 
       # The API integration tests start their own redis-server and assert on
       # the mock data cached in it (backend/tests/redis_harness.py).
       - name: Redis server binary (API tests assert cache contents)
+        if: ${{ steps.changes.outputs.backend == 'true' }}
         run: command -v redis-server >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq redis-server)
 
       - name: Run integration suite (live servers, mocked upstreams)
+        if: ${{ steps.changes.outputs.backend == 'true' }}
         env:
           # Same hermetic defaults the suite sets itself (conftest.py); set
           # explicitly so the nested uvicorn subprocesses can never see a
@@ -162,14 +189,14 @@ jobs:
           --html=backend/reports/report.html --self-contained-html
 
       - name: Publish pytest results (check-run annotations)
-        if: always()
+        if: ${{ always() && steps.changes.outputs.backend == 'true' }}
         uses: mikepenz/action-junit-report@v6
         with:
-          check_name: integration (pytest)
+          check_name: integration (pytest report)
           report_paths: backend/reports/junit.xml
 
       - name: Upload pytest reports (junit + self-contained HTML)
-        if: always()
+        if: ${{ always() && steps.changes.outputs.backend == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: pytest-reports
@@ -178,8 +205,11 @@ jobs:
           include-hidden-files: true
 
   schemathesis:
+    # The name MUST match the required check of the `main` ruleset and the
+    # sweep's AUTOMERGE_GATE_WORKFLOWS (.github/workflows/auto-merge.yml).
+    name: schemathesis
     outputs:
-      tested_head: ${{ steps.merge.outputs.tested_head }}
+      tested_head: ${{ steps.changes.outputs.tested_head }}
     runs-on: [self-hosted, linux, ARM64]
     steps:
       # The self-hosted runner is a Linux container without gh: fetch the binary
@@ -201,16 +231,33 @@ jobs:
           # is not used: it is not rebuilt when `main` moves.
           ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || '' }}
           fetch-depth: ${{ inputs.pr_number && '0' || '1' }}
+      - name: Detect backend changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          DISPATCH_PR: ${{ inputs.pr_number }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          # A dispatched run names the PR head it tested, recorded before the
+          # merge below: the verdict is about the PR head, not the merge commit.
+          if [ -n "$DISPATCH_PR" ]; then
+            echo "tested_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+          bash .github/scripts/backend-changes.sh
+      - name: No backend change, the suite is skipped
+        if: ${{ steps.changes.outputs.backend != 'true' }}
+        run: |
+          echo "No backend path changed: the suite is skipped and the job reports success." >> "$GITHUB_STEP_SUMMARY"
       - name: Merge main into the PR head
         id: merge
-        if: ${{ inputs.pr_number != '' }}
+        if: ${{ inputs.pr_number != '' && steps.changes.outputs.backend == 'true' }}
         env:
           PR_NUMBER: ${{ inputs.pr_number }}
           MAIN_SHA: ${{ inputs.main_sha }}
         run: |
-          # Recorded before the merge: the verdict names the PR head, not the
-          # merge commit built here.
-          echo "tested_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           if ! [[ "$MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::main_sha must be a full commit SHA (got '$MAIN_SHA')"
             exit 1
@@ -228,29 +275,33 @@ jobs:
       # actions/setup-python has no 3.13 build for the self-hosted debian/arm64
       # container: uv installs the interpreter and owns a venv instead.
       - uses: astral-sh/setup-uv@v7
+        if: ${{ steps.changes.outputs.backend == 'true' }}
       - name: Set up Python 3.13
+        if: ${{ steps.changes.outputs.backend == 'true' }}
         run: |
           uv venv --python 3.13 "$RUNNER_TEMP/venv"
           echo "VIRTUAL_ENV=$RUNNER_TEMP/venv" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
       - name: Install deps (same as integration)
+        if: ${{ steps.changes.outputs.backend == 'true' }}
         working-directory: backend
         run: |
           uv pip install -r pyproject.toml --group test
 
       - name: Schemathesis smoke (mock-mode server)
+        if: ${{ steps.changes.outputs.backend == 'true' }}
         run: ./ops/schemathesis-smoke.sh .
 
       - name: Publish schemathesis results (check-run annotations)
-        if: always()
+        if: ${{ always() && steps.changes.outputs.backend == 'true' }}
         uses: mikepenz/action-junit-report@v6
         with:
-          check_name: schemathesis (smoke)
+          check_name: schemathesis (smoke report)
           report_paths: schemathesis_results/schemathesis_smoke.xml
 
       - name: Upload test reports
-        if: always()
+        if: ${{ always() && steps.changes.outputs.backend == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: schemathesis-report
