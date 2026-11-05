@@ -12,6 +12,10 @@ name: Auto merge
 #   workflow_run         a gate workflow finished (the green verdict lands here)
 #   push                 `main` moved (a merge invalidates the other merge refs)
 #   workflow_dispatch    a manual sweep
+#   schedule             a heartbeat every 10 minutes: a CI run or a merge made
+#                        with the GITHUB_TOKEN fires no workflow_run or push
+#                        event, so without it a gate the sweep dispatched
+#                        itself is only read when an unrelated event wakes it
 
 on:
   pull_request_target:
@@ -21,6 +25,8 @@ on:
     types: [completed]
   push:
     branches: [main]
+  schedule:
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
