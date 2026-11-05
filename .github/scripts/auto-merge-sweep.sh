@@ -83,6 +83,11 @@ validate_config() {
 
 SUMMARY_ROWS=""
 MERGED_COUNT=0
+# The PRs this sweep already dispatched a gate for, " <n> <n> ". decide_pr
+# runs in a subshell, so the main loop records them from the decision. The
+# refresh pass skips them: the run it just dispatched is not listed by the
+# API yet, and a second dispatch would occupy the runner twice.
+DISPATCHED_PRS=" "
 SKIPPED_COUNT=0
 FAILED_COUNT=0
 MAIN_SHA=""
@@ -695,6 +700,9 @@ refresh_ci_after_merges() {
     if [ "$(jq -r '.isDraft' <<<"$pr")" = "true" ]; then
       continue
     fi
+    case "$DISPATCHED_PRS" in
+      *" $number "*) continue ;;
+    esac
     labels="$(jq -r '[.labels[].name] | join("\n")' <<<"$pr")"
     if has_block_label "$labels"; then
       continue
@@ -841,6 +849,9 @@ main() {
     detail="${decision#*|}"
     decision="${decision%%|*}"
     log_decision "$number" "$decision" "$detail"
+    case "$detail" in
+      "dispatched the "*) DISPATCHED_PRS="${DISPATCHED_PRS}${number} " ;;
+    esac
     case "$decision" in
       merge)
         if merge_pr "$number"; then
