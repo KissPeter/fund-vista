@@ -645,3 +645,201 @@ def test_ink_split_of_an_all_empty_draft_serves_no_files(live, monkeypatch):
     })
     assert resp.status_code == 200, resp.text
     assert resp.json()["files"] == []
+
+
+# ------------------------------------------- stored design first (fallback) --
+#
+# The purchased design's own bytes are read from the image store before any
+# re-render. These tests pin that order: a re-render that would raise must not
+# run while the stored copy is intact, and every failure of the stored copy
+# falls back to the unchanged re-render path.
+
+STORED_MARK = "fulfilled_from_stored_design"
+
+
+def _no_rerender(monkeypatch):
+    """Any re-render is a loud failure: the stored path must never call it."""
+    async def _boom(*args, **kwargs):
+        raise AssertionError("render_document ran although the stored design is intact")
+
+    monkeypatch.setattr("backend.traffic.router.render_document", _boom)
+    monkeypatch.setattr("backend.airports.router.render_document", _boom)
+
+
+def _order(live, monkeypatch, tmp_path, kind: str) -> tuple[str, dict]:
+    """Import one design of ``kind``; return (design_id, ink-split request)."""
+    import datetime as _dt
+
+    if kind == "traffic":
+        day = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).date().isoformat()
+        _seed_l1(str(tmp_path / "traffic"), day)
+        _stub_traffic(monkeypatch)
+        params = _traffic_params(day)
+        imported = live.post("/v1/traffic/import", json=params)
+        request = {
+            "kind": "traffic", "params": {"kind": "traffic", **params},
+            "inks": {"pen": "black", "layer_colors": {"departures": "red"}},
+        }
+    else:
+        imported = live.post("/v1/airports/import", json={"icao": "LHBP"})
+        request = {
+            "kind": "airport", "params": {"icao": "LHBP"},
+            "inks": {"pen": "black", "runway": "red"},
+        }
+    assert imported.status_code == 200, imported.text
+    design_id = imported.json()["image_id"]
+    return design_id, {"design": _mint(design_id), **request}
+
+
+def _stored_path(design_id: str) -> str:
+    from backend.penplot.router import store as penplot_store
+
+    path = penplot_store.find_image(design_id)
+    assert path is not None, "the import should have stored the design"
+    return path
+
+
+KINDS = ["traffic", "airport"]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_stored_design_is_split_without_rerendering(live, monkeypatch, tmp_path, kind):
+    """(a) The intact stored design is split; no renderer or upstream runs."""
+    design_id, request = _order(live, monkeypatch, tmp_path, kind)
+    _no_rerender(monkeypatch)
+
+    resp = live.post("/v1/fulfill/ink-split", json=request)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["design_id"] == design_id and body["kind"] == kind
+    assert body["cache_hit"] is True
+    assert body["warnings"] == [STORED_MARK]
+    assert body["files"], "the stored design has drawn layers"
+    assert all(f["svg"].startswith("<svg") for f in body["files"])
+    expected = "adsb.lol" if kind == "traffic" else "OpenStreetMap"
+    assert expected in body["attribution"]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("corruption", ["other_svg", "not_utf8"])
+def test_corrupt_stored_design_falls_back_to_rerender(
+        live, monkeypatch, tmp_path, kind, corruption):
+    """(b) A stored file whose bytes fail the hash check (or are not UTF-8)
+    is ignored: the re-render serves the order, without the stored marker."""
+    design_id, request = _order(live, monkeypatch, tmp_path, kind)
+    path = _stored_path(design_id)
+    with open(path, "rb") as fh:
+        original = fh.read()
+    corrupt = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>'
+        if corruption == "other_svg" else b"\xff\xfe\x00 not text"
+    )
+    try:
+        with open(path, "wb") as fh:
+            fh.write(corrupt)
+        resp = live.post("/v1/fulfill/ink-split", json=request)
+    finally:
+        # The store is content-addressed: restore the bytes for later tests.
+        with open(path, "wb") as fh:
+            fh.write(original)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert STORED_MARK not in body["warnings"]
+    assert body["files"]
+
+
+def _read(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _write(path: str, data: bytes) -> None:
+    with open(path, "wb") as fh:
+        fh.write(data)
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_no_stored_design_rerenders_and_mismatch_is_still_409(
+        live, monkeypatch, tmp_path, kind):
+    """(c) With no stored copy the re-render path runs as before; a draft that
+    does not hash to the design_id is still refused with 409 design_mismatch."""
+    design_id, request = _order(live, monkeypatch, tmp_path, kind)
+    path = _stored_path(design_id)
+    original = _read(path)
+    try:
+        os.remove(path)
+        resp = live.post("/v1/fulfill/ink-split", json=request)
+        mismatch = live.post("/v1/fulfill/ink-split", json={
+            **request, "design": _mint("b" * 64),
+        })
+    finally:
+        # Shared, content-addressed store: put the purchased bytes back.
+        _write(path, original)
+    assert resp.status_code == 200, resp.text
+    assert STORED_MARK not in resp.json()["warnings"]
+    assert resp.json()["files"]
+    assert mismatch.status_code == 409, mismatch.text
+    assert mismatch.json()["error"]["code"] == "design_mismatch"
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_non_svg_stored_design_falls_back(live, monkeypatch, tmp_path, kind):
+    """(d) A stored copy that is not an SVG file is never used, even when its
+    bytes would hash back to the design: the re-render serves the order."""
+    design_id, request = _order(live, monkeypatch, tmp_path, kind)
+    path = _stored_path(design_id)
+    png = path[: -len(".svg")] + ".png"
+    os.replace(path, png)
+    try:
+        resp = live.post("/v1/fulfill/ink-split", json=request)
+    finally:
+        os.replace(png, path)
+    assert resp.status_code == 200, resp.text
+    assert STORED_MARK not in resp.json()["warnings"]
+    assert resp.json()["files"]
+
+
+def test_stored_design_name_is_not_trusted(live, monkeypatch, tmp_path):
+    """The file name only selects a candidate. Real swap: the airport design's
+    file is renamed onto the traffic design's id. The digest check refuses it
+    and the traffic order is re-rendered; the renamed file is not used."""
+    from backend.fulfillment import router as fulfillment_router
+
+    airport_id, _ = _order(live, monkeypatch, tmp_path, "airport")
+    traffic_id, traffic_req = _order(live, monkeypatch, tmp_path, "traffic")
+    a_path, b_path = _stored_path(airport_id), _stored_path(traffic_id)
+    a_bytes, b_bytes = _read(a_path), _read(b_path)
+    assert a_bytes != b_bytes
+    try:
+        os.replace(a_path, b_path)  # airport bytes now sit under the traffic id
+        assert fulfillment_router._stored_design_svg(traffic_id) is None
+        resp = live.post("/v1/fulfill/ink-split", json=traffic_req)
+    finally:
+        _write(a_path, a_bytes)
+        _write(b_path, b_bytes)
+    assert resp.status_code == 200, resp.text
+    assert STORED_MARK not in resp.json()["warnings"]
+    assert resp.json()["files"]
+
+
+def test_stored_design_is_served_despite_schema_drift(live, monkeypatch, tmp_path):
+    """Stored design + persisted params that no longer match the render schema
+    -> still 200 from the intact stored design (no re-render, no 422)."""
+    design_id, request = _order(live, monkeypatch, tmp_path, "airport")
+    _no_rerender(monkeypatch)
+    request["params"] = {"icao": "LHBP", "retired_field": 1}
+    resp = live.post("/v1/fulfill/ink-split", json=request)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["warnings"] == [STORED_MARK]
+    assert resp.json()["design_id"] == design_id
+
+
+def test_no_stored_design_and_bad_params_is_422(live):
+    """Without a stored copy the params are validated as before: 422."""
+    resp = live.post("/v1/fulfill/ink-split", json={
+        "design": _mint("a" * 64), "kind": "airport",
+        "params": {"icao": "LHBP", "retired_field": 1},
+        "inks": {"pen": "black"},
+    })
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "invalid_params"

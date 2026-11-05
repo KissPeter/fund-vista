@@ -57,6 +57,10 @@ Suite: 213 passed.
   expires_at}`. Anonymous previews keep the short TTL.
 - Fulfillment re-fetch path is unchanged (`GET /v1/images/{id}` metadata +
   `/v1/results/*` SVGs); it now works days later for retained designs.
+- Stored images expire 48 h after their last write unless `/retain` is called
+  after order-paid (the shop calls it, not this repo). Ink-split reads the
+  stored design first; an order fulfilled after expiry falls back to a
+  re-render and can fail with `409 design_mismatch` if the renderer changed.
 
 ## §5 Rate limits + error codes — done with one deliberate deviation
 
