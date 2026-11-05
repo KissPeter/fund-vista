@@ -37,7 +37,7 @@ from backend.traffic.classify import classify_day
 from backend.traffic.config import settings as traffic_settings
 from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
 from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
-from backend.traffic.render import AIRPORT_LAYERS, HIGHWAY_LAYERS, MAP_LAYERS, expand_view_to_aspect, render_svg
+from backend.traffic.render import AIRPORT_LAYERS, HIGHWAY_LAYERS, MAP_LAYERS, crop_view_to_aspect, expand_view_to_aspect, render_svg
 from backend.traffic.render_cache import (
     _load_cached_render,
     _load_result_svg,
@@ -191,8 +191,11 @@ async def render_document(
         # Paper fill (r4): grow the view around its centre to the canvas
         # ratio first, clamped to the day bbox — the ingest clipped the
         # traces to it, so beyond it there is nothing to draw and the
-        # residual mismatch letterboxes in the SVG instead.
+        # residual mismatch is cropped (crop_view_to_aspect).
         view = expand_view_to_aspect(view, body.viewport_aspect, tuple(float(x) for x in l1_bbox))  # type: ignore[arg-type]
+        # What the clamp could not grow is cropped instead, so the data fills
+        # the page rather than leaving an empty strip on one axis.
+        view = crop_view_to_aspect(view, body.viewport_aspect)
     if body.view_south is not None:
         if not (view[0] >= l1_bbox[0] and view[1] <= l1_bbox[1]
                 and view[2] >= l1_bbox[2] and view[3] <= l1_bbox[3]):

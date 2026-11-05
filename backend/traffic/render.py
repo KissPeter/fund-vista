@@ -195,6 +195,34 @@ def expand_view_to_aspect(
     return (s2, n2, w, e)
 
 
+def crop_view_to_aspect(
+    view: tuple[float, float, float, float],
+    aspect: float,
+) -> tuple[float, float, float, float]:
+    """Shrink a view around its centre to ``aspect`` (width/height).
+
+    The counterpart of :func:`expand_view_to_aspect` for the residual its
+    clamp leaves: the day bbox is fixed (about 1.28:1 at mid latitudes), so a
+    wider page cannot be reached by growing. Cropping the long axis makes the
+    drawn data fill the canvas instead of letterboxing it. One axis shrinks:
+    whichever the ratio demands. A matching aspect is returned untouched.
+    """
+    s, n, w, e = view
+    kx = math.cos(math.radians((s + n) / 2))
+    span_x = (e - w) * kx
+    span_y = n - s
+    ratio = span_x / max(span_y, 1e-12)
+    if math.isclose(ratio, aspect, rel_tol=1e-9):
+        return view
+    if ratio < aspect:  # too tall -> keep the width, crop north-south
+        half = span_x / aspect / 2.0
+        mid = (s + n) / 2.0
+        return (mid - half, mid + half, w, e)
+    half = span_y * aspect / kx / 2.0  # too wide -> keep the height, crop east-west
+    mid = (w + e) / 2.0
+    return (s, n, mid - half, mid + half)
+
+
 def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, float, float],
                flt: Filters, airport: dict | None = None, width: float = 1000.0,
                include_map: bool = True, include_airport: bool = True,
