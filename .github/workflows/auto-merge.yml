@@ -84,8 +84,9 @@ jobs:
           AUTOMERGE_MERGE_METHOD: squash
           # The gate workflows and the jobs that must be green in each of
           # them. A workflow with a path filter that did not run for a PR is
-          # not counted.
-          AUTOMERGE_GATE_WORKFLOWS: backend-tests=integration+schemathesis,frontend-checks=checks
+          # not counted. The backend-tests job names MUST match the required
+          # checks of the `main` ruleset exactly (docs/auto-merge.md §3).
+          AUTOMERGE_GATE_WORKFLOWS: "backend-tests=integration (pytest)+schemathesis,frontend-checks=checks"
           AUTOMERGE_ADVISORY_CHECKS: ""
           AUTOMERGE_BLOCK_LABELS: automerge:block,needs-human
           AUTOMERGE_REQUIRE_MAIN_GREEN: ${{ vars.AUTOMERGE_REQUIRE_MAIN_GREEN || 'true' }}

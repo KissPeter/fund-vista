@@ -35,7 +35,7 @@ expect() {
 expect "the workflow name of an entry" "backend-tests" \
   "$(gate_workflow_name "backend-tests=integration+schemathesis")"
 
-expect "the required jobs of an entry" "integration schemathesis" \
+expect "the required jobs of an entry, one per line" "$(printf 'integration\nschemathesis')" \
   "$(gate_workflow_jobs "backend-tests=integration+schemathesis")"
 
 expect "an entry without a job list" "CI" "$(gate_workflow_name "CI")"
@@ -81,13 +81,52 @@ expect "a blocking job that still runs blocks" "pending" \
   "$(classify_jobs "$(printf 'gate\tin_progress\tnone\nlive-e2e\tcompleted\tskipped')" "gate" "live-e2e")"
 
 expect "two required jobs, both green" "green" \
-  "$(classify_jobs "$(printf 'integration\tcompleted\tsuccess\nschemathesis\tcompleted\tsuccess')" "integration schemathesis" "live-e2e")"
+  "$(classify_jobs "$(printf 'integration\tcompleted\tsuccess\nschemathesis\tcompleted\tsuccess')" "$(printf 'integration\nschemathesis')" "live-e2e")"
 
 expect "two required jobs, one red" "red" \
-  "$(classify_jobs "$(printf 'integration\tcompleted\tsuccess\nschemathesis\tcompleted\tfailure')" "integration schemathesis" "live-e2e")"
+  "$(classify_jobs "$(printf 'integration\tcompleted\tsuccess\nschemathesis\tcompleted\tfailure')" "$(printf 'integration\nschemathesis')" "live-e2e")"
 
 expect "two required jobs, one missing" "missing" \
-  "$(classify_jobs "$(printf 'integration\tcompleted\tsuccess')" "integration schemathesis" "live-e2e")"
+  "$(classify_jobs "$(printf 'integration\tcompleted\tsuccess')" "$(printf 'integration\nschemathesis')" "live-e2e")"
+
+# The backend-tests jobs carry the names the `main` ruleset requires; the
+# names contain spaces, so the lists are one name per line.
+BT_ENTRY="backend-tests=integration (pytest)+schemathesis"
+BT_REQUIRED="$(gate_workflow_jobs "$BT_ENTRY")"
+
+expect "a job name with spaces is one required job" "$(printf 'integration (pytest)\nschemathesis')" \
+  "$BT_REQUIRED"
+
+expect "the workflow name of an entry with spaces" "backend-tests" "$(gate_workflow_name "$BT_ENTRY")"
+
+expect "the gate list keeps an entry with spaces whole" "$(printf '%s\nfrontend-checks=checks' "$BT_ENTRY")" \
+  "$(GATE_WORKFLOWS="$BT_ENTRY,frontend-checks=checks"; echo "$GATE_WORKFLOWS" | tr ',' '\n')"
+
+expect "backend-tests ran its suite, both green" "green" \
+  "$(classify_jobs "$(printf 'integration (pytest)\tcompleted\tsuccess\nschemathesis\tcompleted\tsuccess\nverdict\tcompleted\tskipped')" "$BT_REQUIRED" "")"
+
+# No backend path changed: the jobs skip the suite inside the job and report
+# success, exactly like a run of the suite. The sweep MUST count that green.
+expect "backend-tests skipped the suite (no backend change), green" "green" \
+  "$(classify_jobs "$(printf 'integration (pytest)\tcompleted\tsuccess\nschemathesis\tcompleted\tsuccess\nverdict\tcompleted\tskipped')" "$BT_REQUIRED" "")"
+
+expect "a required job named with spaces is red" "red" \
+  "$(classify_jobs "$(printf 'integration (pytest)\tcompleted\tfailure\nschemathesis\tcompleted\tsuccess')" "$BT_REQUIRED" "")"
+
+expect "the old job name does not satisfy the new one" "missing" \
+  "$(classify_jobs "$(printf 'integration\tcompleted\tsuccess\nschemathesis\tcompleted\tsuccess')" "$BT_REQUIRED" "")"
+
+expect "a prefix of the job name does not satisfy it" "missing" \
+  "$(classify_jobs "$(printf 'integration (pytest)\tcompleted\tsuccess')" "$(printf 'integration (pytest)\nintegration')" "")"
+
+expect "a required job that did not run at all (skipped) is not green" "red" \
+  "$(classify_jobs "$(printf 'integration (pytest)\tcompleted\tskipped\nschemathesis\tcompleted\tsuccess')" "$BT_REQUIRED" "")"
+
+expect "a required job named with spaces that still runs" "pending" \
+  "$(classify_jobs "$(printf 'integration (pytest)\tin_progress\tnone\nschemathesis\tcompleted\tsuccess')" "$BT_REQUIRED" "")"
+
+expect "an advisory job named with spaces never blocks" "green" \
+  "$(classify_jobs "$(printf 'gate\tcompleted\tsuccess\nlive e2e (nightly)\tcompleted\tfailure')" "gate" "live e2e (nightly)")"
 
 # --- the merge-ref verdict -------------------------------------------------
 

@@ -27,8 +27,10 @@
 #   AUTOMERGE_GATE_WORKFLOWS the gate workflows, comma separated:
 #                             "workflow=job1+job2,other-workflow"
 #                             (the job list is optional; default: CI=gate)
-#   AUTOMERGE_ADVISORY_CHECKS    jobs that never block a merge (default:
-#                                 live-e2e)
+#                             A job name MAY contain spaces, e.g.
+#                             "backend-tests=integration (pytest)+schemathesis"
+#   AUTOMERGE_ADVISORY_CHECKS    jobs that never block a merge, comma
+#                                 separated (default: live-e2e)
 #   AUTOMERGE_BLOCK_LABELS   comma separated labels         (default:
 #                             automerge:block,needs-human)
 #   AUTOMERGE_BLOCKED_PATHS  paths a PR may not touch to be auto-merged
@@ -64,8 +66,11 @@ DRY_RUN="${AUTOMERGE_DRY_RUN:-false}"
 TOKEN_SOURCE="${AUTOMERGE_TOKEN_SOURCE:-bot}"
 CI_WORKFLOW="${CI_WORKFLOW:-ci.yml}"
 
-# The gate entries, space separated: "workflow=job1+job2"
-GATE_WORKFLOW_LIST="$(echo "$GATE_WORKFLOWS" | tr ',' ' ')"
+# The gate entries, one per line: "workflow=job1+job2". Newline separated,
+# because a job name may contain spaces ("integration (pytest)"). Iterate them
+# with `while IFS= read -r entry <&3; do ...; done 3<<<"$GATE_WORKFLOW_LIST"`:
+# fd 3 keeps the loop body's own stdin untouched.
+GATE_WORKFLOW_LIST="$(echo "$GATE_WORKFLOWS" | tr ',' '\n')"
 
 validate_config() {
   if [ -z "$REPO" ]; then
@@ -148,13 +153,14 @@ gate_workflow_name() {
   echo "${1%%=*}"
 }
 
-# gate_workflow_jobs <entry> -> the required job names, space separated
+# gate_workflow_jobs <entry> -> the required job names, one per line (a job
+# name may contain spaces)
 gate_workflow_jobs() {
   local entry="$1" jobs="${1#*=}"
   if [ "$jobs" = "$entry" ]; then
     jobs=""
   fi
-  echo "$jobs" | tr '+' ' '
+  echo "$jobs" | tr '+' '\n'
 }
 
 # has_block_label <labels (newline separated)> -> 0 when a block label is set
@@ -206,7 +212,13 @@ merge_ref_is_current() {
 
 # classify_jobs <jobs tsv> <required jobs> <advisory jobs>
 # -> green | pending | red | missing
-# Pure: the tsv is "name<TAB>status<TAB>conclusion" per line.
+# Pure: the tsv is "name<TAB>status<TAB>conclusion" per line; the required and
+# the advisory jobs are one name per line (a name may contain spaces).
+# A required job is green only with the conclusion `success`. A gate job that
+# found nothing to test (backend-tests on a PR without a backend change) skips
+# its suite inside the job and still concludes `success`, so it is green. A
+# required job concluded `skipped` is NOT green: the job did not run at all
+# (fail closed).
 classify_jobs() {
   local jobs="$1" required="$2" advisory="$3" name last blocking
   if [ -z "$jobs" ]; then
@@ -216,8 +228,10 @@ classify_jobs() {
   # A job that still runs means the verdict is not in yet - unless it is an
   # advisory job: it never blocks a merge, so it must not hold the sweep
   # back while it runs.
-  if awk -F'\t' -v advs="$advisory" '
-    BEGIN { m = split(advs, a, " ") }
+  # The lists reach awk through the environment: a `-v` value with a newline
+  # is an error in BSD awk.
+  if ADVS="$advisory" awk -F'\t' '
+    BEGIN { m = split(ENVIRON["ADVS"], a, "\n") }
     {
       isadv = 0; for (i = 1; i <= m; i++) if (a[i] == $1) isadv = 1
       if (!isadv && $2 != "completed") found = 1
@@ -226,7 +240,7 @@ classify_jobs() {
     echo "pending"
     return 0
   fi
-  for name in $required; do
+  while IFS= read -r name <&3; do
     [ -n "$name" ] || continue
     last="$(awk -F'\t' -v n="$name" '$1 == n { c = $3 } END { print c }' <<<"$jobs")"
     if [ -z "$last" ]; then
@@ -237,9 +251,9 @@ classify_jobs() {
       echo "red"
       return 0
     fi
-  done
-  blocking="$(awk -F'\t' -v reqs="$required" -v advs="$advisory" '
-    BEGIN { n = split(reqs, r, " "); m = split(advs, a, " ") }
+  done 3<<<"$required"
+  blocking="$(REQS="$required" ADVS="$advisory" awk -F'\t' '
+    BEGIN { n = split(ENVIRON["REQS"], r, "\n"); m = split(ENVIRON["ADVS"], a, "\n") }
     {
       isreq = 0; for (i = 1; i <= n; i++) if (r[i] == $1) isreq = 1
       isadv = 0; for (i = 1; i <= m; i++) if (a[i] == $1) isadv = 1
@@ -257,7 +271,7 @@ ci_run_jobs_state() {
   local run_id="$1" required="$2" jobs
   jobs="$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" \
     --jq '.jobs[] | [.name, .status, (.conclusion // "none")] | @tsv' 2>/dev/null || true)"
-  classify_jobs "$jobs" "$required" "$ADVISORY_CHECKS"
+  classify_jobs "$jobs" "$required" "$(echo "$ADVISORY_CHECKS" | tr ',' '\n')"
 }
 
 # fresh_ci_run <workflow> <head_sha> <merge_sha> -> the id of the newest gate
@@ -373,7 +387,8 @@ main_gate_state() {
     # An unreadable `main` is a broken sweep, not a red `main`.
     fail "could not read the head of main"
   fi
-  for entry in $GATE_WORKFLOW_LIST; do
+  while IFS= read -r entry <&3; do
+    [ -n "$entry" ] || continue
     workflow="$(gate_workflow_name "$entry")"
     run_id="$(gh api "repos/$REPO/actions/runs?head_sha=$MAIN_SHA&per_page=50" 2>/dev/null \
       | jq -r --arg wf "$workflow" \
@@ -386,7 +401,7 @@ main_gate_state() {
       pending) verdict="pending" ;;
       *) echo "red"; return 0 ;;
     esac
-  done
+  done 3<<<"$GATE_WORKFLOW_LIST"
   echo "$verdict"
 }
 
@@ -559,7 +574,8 @@ decide_pr() {
   # The gate workflows, one by one. A workflow with no run for this PR did
   # not run (path filter) and is not counted. At least one gate workflow
   # must have run and be green: a PR without any check is not a pass.
-  for entry in $GATE_WORKFLOW_LIST; do
+  while IFS= read -r entry <&3; do
+    [ -n "$entry" ] || continue
     workflow="$(gate_workflow_name "$entry")"
     required="$(gate_workflow_jobs "$entry")"
     run_id="$(fresh_ci_run "$workflow" "$head_sha" "$tested_ref")"
@@ -611,7 +627,7 @@ decide_pr() {
         return 0
         ;;
     esac
-  done
+  done 3<<<"$GATE_WORKFLOW_LIST"
   if [ "$gate_found" -eq 0 ]; then
     echo "skip|no CI gate ran for this pull request"
     return 0
@@ -685,10 +701,11 @@ refresh_ci_after_merges() {
   local entry workflow
   if [ "$MERGED_COUNT" -gt 0 ]; then
     log "the merge used the GITHUB_TOKEN: re-dispatching the CI by hand"
-    for entry in $GATE_WORKFLOW_LIST; do
+    while IFS= read -r entry <&3; do
+      [ -n "$entry" ] || continue
       workflow="$(gate_workflow_name "$entry")"
       dispatch_ci "$workflow" "main" || true
-    done
+    done 3<<<"$GATE_WORKFLOW_LIST"
   fi
 
   local prs pr number head_sha ref_sha state mstate mergeable verdict labels blocked_status
@@ -724,7 +741,8 @@ refresh_ci_after_merges() {
     fi
     tested_ref=""
     if [ "$ref_current" = 1 ]; then tested_ref="$ref_sha"; fi
-    for entry in $GATE_WORKFLOW_LIST; do
+    while IFS= read -r entry <&3; do
+      [ -n "$entry" ] || continue
       workflow="$(gate_workflow_name "$entry")"
       state="$(ci_run_jobs_state "$(fresh_ci_run "$workflow" "$head_sha" "$tested_ref")" "$(gate_workflow_jobs "$entry")")"
       [ "$state" = "green" ] && continue
@@ -750,7 +768,7 @@ refresh_ci_after_merges() {
       if dispatch_ci_for_pr "$workflow" "$number" "$MAIN_SHA"; then
         dispatched=$((dispatched + 1))
       fi
-    done
+    done 3<<<"$GATE_WORKFLOW_LIST"
   done < <(jq -c '.[]' <<<"$prs")
 }
 
