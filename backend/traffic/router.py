@@ -32,7 +32,7 @@ from backend.penplot.router import store as penplot_store
 from backend.traffic import availability as _avail
 from backend.traffic import cache as _cache
 from backend.traffic import store as _store
-from backend.traffic.basemap import LAYERS, load_basemap
+from backend.traffic.basemap import LAYERS, collect_uncached_layers, load_basemap
 from backend.traffic.classify import classify_day
 from backend.traffic.config import settings as traffic_settings
 from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
@@ -42,6 +42,7 @@ from backend.traffic.render_cache import (
     _load_cached_render,
     _load_result_svg,
     _render_keys,
+    _store_degraded_svg,
     _store_render,
     _svg_token,
 )
@@ -240,17 +241,18 @@ async def render_document(
     # (one fetch, 30-day cache) and the renderer clips the polylines to the
     # view, so the drawn SVG is unchanged.
     basemap_bbox = (float(l1_bbox[0]), float(l1_bbox[1]), float(l1_bbox[2]), float(l1_bbox[3]))
-    try:
-        base, failed = await race_cancel(
-            request, load_basemap(basemap_bbox, lat, lon, layers=wanted_basemap),
-            endpoint=endpoint, stage="overpass", started_mono=started_mono,
-        )
-    except HTTPException:
-        raise  # cancel → 499 must propagate, never degrade into a response
-    except Exception:
-        # load_basemap already degrades per layer; this is belt-and-braces
-        # for anything unexpected from the fetch layer.
-        base, failed = {k: [] for k in LAYERS}, ["all"]
+    with collect_uncached_layers() as uncached:
+        try:
+            base, failed = await race_cancel(
+                request, load_basemap(basemap_bbox, lat, lon, layers=wanted_basemap),
+                endpoint=endpoint, stage="overpass", started_mono=started_mono,
+            )
+        except HTTPException:
+            raise  # cancel → 499 must propagate, never degrade into a response
+        except Exception:
+            # load_basemap already degrades per layer; this is belt-and-braces
+            # for anything unexpected from the fetch layer.
+            base, failed = {k: [] for k in LAYERS}, ["all"]
     await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
     flt = body.filters(t_from_ts, t_to_ts)
     try:
@@ -267,7 +269,12 @@ async def render_document(
     stats = movement_stats(window)
     if failed:
         warnings.append("basemap_unavailable")
-    await _store_render(svg_key, meta_key, svg_text, counts, len(window), stats)
+    # A degraded airfield layer (or one that failed) keeps only its SVG for
+    # the svg_url link, briefly; no sidecar, so the next render rebuilds it.
+    if "airfield" in uncached:
+        await _store_degraded_svg(svg_key, svg_text)
+    else:
+        await _store_render(svg_key, meta_key, svg_text, counts, len(window), stats)
     log.info("traffic.render icao=%s day=%s moves=%d cache_hit=False", icao, body.date, len(window))
     return {"airport": airport, "icao": icao, "counts": counts,
             "movements": len(window), "stats": stats, "svg_text": svg_text,

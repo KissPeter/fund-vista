@@ -62,7 +62,10 @@ from backend.traffic.geo import clip_polyline, rdp
 #: r6: every pen is black on white (monochrome). Highways is its own layer
 #: switch (motorway + trunk) split off the Map layer, and the Map layer's
 #: water is limited to big lakes / named rivers.
-RENDER_VERSION = "r6"
+#: r7: the airfield basemap comes from the hybrid source (Overture + Overpass),
+#: degraded airfields are not cached and the airfield L3 key carries the
+#: Overture release and switch. Bumped so cached r6 renders expire.
+RENDER_VERSION = "r7"
 
 PENS = {  # layer id -> (label, stroke, width)   widths are in SVG user units of a 1000-wide canvas
     # Black on white only: layers are told apart by stroke width, not hue.

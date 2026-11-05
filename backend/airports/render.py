@@ -36,13 +36,10 @@ from backend.airports.geometry import (
     runway_heading_deg,
 )
 from backend.airports.ourairports import FT_TO_M, heading_from_ident, runway_endpoints
-from backend.airports.overpass import (
-    CONTEXT_CLASSES,
-    extract_taxiway_refs,
-    split_aeroway,
-    split_context,
-)
+from backend.airports.overpass import CONTEXT_CLASSES, split_context
 from backend.airports.schemas import AIRFIELD_LAYERS
+from backend.airports.sources import AirfieldResult
+from backend.cancel import ClientCancelled
 from backend.http import fnum
 
 
@@ -976,11 +973,22 @@ def render_diagram(
     return "\n".join(parts) + "\n", counts, rotation, warnings
 
 
+def airfield_raw_counts(airfield: AirfieldResult) -> dict[str, int]:
+    """Element-style counts for the response (``nodes``/``ways``/``relations``).
+
+    ``load_airfield`` returns kept polylines per class and no element tally,
+    so the polyline total is reported under ``ways`` and ``nodes`` and
+    ``relations`` are 0. The keys stay so existing consumers still parse.
+    """
+    polylines = sum(len(lines) for lines in airfield.geoms.values())
+    return {"nodes": 0, "ways": polylines, "relations": 0}
+
+
 def _build_svg(
     airport: dict,
     runway_rows: list[dict],
     freq_rows: list[dict],
-    elements: list[dict],
+    airfield: AirfieldResult,
     width: int,
     min_path_len_m: float,
     context_elements: list[dict] | None = None,
@@ -988,26 +996,22 @@ def _build_svg(
     layers: list[str] | None = None,
     taxiway_labels: bool = False,
     cancelled: object = None,
-    geoms: dict[str, list[list[tuple[float, float]]]] | None = None,
-    raw_counts: dict[str, int] | None = None,
     ctx_geoms: dict[str, list[list[tuple[float, float]]]] | None = None,
-) -> tuple[str, dict[str, int], dict[str, int], float, list[str],
-           tuple[dict, dict] | None, dict | None]:
-    """Split polygons and render the blueprint SVG (shared by the airport
-    render/import endpoints via ``_render_uncached``; moved verbatim from
-    the router in REF-002 Phase 2 — pure composition, no HTTP in here).
+) -> tuple[str, dict[str, int], dict[str, int], float, list[str], dict | None]:
+    """Render the blueprint SVG from the airfield geometry (shared by the
+    airport render/import endpoints via ``_render_uncached``; no HTTP here).
 
-    Reuses cached split outputs when given; otherwise splits here and
-    returns what was computed so the caller can persist it next to the
-    render cache.
+    The airfield geometry arrives already split and filtered from
+    ``sources.load_airfield``. Context rings are split here unless the
+    cached ``ctx_geoms`` is given; the computed context split is returned
+    so the caller can persist it. ``cancelled`` is polled once before the
+    build (P2 checkpoint 4).
     """
-    computed_aer: tuple[dict, dict] | None = None
-    if geoms is None:
-        geoms, raw_counts = split_aeroway(
-            elements, cancelled=cancelled if callable(cancelled) else None)
-        computed_aer = (geoms, raw_counts)
-    assert raw_counts is not None
-    twy_refs = extract_taxiway_refs(elements) if taxiway_labels else None
+    if callable(cancelled) and cancelled():
+        raise ClientCancelled("airports", "svg_build")
+    geoms = airfield.geoms
+    raw_counts = airfield_raw_counts(airfield)
+    twy_refs = airfield.taxiway_refs if taxiway_labels else None
     computed_ctx: dict | None = None
     if context_elements:
         if ctx_geoms is None:
@@ -1039,7 +1043,7 @@ def _build_svg(
         taxiway_refs=twy_refs,
         taxiway_labels=taxiway_labels,
     )
-    return svg, path_counts, raw_counts, rotation, warnings, computed_aer, computed_ctx
+    return svg, path_counts, raw_counts, rotation, warnings, computed_ctx
 
 
 __all__ = ["render_diagram"]

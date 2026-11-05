@@ -42,6 +42,9 @@ WORKDIR /srv/fund-vista
 # tesserocr wheel (libtesseract bundled) + the vendored model: no apt step.
 COPY backend/pyproject.toml ./backend/pyproject.toml
 RUN pip install --upgrade pip && pip install ./backend
+# DuckDB extensions for the Overture airfield reader (backend/airports/sources.py),
+# fetched at build time so the running container needs no download.
+RUN python -c "import duckdb; c=duckdb.connect(); c.execute('INSTALL spatial; INSTALL httpfs')"
 
 COPY backend ./backend
 COPY main.py ./
