@@ -41,7 +41,7 @@ from dataclasses import replace
 from xml.sax.saxutils import escape
 
 from backend.traffic.corridors import corridor_keep
-from backend.traffic.filters import Filters, pen
+from backend.traffic.filters import Filters, low_runs, pen
 from backend.traffic.geo import clip_polyline, rdp
 
 #: Bump when renderer semantics change — part of the L4 SVG cache key so a
@@ -262,12 +262,13 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
             counts[possible] += 1
         if layer is None:
             continue
-        xy = [proj.xy(p[1], p[2]) for p in f["pts"]]
         title = escape(" ".join(x for x in (f.get("flight") or f["hex"], f.get("type") or "") if x))
-        for seg in clip_polyline(rdp(xy, eps_trk), proj.width, proj.height):
-            if path_units(seg) < min_units:
-                continue  # sub-detail stub: invisible ink, real plot time
-            segs_by_layer[layer].append((seg, title))
+        for run in low_runs(f["pts"], flt, ag):
+            xy = [proj.xy(p[1], p[2]) for p in run]
+            for seg in clip_polyline(rdp(xy, eps_trk), proj.width, proj.height):
+                if path_units(seg) < min_units:
+                    continue  # sub-detail stub: invisible ink, real plot time
+                segs_by_layer[layer].append((seg, title))
     if airport and include_airport:  # marker so the airport stays findable at country zoom
         x, y = proj.xy(airport["lat"], airport["lon"])
         if 0 <= x <= proj.width and 0 <= y <= proj.height:
