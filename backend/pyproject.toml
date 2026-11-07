@@ -46,6 +46,7 @@ dependencies = [
     # fallback elsewhere (macOS dev: brew install tesseract).
     "tesserocr>=2.8; sys_platform == 'linux'",
     "pytesseract>=0.3.10",
+    "gerbonara>=1.6.3",
 ]
 
 [dependency-groups]
