@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 
+from backend.airports.config import settings as airports_settings
+from backend.airports.sources import OVERTURE_BACKOFF_S, SOURCES_VERSION
 from backend.traffic import cache as _cache
 from backend.traffic.cache import (
     traffic_cache_key,
@@ -73,6 +75,11 @@ def _render_keys(icao: str, day_iso: str, t_from: str, t_to: str,
         _filter_fingerprint(body),
         f"width={body.width}",
         f"classifier={CLASSIFIER_VERSION}", f"renderer={RENDER_VERSION}",
+        # The airfield layer comes from the airfield source (F-008): a toggle,
+        # a pinned release bump or a source-logic bump must re-key the SVG too.
+        f"overture={int(airports_settings.overture_enabled)}",
+        f"release={airports_settings.overture_release}",
+        f"sources={SOURCES_VERSION}",
     )
     return traffic_cache_key("svg", *parts), traffic_cache_key("svgmeta", *parts)
 
@@ -118,6 +125,16 @@ async def _store_render(
     }, ttl_s=ttl_s)
 
 
+async def _store_degraded_svg(svg_key: str, svg_text: str) -> None:
+    """Keep a degraded render's SVG for the ``svg_url`` link, briefly.
+
+    Same contract as ``backend.airports.render_cache._store_degraded_svg``:
+    the SVG only, the Overture backoff as TTL, no sidecar, so
+    ``_load_cached_render`` never serves it as an L4 hit.
+    """
+    await _cache.cache_set(svg_key, svg_text, ttl_s=int(OVERTURE_BACKOFF_S))
+
+
 async def _load_result_svg(token: str) -> str | None:
     if len(token) != 40 or any(c not in "0123456789abcdef" for c in token.lower()):
         return None
@@ -129,6 +146,7 @@ __all__ = [
     "_load_cached_render",
     "_load_result_svg",
     "_render_keys",
+    "_store_degraded_svg",
     "_store_render",
     "_svg_lookup_key",
     "_svg_token",

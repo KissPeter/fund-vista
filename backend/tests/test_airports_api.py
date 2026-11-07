@@ -86,21 +86,37 @@ def live(app_on_harness_redis):
     thread.join(timeout=10)
 
 
+def _no_overture_rows(lat, lon, radius_m, release):
+    """Deterministic stand-in for the Overture (S3 + DuckDB) reader.
+
+    An empty read is the ``overture_empty`` fallback: the full Overpass
+    query answers, through the mock, and the result is complete (not
+    degraded), so the render tests see the Overpass-only airfield.
+    """
+    return []
+
+
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     """Mock edge + per-test state reset (the server is shared module-wide).
 
     mock install() wraps httpx client construction, so every outbound fetch
     the app makes after this point is served from fixtures; uninstall() at
-    teardown restores stock clients for other modules.
+    teardown restores stock clients for other modules. The Overture reader
+    is replaced with a fake (no S3, no DuckDB) and the Overture outage /
+    STAC state is cleared before and after every test.
     """
     from backend import upstream_mock
+    from backend.airports import sources
     from backend.penplot import router as penplot_router
 
     upstream_mock.install()
     redis_harness.flush()  # cold cache per test; the server keeps its live client
     penplot_router._limiter._memory.clear()
+    monkeypatch.setattr(sources, "read_overture_airfield", _no_overture_rows)
+    sources.reset_overture_state()
     yield
+    sources.reset_overture_state()
     upstream_mock.uninstall()
 
 
@@ -314,10 +330,10 @@ def test_render_stores_svg_and_overpass_payload_in_redis(live: httpx.Client):
     assert len(svgs) == 1
     (svg,) = svgs.values()
     assert svg.lstrip().startswith("<svg")
-    # The Overpass "around" payload behind the render is cached too.
-    overpass = redis_harness.cached_values("fund-vista:airports:v1:overpass")
-    assert overpass, "Overpass payload was not written to Redis"
-    assert any(json.loads(value) for value in overpass.values())  # non-empty JSON
+    # The airfield geometry behind the render is cached too (AirfieldResult JSON).
+    airfield = redis_harness.cached_values("fund-vista:airports:v1:airfield")
+    assert airfield, "airfield geometry was not written to Redis"
+    assert any("geoms" in json.loads(value) for value in airfield.values())
 
 
 def test_render_upstream_outage_is_502_envelope(live, monkeypatch):
@@ -325,6 +341,27 @@ def test_render_upstream_outage_is_502_envelope(live, monkeypatch):
     resp = live.post("/v1/airports/render", json={"icao": "LHBP"})
     assert resp.status_code == 502, resp.text
     assert resp.json()["error"]["code"] == "ourairports_unavailable"
+
+
+def test_degraded_render_link_resolves_but_is_not_a_render_hit(live, monkeypatch):
+    from backend.airports import sources
+
+    def _s3_down(lat, lon, radius_m, release):
+        raise RuntimeError("S3 unreachable")
+
+    monkeypatch.setattr(sources, "read_overture_airfield", _s3_down)
+    body = {"icao": "LHPP", "radius_m": 500.0}
+    first = live.post("/v1/airports/render", json=body)
+    assert first.status_code == 200, first.text
+    assert "overture_unavailable" in first.json()["warnings"]
+    svg = live.get(first.json()["svg_url"])
+    assert svg.status_code == 200, svg.text[:200]
+    assert "<svg" in svg.text
+
+    second = live.post("/v1/airports/render", json=body)
+    assert second.status_code == 200, second.text
+    assert second.json()["cache_hit"] is False
+    assert "svg_cache_hit" not in second.json()["warnings"]
 
 
 # ------------------------------------------------------------- import ------

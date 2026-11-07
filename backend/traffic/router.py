@@ -32,16 +32,17 @@ from backend.penplot.router import store as penplot_store
 from backend.traffic import availability as _avail
 from backend.traffic import cache as _cache
 from backend.traffic import store as _store
-from backend.traffic.basemap import LAYERS, load_basemap
+from backend.traffic.basemap import LAYERS, collect_uncached_layers, load_basemap
 from backend.traffic.classify import classify_day
 from backend.traffic.config import settings as traffic_settings
 from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
 from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
-from backend.traffic.render import AIRPORT_LAYERS, HIGHWAY_LAYERS, MAP_LAYERS, expand_view_to_aspect, render_svg
+from backend.traffic.render import AIRPORT_LAYERS, HIGHWAY_LAYERS, MAP_LAYERS, crop_view_to_aspect, expand_view_to_aspect, render_svg
 from backend.traffic.render_cache import (
     _load_cached_render,
     _load_result_svg,
     _render_keys,
+    _store_degraded_svg,
     _store_render,
     _svg_token,
 )
@@ -57,6 +58,9 @@ from backend.traffic.schemas import (
 from backend.traffic.stats import movement_stats
 
 log = logging.getLogger(__name__)
+
+#: L4 lifetime of a render whose basemap fetch failed (seconds).
+DEGRADED_RENDER_TTL_S = 120
 
 router = APIRouter(prefix="/v1/traffic", tags=["traffic-v1"])
 
@@ -190,8 +194,11 @@ async def render_document(
         # Paper fill (r4): grow the view around its centre to the canvas
         # ratio first, clamped to the day bbox — the ingest clipped the
         # traces to it, so beyond it there is nothing to draw and the
-        # residual mismatch letterboxes in the SVG instead.
+        # residual mismatch is cropped (crop_view_to_aspect).
         view = expand_view_to_aspect(view, body.viewport_aspect, tuple(float(x) for x in l1_bbox))  # type: ignore[arg-type]
+        # What the clamp could not grow is cropped instead, so the data fills
+        # the page rather than leaving an empty strip on one axis.
+        view = crop_view_to_aspect(view, body.viewport_aspect)
     if body.view_south is not None:
         if not (view[0] >= l1_bbox[0] and view[1] <= l1_bbox[1]
                 and view[2] >= l1_bbox[2] and view[3] <= l1_bbox[3]):
@@ -240,17 +247,18 @@ async def render_document(
     # (one fetch, 30-day cache) and the renderer clips the polylines to the
     # view, so the drawn SVG is unchanged.
     basemap_bbox = (float(l1_bbox[0]), float(l1_bbox[1]), float(l1_bbox[2]), float(l1_bbox[3]))
-    try:
-        base, failed = await race_cancel(
-            request, load_basemap(basemap_bbox, lat, lon, layers=wanted_basemap),
-            endpoint=endpoint, stage="overpass", started_mono=started_mono,
-        )
-    except HTTPException:
-        raise  # cancel → 499 must propagate, never degrade into a response
-    except Exception:
-        # load_basemap already degrades per layer; this is belt-and-braces
-        # for anything unexpected from the fetch layer.
-        base, failed = {k: [] for k in LAYERS}, ["all"]
+    with collect_uncached_layers() as uncached:
+        try:
+            base, failed = await race_cancel(
+                request, load_basemap(basemap_bbox, lat, lon, layers=wanted_basemap),
+                endpoint=endpoint, stage="overpass", started_mono=started_mono,
+            )
+        except HTTPException:
+            raise  # cancel → 499 must propagate, never degrade into a response
+        except Exception:
+            # load_basemap already degrades per layer; this is belt-and-braces
+            # for anything unexpected from the fetch layer.
+            base, failed = {k: [] for k in LAYERS}, ["all"]
     await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
     flt = body.filters(t_from_ts, t_to_ts)
     try:
@@ -267,7 +275,16 @@ async def render_document(
     stats = movement_stats(window)
     if failed:
         warnings.append("basemap_unavailable")
-    await _store_render(svg_key, meta_key, svg_text, counts, len(window), stats)
+    # A degraded airfield layer (or one that failed) keeps only its SVG for
+    # the svg_url link, briefly; no sidecar, so the next render rebuilds it.
+    if "airfield" in uncached:
+        await _store_degraded_svg(svg_key, svg_text)
+    else:
+        # A render with a dead basemap layer must not sit in L4 for the full TTL:
+    # every later request (and the shop's draft preview) would serve the map-less
+    # SVG for days. Keep it just long enough for the svg_url to resolve.
+    await _store_render(svg_key, meta_key, svg_text, counts, len(window), stats,
+                        ttl_s=DEGRADED_RENDER_TTL_S if failed else None)
     log.info("traffic.render icao=%s day=%s moves=%d cache_hit=False", icao, body.date, len(window))
     return {"airport": airport, "icao": icao, "counts": counts,
             "movements": len(window), "stats": stats, "svg_text": svg_text,

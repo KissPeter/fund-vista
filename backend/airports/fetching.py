@@ -28,10 +28,16 @@ from backend.airports.ourairports import (
     runway_endpoints,
 )
 from backend.airports.overpass import (
+    AEROWAY_CLASSES,
     AirportOverpassError,
-    build_airport_query,
     build_context_query,
     fetch_airport_polygons,
+)
+from backend.airports.sources import (
+    SOURCES_VERSION,
+    AirfieldResult,
+    is_degraded,
+    load_airfield,
 )
 from backend.cancel import race_cancel
 from backend.http import error_response, fnum
@@ -82,15 +88,15 @@ def _runway_infos(runway_rows: list[dict]) -> list[dict]:
 
 async def _load_polygons(
     lat: float, lon: float, radius_m: float, warnings: list[str],
-    kind: str = "overpass",
+    kind: str = "overpass-ctx",
     request: Request | None = None,
     endpoint: str = "/v1/airports/render",
     started_mono: float = 0.0,
-) -> tuple[list[dict] | None, JSONResponse | None]:
-    """Redis-first Overpass ``around`` fetch. Returns (elements, None) or
-    (None, error response) when every mirror fails. ``kind`` namespaces the
-    cache key (``overpass`` vs ``overpass-ctx``). Context outages degrade to
-    an empty layer (warning) instead of failing the whole render.
+) -> tuple[list[dict], None]:
+    """Redis-first Overpass fetch of the surrounding street context
+    (``build_context_query``). The airfield core never comes through here;
+    it is :func:`_load_airfield`. ``kind`` namespaces the cache key. Context
+    outages degrade to an empty layer (warning) instead of failing the render.
 
     P2: the fetch is raced against disconnect (no partial cache on abort).
     """
@@ -104,28 +110,114 @@ async def _load_polygons(
             return json.loads(raw_json), None
         except ValueError:
             pass
-    query = (
-        build_airport_query(lat, lon, radius_m)
-        if kind == "overpass"
-        else build_context_query(lat, lon, radius_m)
-    )
+    query = build_context_query(lat, lon, radius_m)
     try:
         elements = await race_cancel(
             request, fetch_airport_polygons(query),
             endpoint=endpoint, stage="overpass", started_mono=started_mono,
         )
+    except AirportOverpassError:
+        warnings.append("context_unavailable")
+        return [], None
+    await cache_set(key, json.dumps(elements))
+    return elements, None
+
+
+#: Version tag of the cached airfield payload. Bump when AirfieldResult or
+#: its filters change, so stale entries are never read back.
+AIRFIELD_CACHE_VERSION = "airfield-v1"
+
+
+def _airfield_cache_key(lat: float, lon: float, radius_m: float) -> str:
+    """Key includes the pinned Overture release (or ``off``) and the source
+    logic version, so a release bump or a toggle re-keys every airfield and
+    never mixes two releases."""
+    release = settings.overture_release if settings.overture_enabled else "off"
+    return cache_mod.airports_cache_key(
+        "airfield", f"{lat:.5f},{lon:.5f}", f"r={radius_m:.0f}",
+        f"overture={release}", f"sources={SOURCES_VERSION}",
+        AIRFIELD_CACHE_VERSION,
+    )
+
+
+def _airfield_to_json(result: AirfieldResult) -> str:
+    return json.dumps({
+        "geoms": {
+            cls: [[list(p) for p in ln] for ln in lines]
+            for cls, lines in result.geoms.items()
+        },
+        "taxiway_refs": [
+            [ref, [list(p) for p in ln]] for ref, ln in result.taxiway_refs
+        ],
+        "sources": result.sources,
+        "warnings": result.warnings,
+        "overture_release": result.overture_release,
+    }, separators=(",", ":"))
+
+
+def _airfield_from_json(raw: str) -> AirfieldResult:
+    """Inverse of :func:`_airfield_to_json`; tuples restored so a cache hit
+    compares equal to the fresh result. Raises on a malformed payload."""
+    data = json.loads(raw)
+    geoms = {
+        cls: [[tuple(p) for p in ln] for ln in data["geoms"].get(cls, [])]
+        for cls in AEROWAY_CLASSES
+    }
+    return AirfieldResult(
+        geoms=geoms,
+        taxiway_refs=[
+            (ref, [tuple(p) for p in ln]) for ref, ln in data["taxiway_refs"]
+        ],
+        sources=dict(data["sources"]),
+        warnings=list(data["warnings"]),
+        overture_release=data["overture_release"],
+    )
+
+
+async def _load_airfield(
+    lat: float, lon: float, radius_m: float, warnings: list[str],
+    request: Request | None = None,
+    endpoint: str = "/v1/airports/render",
+    started_mono: float = 0.0,
+) -> tuple[AirfieldResult | None, JSONResponse | None]:
+    """Redis-first airfield geometry via :func:`sources.load_airfield`.
+
+    Returns ``(result, None)`` or ``(None, error response)`` when the full
+    Overpass fallback fails too. A degraded result (``is_degraded``:
+    ``osm_layers_unavailable`` or ``overture_unavailable``) is served once and
+    never cached, so the next request retries the missing sources. An
+    ``overture_empty`` fallback is complete Overpass data and is cached.
+    ``result.warnings`` are appended to ``warnings``.
+
+    P2: the load is raced against disconnect (no partial cache on abort).
+    """
+    key = _airfield_cache_key(lat, lon, radius_m)
+    raw_json = await cache_get(key)
+    if raw_json is not None:
+        try:
+            result = _airfield_from_json(raw_json)
+        except (ValueError, KeyError, TypeError):
+            result = None
+        if result is not None:
+            warnings.append("airfield_cache_hit")
+            warnings.extend(result.warnings)
+            return result, None
+    try:
+        result = await race_cancel(
+            request, load_airfield(lat, lon, radius_m),
+            endpoint=endpoint, stage="overpass", started_mono=started_mono,
+        )
     except AirportOverpassError as exc:
-        if kind != "overpass":
-            warnings.append("context_unavailable")
-            return [], None
         return None, error_response(
             502,
             "overpass_unavailable",
             f"Ground-layout fetch failed ({exc.detail}). "
             "(Upstreams busy — retry in a minute.)",
         )
-    await cache_set(key, json.dumps(elements))
-    return elements, None
+    warnings.extend(result.warnings)
+    if not is_degraded(result.warnings):
+        await cache_set(key, _airfield_to_json(result))
+    return result, None
 
 
 def _effective_radius_m(
@@ -181,6 +273,7 @@ def _bucket_radius_m(radius_m: float) -> float:
 __all__ = [
     "_bucket_radius_m",
     "_effective_radius_m",
+    "_load_airfield",
     "_load_polygons",
     "_lookup",
     "_runway_infos",

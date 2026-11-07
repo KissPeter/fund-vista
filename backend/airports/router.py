@@ -24,6 +24,7 @@ from backend.airports.cache import KEY_PREFIX, cache_get
 from backend.airports.fetching import (
     _bucket_radius_m,
     _effective_radius_m,
+    _load_airfield,
     _load_polygons,
     _lookup,
     _runway_infos,
@@ -31,10 +32,11 @@ from backend.airports.fetching import (
 from backend.airports.ourairports import OurAirportsError, search_airports
 from backend.airports.render import _build_svg, render_source_version
 from backend.airports.render_cache import (
+    _ctx_split_key,
     _load_cached_render,
     _load_cached_splits,
     _render_keys,
-    _split_keys,
+    _store_degraded_svg,
     _store_render,
     _store_splits,
 )
@@ -46,6 +48,7 @@ from backend.airports.schemas import (
     SearchResponse,
     normalize_icao,
 )
+from backend.airports.sources import is_degraded
 from backend.cancel import (
     ClientCancelled,
     check_cancelled,
@@ -79,19 +82,20 @@ async def _render_uncached(
     started_mono: float = 0.0,
     stop: threading.Event | None = None,
 ) -> tuple[str, dict[str, int], dict[str, int], float,
-           tuple[dict, dict] | None, dict | None, str, str] | JSONResponse:
-    """Fetch polygons and render, off the event loop. Shared by render/import.
+           dict | None, str] | JSONResponse:
+    """Fetch the airfield (sources) and context, then render, off the event
+    loop. Shared by render/import and the airport jobs.
 
-    P2: fetch raced (checkpoints 2/3); CPU build runs in a thread with
-    ``stop`` polled every 2000 elements (checkpoint 4). P5: returns any
-    split outputs that were computed (vs reused from cache) so the caller
-    can persist them next to the render cache.
+    P2: fetch raced (checkpoints 2/3); the CPU build runs in a thread and
+    polls ``stop`` once before it starts (checkpoint 4). Returns the context
+    split when it was computed (vs reused from cache) and its key, so the
+    caller can persist it next to the render cache.
     """
-    elements, err = await _load_polygons(
+    airfield, err = await _load_airfield(
         lat, lon, radius_m, warnings,
         request=request, endpoint=endpoint, started_mono=started_mono,
     )
-    if err is not None or elements is None:
+    if err is not None or airfield is None:
         return err if err is not None else error_response(
             502, "overpass_unavailable", "Ground-layout fetch failed."
         )
@@ -103,18 +107,18 @@ async def _render_uncached(
         warnings.append("context_enabled")
     await check_cancelled(
         request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
-    aer_key, ctx_key = _split_keys(lat, lon, radius_m)
-    pre_geoms, pre_counts, pre_ctx = await _load_cached_splits(
-        aer_key, ctx_key, ctx_elements is not None, warnings)
+    ctx_key = _ctx_split_key(lat, lon, radius_m)
+    pre_ctx = await _load_cached_splits(
+        ctx_key, ctx_elements is not None, warnings)
     cancelled_cb = stop.is_set if stop is not None else None
     try:
         svg_text, path_counts, raw_counts, rotation, render_warnings, \
-            computed_aer, computed_ctx = (
+            computed_ctx = (
                 await asyncio.to_thread(
-                    _build_svg, airport, runway_rows, freq_rows, elements,
+                    _build_svg, airport, runway_rows, freq_rows, airfield,
                     body.width, body.min_path_len_m, ctx_elements, body.zoom,
                     body.effective_layers(), body.taxiway_labels,
-                    cancelled_cb, pre_geoms, pre_counts, pre_ctx,
+                    cancelled_cb, pre_ctx,
                 )
             )
     except ClientCancelled as exc:
@@ -123,10 +127,7 @@ async def _render_uncached(
             request=request, started_mono=started_mono,
         )
     warnings.extend(render_warnings)
-    return (
-        svg_text, path_counts, raw_counts, rotation,
-        computed_aer, computed_ctx, aer_key, ctx_key,
-    )
+    return svg_text, path_counts, raw_counts, rotation, computed_ctx, ctx_key
 
 
 @router.get("/search", response_model=SearchResponse)
@@ -192,7 +193,9 @@ async def _build_and_store(
     """Miss path shared by ``render`` and ``import_diagram``.
 
     Threaded build (P2 checkpoints inside ``_render_uncached``),
-    499-guard, then split + render stores. Returns
+    499-guard, then split + render stores. A degraded airfield (see
+    ``is_degraded``) keeps only its SVG for the ``svg_url`` link, briefly
+    (see ``_store_degraded_svg``), so the next request rebuilds it. Returns
     ``(svg_text, path_counts, raw_counts, rotation)`` or an error response.
     """
     await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started_mono)
@@ -209,12 +212,14 @@ async def _build_and_store(
         watcher.cancel()
     if isinstance(built, JSONResponse):
         return built
-    svg_text, path_counts, raw_counts, rotation, \
-        computed_aer, computed_ctx, aer_key, ctx_key = built
+    svg_text, path_counts, raw_counts, rotation, computed_ctx, ctx_key = built
     await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
-    await _store_splits(aer_key, ctx_key, computed_aer, computed_ctx)
-    await _store_render(svg_key, meta_key, svg_text, path_counts,
-                        raw_counts, rotation)
+    await _store_splits(ctx_key, computed_ctx)
+    if is_degraded(warnings):
+        await _store_degraded_svg(svg_key, svg_text)
+    else:
+        await _store_render(svg_key, meta_key, svg_text, path_counts,
+                            raw_counts, rotation)
     return svg_text, path_counts, raw_counts, rotation
 
 
@@ -229,8 +234,11 @@ async def render_document(
     "freq_rows", "icao", "svg_text", "path_counts", "raw_counts",
     "rotation", "warnings", "cache_hit", "svg_key"}`` or an error response.
     P2 checkpoints (shapes unchanged): 1. after validation+cache; 2. before
-    Overpass fetch (raced); 3. after fetch before build; 4. inside CPU loop
-    (every 2000 elements). Abort → 499, no cache write.
+    the airfield fetch (raced); 3. after the fetch, before the build; 4. a
+    single cancel poll right before the SVG build. The Overpass/Overture
+    split and filter passes run in a worker thread and are not polled.
+    Abort → 499, no cache write. A degraded airfield is served but not
+    stored (see ``_build_and_store``).
     """
     resolved = await _lookup(body.icao)
     if isinstance(resolved, JSONResponse):

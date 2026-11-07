@@ -50,7 +50,7 @@ from xml.sax.saxutils import escape
 from defusedxml import ElementTree as DefusedET
 from fastapi import APIRouter, Depends, Response
 
-from backend.penplot import art_placement, labels, stats_table
+from backend.penplot import art_fill, art_placement, labels, stats_table
 from backend.penplot.errors import ErrorCode, PenPlotError, sheet_not_plottable
 from backend.penplot.methods import Polyline
 from backend.penplot.raster import looks_like_svg
@@ -613,7 +613,12 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     Raises :class:`PenPlotError` (422 invalid input, 413 oversize) and never
     returns a partial sheet.
     """
-    data = body.svg.encode("utf-8")
+    svg_text = body.svg
+    if art_fill.is_fill(svg_text):
+        # A fill artwork is cropped to the free area's aspect (not letterboxed).
+        free = _plan_sheet(body, _Artwork(None, None, None)).area
+        svg_text = art_fill.crop_to_aspect(svg_text, free[2] / free[3])
+    data = svg_text.encode("utf-8")
     root, polylines, vp_w, vp_h = _validate_svg(data, max_svg_bytes)
 
     style = body.layout.label
@@ -658,7 +663,7 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     furniture: list[list[tuple[float, float]]] = []
     if body.artwork == "inline":
         fit, to_sheet = _inline_fit(root, vp_w, vp_h, box)
-        parts.append(_inline_artwork(body.svg, root, fit))
+        parts.append(_inline_artwork(svg_text, root, fit))
         art_sheet = _affine_polylines(polylines, to_sheet)
         _assert_within_box(art_sheet, box)
     else:
