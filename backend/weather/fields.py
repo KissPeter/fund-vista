@@ -30,7 +30,6 @@ from backend.weather.config import settings as weather_settings
 from backend.weather.cache import cache_get, cache_set, weather_cache_key
 
 G0 = 9.80665
-FIELD_NAMES = ("mslp_hpa", "z500_gpm", "t500_c", "u250", "v250", "u10", "v10")
 
 #: ARCO variable names and the conversion applied on read.
 ARCO_VARS = {
@@ -44,30 +43,67 @@ ARCO_VARS = {
 }
 
 
+#: Fields the default product needs: streamlines (250 hPa wind) and isobars.
+#: Z500 and T500 are optional layers and are read only when asked for.
+DEFAULT_FIELDS: frozenset[str] = frozenset({"mslp_hpa", "u250", "v250"})
+
+#: Upper bound on concurrent chunk reads. A 4D chunk is about 150 MB decoded,
+#: so two at a time keeps the peak under about 300 MB on the 512 MB worker.
+MAX_CONCURRENT_READS = 2
+
+
+def check_fields(fields) -> frozenset[str]:
+    """Validate a requested field set against the known ARCO variables."""
+    wanted = frozenset(fields)
+    unknown = wanted - set(ARCO_VARS)
+    if unknown:
+        raise ValueError(f"unknown weather fields: {sorted(unknown)}")
+    if not wanted:
+        raise ValueError("at least one field must be requested")
+    return wanted
+
+
+#: Store variable names (the keys the zarr group exposes).
+STORE_VAR_NAMES = frozenset(var for var, _level in ARCO_VARS.values())
+
+
 @dataclass(frozen=True)
 class FieldSubset:
-    """One time step of the seven fields on a regular lat/lon box."""
+    """One time step on a regular lat/lon box. Only the requested fields are set.
+
+    Unrequested fields stay ``None``; asking for one raises a ValueError that
+    names the field, so a caller cannot silently draw an empty layer.
+    """
 
     time: dt.datetime
     region: str
     lat: np.ndarray  # (nlat,) ascending, degrees
     lon: np.ndarray  # (nlon,) ascending, -180..180, degrees
-    mslp_hpa: np.ndarray  # (nlat, nlon)
-    z500_gpm: np.ndarray
-    t500_c: np.ndarray
-    u250: np.ndarray  # m/s
-    v250: np.ndarray
-    u10: np.ndarray
-    v10: np.ndarray
+    mslp_hpa: np.ndarray | None = None  # (nlat, nlon)
+    z500_gpm: np.ndarray | None = None
+    t500_c: np.ndarray | None = None
+    u250: np.ndarray | None = None  # m/s
+    v250: np.ndarray | None = None
+    u10: np.ndarray | None = None
+    v10: np.ndarray | None = None
 
     def field(self, name: str) -> np.ndarray:
-        return getattr(self, name)
+        if name not in ARCO_VARS:
+            raise ValueError(f"unknown weather field {name!r}")
+        value = getattr(self, name)
+        if value is None:
+            raise ValueError(f"field {name!r} was not loaded; request it in fields")
+        return value
 
 
 class FieldReader(Protocol):
-    """Anything that can return one time step for a region box."""
+    """Anything that can return one time step for a region box.
 
-    def read(self, when: dt.datetime, region: Region) -> FieldSubset: ...
+    ``fields`` names the arrays to fetch; the rest of the subset stays None.
+    """
+
+    def read(self, when: dt.datetime, region: Region,
+             fields: frozenset[str] = DEFAULT_FIELDS) -> FieldSubset: ...
 
 
 # -- pure helpers (tested without a store) ----------------------------------
@@ -168,7 +204,9 @@ class ArcoEra5Reader:
         self._open_s = time.perf_counter() - t0
         return self._group, self._axes
 
-    def read(self, when: dt.datetime, region: Region) -> FieldSubset:
+    def read(self, when: dt.datetime, region: Region,
+             fields: frozenset[str] = DEFAULT_FIELDS) -> FieldSubset:
+        wanted = check_fields(fields)
         group, axes = self._open()
         naive = when.replace(tzinfo=None)
         time_arr = axes["time_arr"]
@@ -196,10 +234,11 @@ class ArcoEra5Reader:
                 values = values[::-1]
             return name, _convert(name, values)
 
-        # The seven chunk reads are independent; run them concurrently.
+        # Only the requested variables are read; at most two at a time.
         t_read = time.perf_counter()
-        with ThreadPoolExecutor(max_workers=len(ARCO_VARS)) as pool:
-            out = dict(pool.map(one, ARCO_VARS.items()))
+        items = [(name, spec) for name, spec in ARCO_VARS.items() if name in wanted]
+        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_READS) as pool:
+            out = dict(pool.map(one, items))
         self.last_timing = {"open_s": self._open_s, "read_s": time.perf_counter() - t_read}
 
         lat_out = lat_vals[::-1] if lat_desc else lat_vals
@@ -228,34 +267,57 @@ def default_reader() -> ArcoEra5Reader:
     return _default_reader
 
 
-# -- npz cache codec -----------------------------------------------------------
+# -- npz cache codec: one entry per (date, time, region, field) ----------------
 
-def encode_subset(sub: FieldSubset) -> str:
+def encode_field(lat: np.ndarray, lon: np.ndarray, values: np.ndarray) -> str:
     buf = io.BytesIO()
-    arrays = {name: sub.field(name) for name in FIELD_NAMES}
-    np.savez_compressed(buf, lat=sub.lat, lon=sub.lon, **arrays)
+    np.savez_compressed(buf, lat=lat, lon=lon, values=values)
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def decode_subset(payload: str, when: dt.datetime, region: str) -> FieldSubset:
+def decode_field(payload: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     with np.load(io.BytesIO(base64.b64decode(payload))) as npz:
-        return FieldSubset(time=when, region=region, lat=npz["lat"], lon=npz["lon"],
-                           **{name: npz[name] for name in FIELD_NAMES})
+        return npz["lat"], npz["lon"], npz["values"]
 
 
-def subset_cache_key(when: dt.datetime, region: Region) -> str:
+def field_cache_key(when: dt.datetime, region: Region, name: str) -> str:
     box = f"{region.lon0}:{region.lon1}:{region.lat0}:{region.lat1}"
-    return weather_cache_key("fields", when.replace(tzinfo=None).isoformat(), region.name, box)
+    return weather_cache_key("field", when.replace(tzinfo=None).isoformat(), region.name, box, name)
 
 
 async def load_subset(when: dt.datetime, region: Region = EUROPE,
-                      reader: FieldReader | None = None) -> FieldSubset:
-    """Cached field subset for one time step. Cache hit = no reader call."""
-    key = subset_cache_key(when, region)
-    cached = await cache_get(key)
-    if cached is not None:
-        return decode_subset(cached, when.replace(tzinfo=None), region.name)
-    src = reader or default_reader()
-    sub = await asyncio.to_thread(src.read, when, region)
-    await cache_set(key, encode_subset(sub))
-    return sub
+                      reader: FieldReader | None = None,
+                      fields: frozenset[str] = DEFAULT_FIELDS) -> FieldSubset:
+    """Field subset for one time step, cached per field.
+
+    Cached fields are read back without touching the store; only the missing
+    ones go to the reader, in one call. A full cache hit makes no reader call.
+    """
+    wanted = check_fields(fields)
+    names = sorted(wanted)
+    keys = {name: field_cache_key(when, region, name) for name in names}
+    payloads = await asyncio.gather(*(cache_get(keys[n]) for n in names))
+
+    arrays: dict[str, np.ndarray] = {}
+    grid: tuple[np.ndarray, np.ndarray] | None = None
+    missing: list[str] = []
+    for name, payload in zip(names, payloads):
+        if payload is None:
+            missing.append(name)
+            continue
+        lat, lon, values = decode_field(payload)
+        arrays[name] = values
+        grid = (lat, lon)
+
+    if missing:
+        src = reader or default_reader()
+        sub = await asyncio.to_thread(src.read, when, region, frozenset(missing))
+        grid = (sub.lat, sub.lon)
+        for name in missing:
+            values = sub.field(name)
+            arrays[name] = values
+            await cache_set(keys[name], encode_field(sub.lat, sub.lon, values))
+
+    assert grid is not None  # wanted is never empty
+    return FieldSubset(time=when.replace(tzinfo=None), region=region.name,
+                       lat=grid[0], lon=grid[1], **arrays)

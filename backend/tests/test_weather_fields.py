@@ -41,7 +41,16 @@ def test_lat_slice_handles_descending_store():
 
 
 class _FakeGroup(dict):
-    pass
+    """Records every data-variable access, so tests can count store reads."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.accessed: list[str] = []
+
+    def __getitem__(self, key):
+        if key in F.STORE_VAR_NAMES:
+            self.accessed.append(key)
+        return super().__getitem__(key)
 
 
 class _ConstVar:
@@ -110,7 +119,7 @@ def test_reader_reads_real_encoded_time():
 
 def test_reader_window_units_and_wrap():
     reader = _synthetic_reader()
-    sub = reader.read(dt.datetime(2005, 5, 20, 12), EUROPE)
+    sub = reader.read(dt.datetime(2005, 5, 20, 12), EUROPE, frozenset(F.ARCO_VARS))
     assert sub.lat[0] == 33.0 and sub.lat[-1] == 71.0 and np.all(np.diff(sub.lat) > 0)
     assert sub.lon[0] == -35.0 and sub.lon[-1] == 55.0 and np.all(np.diff(sub.lon) > 0)
     assert sub.mslp_hpa.shape == (len(sub.lat), len(sub.lon))
@@ -130,10 +139,12 @@ class _CountingReader:
     def __init__(self, inner):
         self.inner = inner
         self.calls = 0
+        self.requested: list[frozenset] = []
 
-    def read(self, when, region):
+    def read(self, when, region, fields=F.DEFAULT_FIELDS):
         self.calls += 1
-        return self.inner.read(when, region)
+        self.requested.append(frozenset(fields))
+        return self.inner.read(when, region, fields)
 
 
 def test_load_subset_caches_and_skips_reader_on_hit():
@@ -148,13 +159,52 @@ def test_load_subset_caches_and_skips_reader_on_hit():
     assert np.array_equal(first.lon, second.lon)
 
 
-def test_npz_codec_roundtrip():
-    sub = _synthetic_reader().read(dt.datetime(2005, 5, 20, 18), EUROPE)
-    back = F.decode_subset(F.encode_subset(sub), sub.time, sub.region)
-    for name in F.FIELD_NAMES:
-        assert np.array_equal(sub.field(name), back.field(name))
-    assert np.array_equal(sub.lat, back.lat) and np.array_equal(sub.lon, back.lon)
+def test_field_codec_roundtrip():
+    sub = _synthetic_reader().read(dt.datetime(2005, 5, 20, 18), EUROPE, frozenset(F.ARCO_VARS))
+    lat, lon, values = F.decode_field(F.encode_field(sub.lat, sub.lon, sub.mslp_hpa))
+    assert np.array_equal(values, sub.mslp_hpa)
+    assert np.array_equal(lat, sub.lat) and np.array_equal(lon, sub.lon)
     assert LEVEL_WIND_HPA == 250 and LEVEL_Z_T_HPA == 500
+
+
+def test_unrequested_field_raises_clear_error():
+    sub = _synthetic_reader().read(dt.datetime(2005, 5, 20, 12), EUROPE)
+    assert sub.z500_gpm is None
+    with pytest.raises(ValueError, match="z500_gpm.*not loaded"):
+        sub.field("z500_gpm")
+
+
+def test_default_fields_touch_only_three_variables():
+    reader = _synthetic_reader()
+    reader.read(dt.datetime(2005, 5, 20, 12), EUROPE)
+    assert sorted(reader._group.accessed) == sorted(
+        ["mean_sea_level_pressure", "u_component_of_wind", "v_component_of_wind"])
+
+
+def test_optional_z500_reads_only_geopotential_and_caches_per_field():
+    counting = _CountingReader(_synthetic_reader())
+    when = dt.datetime(2007, 3, 3, 0)
+    asyncio.run(F.load_subset(when, EUROPE, counting))  # default: 3 fields, 1 call
+    assert counting.requested == [F.DEFAULT_FIELDS]
+    group = counting.inner._group
+    before = len(group.accessed)
+    z = asyncio.run(F.load_subset(when, EUROPE, counting, frozenset({"z500_gpm"})))
+    assert group.accessed[before:] == ["geopotential"]
+    assert z.z500_gpm is not None and z.mslp_hpa is None
+    assert np.allclose(z.z500_gpm, 5600.0, atol=1e-2)
+
+
+def test_cache_hit_makes_no_reader_call():
+    counting = _CountingReader(_synthetic_reader())
+    when = dt.datetime(2007, 4, 4, 6)
+    asyncio.run(F.load_subset(when, EUROPE, counting))
+    group = counting.inner._group
+    n_access = len(group.accessed)
+    again = asyncio.run(F.load_subset(when, EUROPE, counting))
+    assert counting.calls == 1
+    assert len(group.accessed) == n_access
+    assert again.u250 is not None
+
 
 
 @pytest.mark.network
