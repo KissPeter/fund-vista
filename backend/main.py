@@ -27,6 +27,7 @@ from backend.fulfillment.router import router as fulfillment_router
 from backend.pcb.router import router as pcb_router
 from backend.airports.router import router as airports_router
 from backend.airports.ui import ui_router as airports_ui_router
+from backend.pcb.cache import configure_pcb_redis
 from backend.wordmark.cache import configure_wordmark_redis
 from backend.wordmark.router import router as wordmark_router
 from backend.jobs.router import router as jobs_router
@@ -216,6 +217,7 @@ async def _startup() -> None:
         configure_citymap_redis(redis_client)
         configure_airports_redis(redis_client)
         configure_wordmark_redis(redis_client)
+        configure_pcb_redis(redis_client)
         configure_jobs_redis(redis_client)
         configure_traffic_redis(redis_client)
         configure_mirror_health_redis(redis_client)
@@ -225,6 +227,7 @@ async def _startup() -> None:
         configure_citymap_redis(None)
         configure_airports_redis(None)
         configure_wordmark_redis(None)
+        configure_pcb_redis(None)
         configure_jobs_redis(None)
         configure_traffic_redis(None)
         configure_mirror_health_redis(None)

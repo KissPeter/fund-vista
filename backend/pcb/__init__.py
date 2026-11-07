@@ -1,6 +1,10 @@
-"""PCB Gerber preview (``/v1/pcb/preview``): one uploaded file to an SVG.
+"""PCB Gerber kind (``/v1/pcb``): one uploaded Gerber or Excellon file.
 
-Stage 1 minimal slice: a single Gerber (RS-274X) or Excellon drill file is
-parsed with ``gerbonara`` and rendered as black artwork. Preview only: no
-layer splitting, inks, outline conversion, A4 fitting or stored results.
+- ``POST /v1/pcb/preview`` returns the file as a black SVG (``render.py``).
+- ``POST /v1/pcb/render`` plots the enabled sub-layers (pads, tracks, pours,
+  drills) on one A4 sheet, outline only, each in its ink (``layers.py``,
+  ``sheet.py``, ``router.py``).
+- The ink split accepts kind ``pcb`` (``backend/fulfillment``).
+
+Parsing runs in a child process killed at the timeout (``render.run_isolated``).
 """

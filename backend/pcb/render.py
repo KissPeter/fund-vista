@@ -104,7 +104,16 @@ def run_isolated(target: str, data: bytes, timeout_s: float = PARSE_TIMEOUT_S):
     """
     reader, writer = _CONTEXT.Pipe(duplex=False)
     proc = _CONTEXT.Process(target=_child_main, args=(writer, target, data), daemon=True)
-    proc.start()
+    try:
+        proc.start()
+    except Exception as exc:  # a server fault (for example an unguarded entry module), not bad input
+        writer.close()
+        reader.close()
+        raise PenPlotError(
+            status=500,
+            code=ErrorCode.PROCESSING_FAILED,
+            message="The Gerber parser process could not start.",
+        ) from exc
     writer.close()
     try:
         if not reader.poll(timeout_s):
