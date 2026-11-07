@@ -165,7 +165,7 @@ def test_live_arco_smoke_2005_05_20_12utc():
     reader = F.ArcoEra5Reader()
     t0 = time.time()
     sub = reader.read(dt.datetime(2005, 5, 20, 12), EUROPE)
-    print(f"\nLIVE read seconds={time.time() - t0:.1f}")
+    print(f"\nLIVE read seconds={time.time() - t0:.1f} timing={reader.last_timing}")
     assert sub.mslp_hpa.shape == (len(sub.lat), len(sub.lon))
     assert np.all(np.diff(sub.lon) > 0) and sub.lon[0] == -35.0 and sub.lon[-1] == 55.0
     assert np.all(np.diff(sub.lat) > 0) and sub.lat[0] == 33.0 and sub.lat[-1] == 71.0

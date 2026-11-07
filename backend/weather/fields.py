@@ -18,6 +18,8 @@ import asyncio
 import base64
 import datetime as dt
 import io
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -142,8 +144,12 @@ class ArcoEra5Reader:
         self._url = url or weather_settings.store_url
         self._group = None
         self._axes: dict | None = None
+        self._open_s = 0.0
+        #: Seconds of the last read: open (group and axes) and chunk reads.
+        self.last_timing: dict[str, float] = {}
 
     def _open(self):
+        t0 = time.perf_counter()
         if self._group is None:
             import zarr  # lazy: network-only dependency
 
@@ -159,6 +165,7 @@ class ArcoEra5Reader:
                 "time_arr": g["time"],
                 "level": np.asarray(g["level"][:], dtype=float),
             }
+        self._open_s = time.perf_counter() - t0
         return self._group, self._axes
 
     def read(self, when: dt.datetime, region: Region) -> FieldSubset:
@@ -173,21 +180,27 @@ class ArcoEra5Reader:
         runs = contiguous_runs(lon_idx)
         lon_out = wrap180(axes["lon"][lon_idx])
 
-        out: dict[str, np.ndarray] = {}
-        for name, (var, level) in ARCO_VARS.items():
+        def one(item):
+            name, (var, level) = item
             arr = group[var]
+            l_idx = None if level is None else int(np.flatnonzero(axes["level"] == level)[0])
             parts = []
             for run in runs:
-                if level is None:
+                if l_idx is None:
                     block = arr[t_idx, lat_sl, run]
                 else:
-                    l_idx = int(np.flatnonzero(axes["level"] == level)[0])
                     block = arr[t_idx, l_idx, lat_sl, run]
                 parts.append(np.asarray(block, dtype=np.float32))
             values = np.concatenate(parts, axis=1)
             if lat_desc:
                 values = values[::-1]
-            out[name] = _convert(name, values)
+            return name, _convert(name, values)
+
+        # The seven chunk reads are independent; run them concurrently.
+        t_read = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=len(ARCO_VARS)) as pool:
+            out = dict(pool.map(one, ARCO_VARS.items()))
+        self.last_timing = {"open_s": self._open_s, "read_s": time.perf_counter() - t_read}
 
         lat_out = lat_vals[::-1] if lat_desc else lat_vals
         return FieldSubset(time=naive, region=region.name, lat=lat_out.astype(np.float32),
