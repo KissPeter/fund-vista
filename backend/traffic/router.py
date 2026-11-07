@@ -281,10 +281,10 @@ async def render_document(
         await _store_degraded_svg(svg_key, svg_text)
     else:
         # A render with a dead basemap layer must not sit in L4 for the full TTL:
-    # every later request (and the shop's draft preview) would serve the map-less
-    # SVG for days. Keep it just long enough for the svg_url to resolve.
-    await _store_render(svg_key, meta_key, svg_text, counts, len(window), stats,
-                        ttl_s=DEGRADED_RENDER_TTL_S if failed else None)
+        # every later request (and the shop's draft preview) would serve the map-less
+        # SVG for days. Keep it just long enough for the svg_url to resolve.
+        await _store_render(svg_key, meta_key, svg_text, counts, len(window), stats,
+                            ttl_s=DEGRADED_RENDER_TTL_S if failed else None)
     log.info("traffic.render icao=%s day=%s moves=%d cache_hit=False", icao, body.date, len(window))
     return {"airport": airport, "icao": icao, "counts": counts,
             "movements": len(window), "stats": stats, "svg_text": svg_text,
