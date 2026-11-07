@@ -31,6 +31,20 @@ Response 200 (application/json, abridged; svg shortened)::
       "warnings": [], "cache_hit": false
     }
 
+``GET /v1/pcb/results/{design_id}/meta`` returns the stats and the validated
+render params that produced the cached sheet, so the shop resolves price,
+paper, pen and inks server-side::
+
+    GET /v1/pcb/results/<design_id>/meta
+    200 {"stats": {"strokes": 5, "pen_down_mm": 587.67,
+                   "pen_up_mm": 621.11, "estimated_time_s": 23.8},
+         "params": {"paper": "white", "pen": "black", "mirror": false,
+                    "layers": {"pads": {"enabled": true, "ink": "auto"},
+                               "tracks": {"enabled": true, "ink": "blue"},
+                               "pours": {"enabled": false, "ink": "auto"},
+                               "drills": {"enabled": false, "ink": "auto"}}}}
+    404 {"error": {"code": "result_not_found", ...}}  unknown id or past the 24 h window
+
 Errors use the usual envelope ``{"error": {"code", "message"}}``: 413 above
 5 MB, 422 ``invalid_params`` for a bad file, bad params (for example white
 ink on white paper), no enabled sub-layer, or a board over the plot ceiling
@@ -54,7 +68,13 @@ from backend.pcb import cache as pcb_cache
 from backend.pcb.config import settings as pcb_settings
 from backend.pcb.layers import board_shapes
 from backend.pcb.render import MAX_UPLOAD_BYTES, render_preview_svg, run_isolated
-from backend.pcb.schemas import DesignToken, PcbRenderParams, PcbRenderResponse
+from backend.pcb.schemas import (
+    DesignToken,
+    PcbMetaResponse,
+    PcbRenderParams,
+    PcbRenderResponse,
+    SheetStats,
+)
 from backend.pcb.sheet import compose_sheet
 from backend.fulfillment.ink_split import design_id_for
 from backend.penplot import tokens as design_tokens
@@ -111,10 +131,12 @@ async def _load_cached(request_key: str) -> dict | None:
     except ValueError:
         return None
     design_id = meta["design_id"]
-    parts = await pcb_cache.cache_get_many(
-        [pcb_cache.svg_cache_key(design_id), pcb_cache.params_cache_key(design_id)]
-    )
-    if len(parts) != 2:
+    parts = await pcb_cache.cache_get_many([
+        pcb_cache.svg_cache_key(design_id),
+        pcb_cache.params_cache_key(design_id),
+        pcb_cache.meta_cache_key(design_id),
+    ])
+    if len(parts) != 3:
         return None
     meta["svg"] = parts[pcb_cache.svg_cache_key(design_id)]
     return meta
@@ -168,6 +190,7 @@ async def render(
     await pcb_cache.cache_set_many({
         pcb_cache.svg_cache_key(design_id): svg,
         pcb_cache.params_cache_key(design_id): canonical,
+        pcb_cache.meta_cache_key(design_id): json.dumps(meta["stats"]),
         request_key: json.dumps(meta),
     }, ttl_s=pcb_settings.cache_ttl_hours * 3600)
     log.info(
@@ -201,6 +224,33 @@ def _response(
         design=token,
         warnings=[*meta["warnings"], *token_warnings],
         cache_hit=cache_hit,
+    )
+
+
+@router.get("/results/{design_id}/meta", response_model=PcbMetaResponse,
+            dependencies=[Depends(require_rate_limit)])
+async def get_meta(design_id: str) -> PcbMetaResponse | JSONResponse:
+    """The stats and the validated render params of a cached sheet.
+
+    The shop resolves price, paper, pen and inks from this, never from the
+    browser. 404 once the cache window (24 h) has passed.
+    """
+    token = design_id.lower()
+    if len(token) != 64 or any(c not in "0123456789abcdef" for c in token):
+        return error_response(404, "result_not_found", "Unknown PCB result.")
+    found = await pcb_cache.cache_get_many([
+        pcb_cache.svg_cache_key(token),
+        pcb_cache.params_cache_key(token),
+        pcb_cache.meta_cache_key(token),
+    ])
+    if len(found) != 3:
+        return error_response(
+            404, "result_not_found",
+            "PCB result expired or unknown - re-run POST /v1/pcb/render.",
+        )
+    return PcbMetaResponse(
+        stats=SheetStats(**json.loads(found[pcb_cache.meta_cache_key(token)])),
+        params=PcbRenderParams.model_validate_json(found[pcb_cache.params_cache_key(token)]),
     )
 
 

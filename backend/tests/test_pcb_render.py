@@ -221,3 +221,61 @@ def test_no_enabled_layer_is_422_over_http(http_client):
     resp = _post_render(http_client, "board.gbr", SUBLAYER_GBR, params)
     assert resp.status_code == 422
     assert "Turn on at least one sub-layer" in resp.json()["error"]["message"]
+
+
+def test_meta_returns_stats_and_params_round_trip(http_client):
+    params = {**_ALL_ON, "mirror": True}
+    rendered = _post_render(http_client, "board.gbr", SUBLAYER_GBR, params).json()
+    design_id = rendered["design"]["design_id"]
+    resp = http_client.get(f"/v1/pcb/results/{design_id}/meta")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["stats"] == rendered["stats"]
+    assert body["params"] == PcbRenderParams(**params).model_dump()
+    assert PcbRenderParams.model_validate(body["params"]) == PcbRenderParams(**params)
+
+
+def test_meta_unknown_or_malformed_id_is_404(http_client):
+    unknown = http_client.get("/v1/pcb/results/" + "ab" * 32 + "/meta")
+    assert unknown.status_code == 404
+    assert unknown.json()["error"]["code"] == "result_not_found"
+    malformed = http_client.get("/v1/pcb/results/not-a-hash/meta")
+    assert malformed.status_code == 404
+
+
+def test_meta_after_the_cache_window_is_404(monkeypatch):
+    import asyncio
+
+    from backend.pcb import router as pcb_router
+
+    async def nothing_cached(keys):
+        return {}
+
+    monkeypatch.setattr(pcb_router.pcb_cache, "cache_get_many", nothing_cached)
+    resp = asyncio.run(pcb_router.get_meta("cd" * 32))
+    assert resp.status_code == 404
+    assert json.loads(resp.body)["error"]["code"] == "result_not_found"
+
+
+def test_meta_serves_stored_params_from_cache(monkeypatch):
+    import asyncio
+
+    from backend.pcb import cache as pcb_cache
+    from backend.pcb import router as pcb_router
+
+    params = PcbRenderParams(**_ALL_ON)
+    stats = {"strokes": 1, "pen_down_mm": 10.0, "pen_up_mm": 0.0, "estimated_time_s": 0.6}
+    design_id = "ef" * 32
+    stored = {
+        pcb_cache.svg_cache_key(design_id): "<svg/>",
+        pcb_cache.params_cache_key(design_id): params.model_dump_json(),
+        pcb_cache.meta_cache_key(design_id): json.dumps(stats),
+    }
+
+    async def cached(keys):
+        return {key: stored[key] for key in keys if key in stored}
+
+    monkeypatch.setattr(pcb_router.pcb_cache, "cache_get_many", cached)
+    body = asyncio.run(pcb_router.get_meta(design_id))
+    assert body.stats.model_dump() == stats
+    assert body.params == params

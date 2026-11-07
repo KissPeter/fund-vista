@@ -51,6 +51,11 @@ def svg_cache_key(design_id: str) -> str:
     return pcb_cache_key("svg", design_id)
 
 
+def meta_cache_key(design_id: str) -> str:
+    """Key of the stored plot stats for one design id."""
+    return pcb_cache_key("meta", design_id)
+
+
 def params_cache_key(design_id: str) -> str:
     """Key of the canonical render params a design id was made with."""
     return pcb_cache_key("params", design_id)

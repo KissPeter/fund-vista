@@ -101,6 +101,13 @@ class DesignToken(BaseModel):
     sig: str
 
 
+class PcbMetaResponse(BaseModel):
+    """``GET /v1/pcb/results/{design_id}/meta``: stats and the render params."""
+
+    stats: SheetStats
+    params: PcbRenderParams
+
+
 class PcbRenderResponse(BaseModel):
     svg: str
     svg_url: str
