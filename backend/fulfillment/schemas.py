@@ -26,7 +26,7 @@ InkName = Literal["black", "red", "blue", "green"]
 #: The Pen itself may be white (electric-blue paper's single ink).
 PenName = Literal["black", "red", "blue", "green", "white"]
 
-Kind = Literal["airport", "traffic"]
+Kind = Literal["airport", "traffic", "pcb"]
 
 
 class DesignToken(BaseModel):
@@ -76,7 +76,9 @@ class InkSplitRequest(BaseModel):
     #: against the kind's ``RenderRequest`` (``extra="forbid"``); the record's
     #: own ``kind`` marker key is tolerated and must agree.
     params: dict[str, object]
-    inks: InkAssignment
+    #: The order's ink assignments. Required for airport and traffic; omitted
+    #: for pcb, whose inks come from the render params the sheet was made with.
+    inks: InkAssignment | None = None
     #: The convert params of the buyer's framed preview (page, title label,
     #: tables). When set, every pass is laid out on the sheet exactly like the
     #: preview and the Pen pass carries the frame, title band and tables, so
@@ -88,12 +90,20 @@ class InkSplitRequest(BaseModel):
     @classmethod
     def _params_shape(cls, v: dict[str, object]) -> dict[str, object]:
         marker = v.get("kind")
-        if marker is not None and marker not in ("airport", "traffic"):
-            raise ValueError("params.kind must be 'airport' or 'traffic'")
+        if marker is not None and marker not in ("airport", "traffic", "pcb"):
+            raise ValueError("params.kind must be 'airport', 'traffic' or 'pcb'")
         return v
 
     @model_validator(mode="after")
     def _kind_specific(self) -> "InkSplitRequest":
+        if self.kind == "pcb":
+            if self.inks is not None:
+                raise ValueError("pcb inks come from the render params; omit 'inks'.")
+            if self.convert is not None:
+                raise ValueError("convert is not used for the pcb kind.")
+            return self
+        if self.inks is None:
+            raise ValueError(f"'inks' is required for the {self.kind} design.")
         if self.kind == "airport" and self.inks.layer_colors:
             raise ValueError("layer colors belong to the traffic design")
         if self.kind == "traffic" and self.inks.runway is not None:
