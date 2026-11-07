@@ -60,7 +60,7 @@ class PageParams(BaseModel):
     )
 
 
-LabelAlign = Literal["left", "right", "fill"]
+LabelAlign = Literal["left", "center", "right", "fill"]
 #: Where the title sits: ``inside`` the border (band, default) or outside it,
 #: ``below`` or ``above`` the page (frame gives up the strip, sheet stays A4).
 LabelPlacement = Literal["inside", "below", "above"]

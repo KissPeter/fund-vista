@@ -344,11 +344,13 @@ def test_async_airport_render_cold_cache_completes(client, monkeypatch):
     async def fake_lookup(icao):
         return airport, [], [], [], False
 
-    async def fake_polygons(lat, lon, radius_m, warnings, kind="overpass", **kw):
-        return [], None
+    async def fake_airfield(lat, lon, radius_m, warnings, **kw):
+        from backend.airports.sources import AirfieldResult
+
+        return AirfieldResult(), None
 
     monkeypatch.setattr(exec_airports_mod, "_lookup", fake_lookup)
-    monkeypatch.setattr(airports_router, "_load_polygons", fake_polygons)
+    monkeypatch.setattr(airports_router, "_load_airfield", fake_airfield)
 
     resp, _ = _post_job(client, "airport_render", {"icao": "LHDC"}, cancel_previous=False)
     assert resp.status_code == 202, resp.text

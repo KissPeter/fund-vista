@@ -15,6 +15,7 @@ corner). Horizontal alignment within the inner width:
 
 - ``left`` - line starts at the left margin;
 - ``right`` - line ends at the right margin (default);
+- ``center`` - line is centred between the padded edges;
 - ``fill`` - glyphs are stretched horizontally to span the full inner width.
 
 A line that is naturally wider than the inner width is scaled down to fit
@@ -394,6 +395,10 @@ def _fit_line(
         lines = [[(text_left + (x - min_x) * sx, y) for x, y in pl] for pl in lines]
     elif align == "left":
         dx = text_left - min_x
+        if dx != 0.0:
+            lines = [[(x + dx, y) for x, y in pl] for pl in lines]
+    elif align == "center":
+        dx = (text_left + text_right) / 2.0 - (min_x + max_x) / 2.0
         if dx != 0.0:
             lines = [[(x + dx, y) for x, y in pl] for pl in lines]
     else:  # right (default): glyph bbox ends exactly at the padded edge
