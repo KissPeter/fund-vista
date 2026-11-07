@@ -939,6 +939,26 @@ def test_render_basemap_outage_degrades(live, monkeypatch, tmp_path):
     assert resp.json()["counts"]["arrivals"] == 1  # tracks still draw
 
 
+def test_render_basemap_outage_is_cached_briefly(live, monkeypatch, tmp_path):
+    """A map-less render must not sit in L4 for the full TTL, healthy ones do."""
+    from backend.traffic import router as router_mod
+
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    ttls: list = []
+    real_store = router_mod._store_render
+
+    async def spy(*args, **kwargs):
+        ttls.append(kwargs.get("ttl_s"))
+        return await real_store(*args, **kwargs)
+
+    monkeypatch.setattr(router_mod, "_store_render", spy)
+    _stub_basemap(monkeypatch, failed=["country"])
+    assert live.post("/v1/traffic/render", json=_render_body(day)).status_code == 200
+    assert ttls == [router_mod.DEGRADED_RENDER_TTL_S]
+
+
 def test_import_registers_image(live, monkeypatch, tmp_path):
     day = _yesterday_iso()
     _seed_l1_shifted(tmp_path / "traffic", day)
