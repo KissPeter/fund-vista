@@ -112,6 +112,25 @@ def lat_slice(lat_native: np.ndarray, lat0: float, lat1: float) -> tuple[slice, 
 
 # -- production reader --------------------------------------------------------
 
+#: The ARCO store counts whole hours since this instant (proleptic Gregorian).
+STORE_EPOCH = dt.datetime(1900, 1, 1)
+
+
+def time_index(when: dt.datetime, length: int, time_at) -> int:
+    """Index of ``when`` (naive UTC) on the store's hourly axis.
+
+    Computes the index from the hour count and checks it against the axis,
+    so the time coordinate is never read in full. ``time_at(i)`` returns the
+    stored hour value at index ``i``.
+    """
+    if when.minute or when.second or when.microsecond:
+        raise ValueError(f"time {when.isoformat()} is not a whole hour")
+    hours = int((when - STORE_EPOCH).total_seconds() // 3600)
+    if not 0 <= hours < length or time_at(hours) != hours:
+        raise ValueError(f"time {when.isoformat()} not in the store")
+    return hours
+
+
 class ArcoEra5Reader:
     """Reads one time step from the ARCO ERA5 Zarr v3 store, window only.
 
@@ -136,7 +155,8 @@ class ArcoEra5Reader:
             self._axes = {
                 "lat": np.asarray(g["latitude"][:], dtype=float),
                 "lon": np.asarray(g["longitude"][:], dtype=float),
-                "time": np.asarray(g["time"][:]),
+                # Store time is int64 hours since STORE_EPOCH, not datetime64.
+                "time_arr": g["time"],
                 "level": np.asarray(g["level"][:], dtype=float),
             }
         return self._group, self._axes
@@ -144,10 +164,8 @@ class ArcoEra5Reader:
     def read(self, when: dt.datetime, region: Region) -> FieldSubset:
         group, axes = self._open()
         naive = when.replace(tzinfo=None)
-        t_hits = np.flatnonzero(axes["time"] == np.datetime64(naive))
-        if t_hits.size == 0:
-            raise ValueError(f"time {naive.isoformat()} not in the store")
-        t_idx = int(t_hits[0])
+        time_arr = axes["time_arr"]
+        t_idx = time_index(naive, int(time_arr.shape[0]), lambda i: int(time_arr[i]))
 
         lat_sl, lat_desc = lat_slice(axes["lat"], region.lat0, region.lat1)
         lat_vals = axes["lat"][lat_sl]

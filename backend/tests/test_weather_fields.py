@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 
 import numpy as np
+import pytest
 
 from backend.weather import fields as F
 from backend.weather.config import EUROPE, LEVEL_WIND_HPA, LEVEL_Z_T_HPA, Region
@@ -43,29 +44,68 @@ class _FakeGroup(dict):
     pass
 
 
+class _ConstVar:
+    """Lazy constant array of a given shape: slices cost only the result size,
+    so the full 1940-2050 hourly time axis can be mimicked without memory."""
+
+    def __init__(self, shape, value):
+        self.shape = shape
+        self.value = np.float32(value)
+
+    def __getitem__(self, key):
+        return np.array(np.broadcast_to(self.value, self.shape)[key])
+
+
+N_HOURS = 1323648  # full ARCO time axis length (hours since 1900-01-01)
+N_LAT, N_LON = 181, 360
+
+
 def _synthetic_reader():
-    """ArcoEra5Reader with an in-memory store: 1 degree grid, 2 times, 3 levels."""
-    lat = np.arange(90.0, -91.0, -1.0)  # descending, like ARCO
+    """ArcoEra5Reader over an in-memory store that mimics the real encoding:
+    time as int64 hours since 1900-01-01 (value == index), dims
+    (time, level, lat, lon), latitude descending 90..-90, longitude 0..359.
+    """
+    lat = np.arange(90.0, -91.0, -1.0)
     lon = np.arange(0.0, 360.0, 1.0)
-    times = np.array(["2005-05-20T12:00", "2005-05-20T18:00"], dtype="datetime64[h]")
     levels = np.array([250.0, 500.0, 850.0])
-    shape_t = (len(times), len(lat), len(lon))
-    msl = np.full(shape_t, 101325.0, dtype=np.float32)  # Pa
-    z = np.zeros((len(times), len(levels), len(lat), len(lon)), dtype=np.float32)
-    z[:, 1] = 9.80665 * 5600.0  # 500 hPa geopotential, m2/s2 -> 5600 gpm
-    t = np.full((len(times), len(levels), len(lat), len(lon)), 258.15, dtype=np.float32)
-    u = np.zeros_like(z)
-    u[:, 0] = 30.0  # 250 hPa u
+    t3 = (N_HOURS, N_LAT, N_LON)
+    t4 = (N_HOURS, len(levels), N_LAT, N_LON)
     group = _FakeGroup({
-        "mean_sea_level_pressure": msl, "geopotential": z, "temperature": t,
-        "u_component_of_wind": u, "v_component_of_wind": np.zeros_like(z),
-        "10m_u_component_of_wind": np.full(shape_t, 3.0, dtype=np.float32),
-        "10m_v_component_of_wind": np.full(shape_t, -4.0, dtype=np.float32),
+        "time": np.arange(N_HOURS, dtype=np.int64),
+        "mean_sea_level_pressure": _ConstVar(t3, 101325.0),  # Pa
+        "geopotential": _ConstVar(t4, 9.80665 * 5600.0),  # m2/s2 -> 5600 gpm
+        "temperature": _ConstVar(t4, 258.15),
+        "u_component_of_wind": _ConstVar(t4, 30.0),
+        "v_component_of_wind": _ConstVar(t4, 0.0),
+        "10m_u_component_of_wind": _ConstVar(t3, 3.0),
+        "10m_v_component_of_wind": _ConstVar(t3, -4.0),
     })
     reader = F.ArcoEra5Reader(url="gs://unused")
     reader._group = group
-    reader._axes = {"lat": lat, "lon": lon, "time": times, "level": levels}
+    reader._axes = {"time_arr": group["time"], "lat": lat, "lon": lon, "level": levels}
     return reader
+
+
+def test_time_index_matches_store_hours():
+    # 2005-05-20 12:00 is 923772 whole hours after 1900-01-01 00:00.
+    assert F.time_index(dt.datetime(2005, 5, 20, 12), N_HOURS, lambda i: i) == 923772
+    assert F.STORE_EPOCH == dt.datetime(1900, 1, 1)
+
+
+def test_time_index_out_of_range_raises():
+    with pytest.raises(ValueError, match="not in the store"):
+        F.time_index(dt.datetime(1899, 12, 31, 23), N_HOURS, lambda i: i)
+    with pytest.raises(ValueError, match="not in the store"):
+        F.time_index(dt.datetime(2051, 1, 1), N_HOURS, lambda i: i)
+    with pytest.raises(ValueError, match="whole hour"):
+        F.time_index(dt.datetime(2005, 5, 20, 12, 30), N_HOURS, lambda i: i)
+
+
+def test_reader_reads_real_encoded_time():
+    reader = _synthetic_reader()
+    sub = reader.read(dt.datetime(2005, 5, 20, 12), EUROPE)
+    assert sub.mslp_hpa.shape == (len(sub.lat), len(sub.lon))
+    assert np.allclose(sub.mslp_hpa, 1013.25)
 
 
 def test_reader_window_units_and_wrap():
@@ -82,12 +122,8 @@ def test_reader_window_units_and_wrap():
 
 def test_reader_missing_time_raises():
     reader = _synthetic_reader()
-    try:
-        reader.read(dt.datetime(1999, 1, 1, 0), EUROPE)
-    except ValueError as exc:
-        assert "not in the store" in str(exc)
-    else:
-        raise AssertionError("expected ValueError")
+    with pytest.raises(ValueError, match="not in the store"):
+        reader.read(dt.datetime(2060, 1, 1, 0), EUROPE)
 
 
 class _CountingReader:
@@ -119,3 +155,19 @@ def test_npz_codec_roundtrip():
         assert np.array_equal(sub.field(name), back.field(name))
     assert np.array_equal(sub.lat, back.lat) and np.array_equal(sub.lon, back.lon)
     assert LEVEL_WIND_HPA == 250 and LEVEL_Z_T_HPA == 500
+
+
+@pytest.mark.network
+def test_live_arco_smoke_2005_05_20_12utc():
+    """Live read from the ARCO store. Skipped by default; run with -m network."""
+    import time
+
+    reader = F.ArcoEra5Reader()
+    t0 = time.time()
+    sub = reader.read(dt.datetime(2005, 5, 20, 12), EUROPE)
+    print(f"\nLIVE read seconds={time.time() - t0:.1f}")
+    assert sub.mslp_hpa.shape == (len(sub.lat), len(sub.lon))
+    assert np.all(np.diff(sub.lon) > 0) and sub.lon[0] == -35.0 and sub.lon[-1] == 55.0
+    assert np.all(np.diff(sub.lat) > 0) and sub.lat[0] == 33.0 and sub.lat[-1] == 71.0
+    assert 950.0 <= float(np.nanmin(sub.mslp_hpa)) and float(np.nanmax(sub.mslp_hpa)) <= 1060.0
+    print(f"LIVE mslp min={float(np.nanmin(sub.mslp_hpa)):.1f} max={float(np.nanmax(sub.mslp_hpa)):.1f}")
