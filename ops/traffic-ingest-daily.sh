@@ -1,14 +1,14 @@
 #!/bin/sh
-# Daily traffic ingest → local export (on the Mac: the launchd agent
+# Daily traffic ingest → git push (on the Mac: the launchd agent
 # ~/Library/LaunchAgents/hu.linuxadm.traffic-ingest.plist, 08:10 + 20:10).
 #
 # Flow: POST a traffic_ingest job for each recent day (UTC) to the local
 # backend — one job covers every ICAO, so one archive pass serves the whole
-# list — poll it to terminal state, then copy the slice files out of the app
-# container into this checkout's backend/traffic/slices/ (gitignored, never
-# committed or pushed). The app reads its slices from the container volume,
-# so the export is a local mirror, not a deploy payload. Idempotent:
-# already-ingested days return cache_hit instantly.
+# list — poll it to terminal state, then export the new slice files from the
+# app container into this repo and push them to origin/main — so the slices
+# live in git (HU-only scope: ~2 MB per airport-day) and every deploy carries
+# them. Idempotent: already-ingested days return cache_hit instantly and
+# produce no commit; a failed push is retried by the next daily run.
 #
 # The window is TRAFFIC_DAYS (default 3) days wide, so a day whose adsb.lol
 # archive publishes late is picked up by a later run instead of being lost.
@@ -147,7 +147,7 @@ for DAY in $(days); do   # oldest day first
   fi
 done
 [ "$HARVESTED" -eq 1 ] || { log "no day harvested — nothing to export"; exit 1; }
-[ "$FAILED" -eq 0 ] || { log "ingest failures — slices not exported"; exit 1; }
+[ "$FAILED" -eq 0 ] || { log "ingest failures — slices not pushed"; exit 1; }
 
 # Export the store out of the container into the repo checkout.
 if ! docker exec "$CONTAINER" test -d /data/traffic/day; then
@@ -160,4 +160,34 @@ if docker exec "$CONTAINER" test -d /data/traffic/pass; then
   docker cp "$CONTAINER:/data/traffic/pass/." "$SLICES/pass/" || exit 1
 fi
 
-log "exported traffic slices to $SLICES (not committed)"
+cd "$REPO" || exit 1
+# An earlier run may have died mid-way and left slices staged. Commit them
+# (same content the export below would produce) so the tree is clean for
+# the pull — the CD deploy refuses dirty trees, so only this script can
+# dirty the checkout.
+if [ -n "$(git status --porcelain)" ]; then
+  log "leftover changes from an earlier run — committing them"
+  git add -A backend/traffic/slices || exit 1
+  git commit -m "data(traffic): slices from an earlier run" || true
+fi
+# CD deploys leave the prod checkout detached at the deployed sha; the git
+# export needs a branch. The tree is clean here (deploy-mac.sh refuses dirty
+# trees), so checking main out is safe.
+if [ -z "$(git symbolic-ref -q HEAD)" ]; then
+  git checkout -q main || { log "cannot check out main (detached HEAD)"; exit 1; }
+fi
+git pull --rebase origin main || { log "git pull failed"; exit 1; }
+git add backend/traffic/slices || exit 1
+if ! git diff --cached --quiet; then
+  git commit -m "data(traffic): daily slices ($ICAOS)" || exit 1
+fi
+# Push whatever is not on origin yet — the new slice commit, a leftover
+# commit made above, or both.
+if [ -n "$(git log --oneline origin/main..HEAD 2>/dev/null)" ]; then
+  if ! git push origin main; then
+    git pull --rebase origin main && git push origin main || { log "git push failed"; exit 1; }
+  fi
+  log "pushed traffic slices to origin/main"
+else
+  log "no new slices for the window"
+fi
