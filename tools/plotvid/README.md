@@ -111,6 +111,7 @@ uv run python -m plotvid.folder /path/raw/lhbp [--config YAML] [--slide-s 3]
 - **Temporary files:** `$TMPDIR/plotvid/<name>/` (generated config, analysis cache, stills, slideshow, `summary.json`). Delete the cache if you change the detection settings.
 - **Videos** (`.mov`, `.mp4`, `.m4v`) go through detect, ink check and segment, ordered by container creation time. Each file is one story part (see above).
 - **Photos** are picked up from the same folder automatically, ordered by EXIF capture time (mtime when missing). Each is cropped to the output frame and shown for `--slide-s` seconds. The slideshow closes every clip, before the outro.
+- **Intro:** images in `intro/` inside the folder (if it exists) are shown first, 2 s each, with the same settings. The clip starts with them.
 - **Outro:** `outro` from the YAML, relative to the YAML file. An SVG is converted with `rsvg-convert`. A video outro keeps its own audio.
 - **Skipped files:** names starting with `.`, including macOS `._*` companions, and any other extension.
 - **Final photo:** the YAML's `final_photo` is ignored, because the slideshow replaces it. A folder with photos but no videos gets the slideshow and outro only.
