@@ -115,6 +115,20 @@ def traffic_group_ink(
     return pen_ink
 
 
+#: Group-id prefix of the PCB sub-layer groups (``backend/pcb/layers.py``).
+PCB_GROUP_PREFIX = "pcb-"
+
+
+def pcb_group_ink(group_id: str, pen_ink: str, layer_inks: dict[str, str]) -> str:
+    """PCB mapping: ``pcb-<layer>`` rides its resolved ink, the Pen otherwise.
+
+    ``layer_inks`` holds the render's enabled sub-layers with ``auto`` already
+    resolved to the Pen (``PcbRenderParams.enabled_layers``).
+    """
+    suffix = group_id[len(PCB_GROUP_PREFIX):] if group_id.startswith(PCB_GROUP_PREFIX) else ""
+    return layer_inks.get(suffix) or pen_ink
+
+
 def _find_top_level_groups(svg_text: str) -> tuple[str, list[tuple[str, str | None]]]:
     """Split a draft into ``(root_open_tag, [(open_tag, body_or_None), ...])``.
 

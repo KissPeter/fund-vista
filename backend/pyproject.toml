@@ -8,16 +8,16 @@ dependencies = [
     "uvicorn[standard]==0.30.6",
     "httpx==0.27.2",
     # Retry/backoff/Retry-After transport for the shared upstream client
-    # (backend/http/upstream.py). BSD-3-Clause — permissive, meets spec §7.
+    # (backend/http/upstream.py). BSD-3-Clause - permissive, meets spec §7.
     "httpx-retries>=0.4",
     "brotli==1.2.0",
     "redis==5.1.1",
     # pydantic-settings replaces hand-rolled os.getenv/_env_int/_env_float config
-    # parsing (validated, typed, fail-fast). Permissive (MIT) — meets spec §7.
+    # parsing (validated, typed, fail-fast). Permissive (MIT) - meets spec §7.
     "pydantic-settings>=2.0",
     # Pen-plot v1 pipeline (all permissive licenses: HPND / BSD / Apache-2.0).
     # NOTE: Potrace (GPL-2.0) and vpype-flow-imager (GPL-3.0) are deliberately
-    # NOT dependencies — see backend/penplot/methods.py.
+    # NOT dependencies - see backend/penplot/methods.py.
     "pillow>=10.0",
     "numpy>=1.26",
     "opencv-python-headless>=4.8",
@@ -28,16 +28,16 @@ dependencies = [
     "defusedxml>=0.7",
     # Single-stroke SVGinOT title/table face (ZnikoSL-SVGinOT-8): SVG glyph
     # documents are parsed directly via fontTools (no rasterizer can draw
-    # OT-SVG). MIT — permissive, meets spec §7.
+    # OT-SVG). MIT - permissive, meets spec §7.
     "fonttools>=4.50",
     # Boolean ops for the negative-space wordmark renderer
     # (backend/wordmark: glyph unions, gap-ring cuts, knockout/layered
-    # modes). Pure wheels for every supported Python (no system libs —
+    # modes). Pure wheels for every supported Python (no system libs -
     # FastAPI Cloud installs Python dependencies only).
-    # BSD-3-Clause — permissive, meets spec §7.
+    # BSD-3-Clause - permissive, meets spec §7.
     "skia-pathops>=0.8",
     # Server-rendered UI for the pen-plot endpoints (Jinja2 templates).
-    # BSD-3-Clause — permissive, meets spec §7.
+    # BSD-3-Clause - permissive, meets spec §7.
     "jinja2>=3.1",
     # Technical-drawing OCR (F-005), Apache-2.0. ``tesserocr`` ships Linux
     # wheels with libtesseract bundled (no apt needed - FastAPI Cloud installs
@@ -46,6 +46,7 @@ dependencies = [
     # fallback elsewhere (macOS dev: brew install tesseract).
     "tesserocr>=2.8; sys_platform == 'linux'",
     "pytesseract>=0.3.10",
+    "gerbonara>=1.6.3",
     # Embedded analytics engine for the Overture airfield reader
     # (backend/airports/sources.py): in-process, no server. MIT - permissive,
     # meets spec §7. Its spatial/httpfs extensions are preinstalled in the
@@ -59,7 +60,7 @@ test = [
     "httpx>=0.27",
     "pytest-html>=4.1",
     # Schemathesis smoke: OpenAPI-property fuzzing against the mock-mode server
-    # (see backend/tests/test_schemathesis_smoke / .github/workflows). BSD-3 —
+    # (see backend/tests/test_schemathesis_smoke / .github/workflows). BSD-3 -
     # permissive, meets spec §7.
     "schemathesis>=4.32",
 ]
