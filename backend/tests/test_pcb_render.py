@@ -305,6 +305,12 @@ def test_a_zero_area_board_is_still_refused():
     assert "no area to plot" in exc.value.message
 
 
+def test_pcb_cache_window_is_seven_days():
+    from backend.pcb.config import PcbSettings
+
+    assert PcbSettings.model_fields["cache_ttl_hours"].default == 168
+
+
 def test_token_expiry_is_capped_at_the_cache_window(monkeypatch):
     import time as time_mod
 

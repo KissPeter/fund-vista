@@ -43,7 +43,7 @@ paper, pen and inks server-side::
                                "tracks": {"enabled": true, "ink": "blue"},
                                "pours": {"enabled": false, "ink": "auto"},
                                "drills": {"enabled": false, "ink": "auto"}}}}
-    404 {"error": {"code": "result_not_found", ...}}  unknown id or past the 24 h window
+    404 {"error": {"code": "result_not_found", ...}}  unknown id or past the 7 day window
 
 Errors use the usual envelope ``{"error": {"code", "message"}}``: 413 above
 5 MB, 422 ``invalid_params`` for a bad file, bad params (for example white
@@ -246,7 +246,7 @@ async def get_meta(design_id: str) -> PcbMetaResponse | JSONResponse:
     """The stats and the validated render params of a cached sheet.
 
     The shop resolves price, paper, pen and inks from this, never from the
-    browser. 404 once the cache window (24 h) has passed.
+    browser. 404 once the cache window (7 days) has passed.
     """
     token = design_id.lower()
     if len(token) != 64 or any(c not in "0123456789abcdef" for c in token):
