@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# cut-clip VIDEO START END [--crf N]      (START, END as mm:ss)
+# Frame-accurate cut -> <name>_<start>-<end>.mp4 next to the original (e.g. clip_2m16-2m28.mp4).
+# Re-encodes video (libx264), copies audio; the original is untouched.
+set -euo pipefail
+
+crf=16
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --crf) crf="$2"; shift 2 ;;
+    -h|--help) sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+[ ${#args[@]} -eq 3 ] || { echo "usage: cut-clip VIDEO START END [--crf N]  (mm:ss)" >&2; exit 2; }
+src="${args[0]}"; start="${args[1]}"; end="${args[2]}"
+re='^[0-9]+:[0-5][0-9]$'
+[[ $start =~ $re && $end =~ $re ]] || { echo "START and END must be mm:ss" >&2; exit 2; }
+[ -f "$src" ] || { echo "no such file: $src" >&2; exit 2; }
+
+secs() { echo $(( 10#${1%:*} * 60 + 10#${1#*:} )); }
+[ "$(secs "$end")" -gt "$(secs "$start")" ] || { echo "END must be after START" >&2; exit 2; }
+
+tag() { echo "${1%:*}m${1#*:}"; }
+out="$(dirname "$src")/$(basename "${src%.*}")_$(tag "$start")-$(tag "$end").mp4"
+[ -e "$out" ] && { echo "exists: $out" >&2; exit 1; }
+
+echo "$src $start-$end -> $out"
+ffmpeg -v error -nostdin -stats -ss "0:$start" -to "0:$end" -i "$src" \
+  -c:v libx264 -crf "$crf" -preset slow -pix_fmt yuv420p -c:a copy -movflags +faststart "$out"
