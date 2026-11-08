@@ -939,6 +939,26 @@ def test_render_basemap_outage_degrades(live, monkeypatch, tmp_path):
     assert resp.json()["counts"]["arrivals"] == 1  # tracks still draw
 
 
+def test_render_basemap_outage_is_cached_briefly(live, monkeypatch, tmp_path):
+    """A map-less render must not sit in L4 for the full TTL, healthy ones do."""
+    from backend.traffic import router as router_mod
+
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    ttls: list = []
+    real_store = router_mod._store_render
+
+    async def spy(*args, **kwargs):
+        ttls.append(kwargs.get("ttl_s"))
+        return await real_store(*args, **kwargs)
+
+    monkeypatch.setattr(router_mod, "_store_render", spy)
+    _stub_basemap(monkeypatch, failed=["country"])
+    assert live.post("/v1/traffic/render", json=_render_body(day)).status_code == 200
+    assert ttls == [router_mod.DEGRADED_RENDER_TTL_S]
+
+
 def test_import_registers_image(live, monkeypatch, tmp_path):
     day = _yesterday_iso()
     _seed_l1_shifted(tmp_path / "traffic", day)
@@ -961,3 +981,60 @@ def test_results_tokens(live, monkeypatch, tmp_path):
     assert live.get(f"/v1/traffic/results/{token}").status_code == 200
     assert live.get("/v1/traffic/results/not-hex").status_code == 404
     assert live.get("/v1/traffic/results/" + "0" * 40).status_code == 404
+
+
+def test_degraded_traffic_render_link_resolves_but_is_not_an_l4_hit(live, monkeypatch, tmp_path):
+    from backend.traffic import basemap as basemap_mod
+
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+
+    async def _basemap(view, lat, lon, layers=None):
+        basemap_mod._mark_uncached("airfield")  # degraded airfield
+        s, n, w, e = view
+        line = [[[w, (s + n) / 2], [e, (s + n) / 2]]]
+        return ({"motorways": line, "waterways": [], "water": [], "airfield": []}, [])
+
+    monkeypatch.setattr("backend.traffic.router.load_basemap", _basemap)
+    first = live.post("/v1/traffic/render", json=_render_body(day))
+    assert first.status_code == 200, first.text
+    svg = live.get(first.json()["svg_url"])
+    assert svg.status_code == 200, svg.text[:200]
+    assert "<svg" in svg.text
+    second = live.post("/v1/traffic/render", json=_render_body(day))
+    assert second.status_code == 200, second.text
+    assert second.json()["cache_hit"] is False
+    assert "svg_cache_hit" not in second.json()["warnings"]
+
+
+def test_degraded_airfield_render_is_not_stored_in_l4(live, monkeypatch, tmp_path):
+    from backend.traffic import basemap as basemap_mod
+
+    day = _yesterday_iso()
+    _seed_l1_shifted(tmp_path / "traffic", day)
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport")
+    degraded = {"on": True}
+
+    async def _basemap(view, lat, lon, layers=None):
+        if degraded["on"]:
+            # What load_basemap records for a degraded airfield layer.
+            basemap_mod._mark_uncached("airfield")
+        s, n, w, e = view
+        line = [[[w, (s + n) / 2], [e, (s + n) / 2]]]
+        return ({"motorways": line, "waterways": [], "water": [], "airfield": []}, [])
+
+    monkeypatch.setattr("backend.traffic.router.load_basemap", _basemap)
+
+    first = live.post("/v1/traffic/render", json=_render_body(day))
+    assert first.status_code == 200, first.text
+    second = live.post("/v1/traffic/render", json=_render_body(day))
+    assert second.status_code == 200, second.text
+    assert second.json()["cache_hit"] is False, "a degraded render must not be an L4 hit"
+
+    degraded["on"] = False  # a complete airfield is stored and then hit
+    healthy = live.post("/v1/traffic/render", json=_render_body(day))
+    assert healthy.status_code == 200, healthy.text
+    assert healthy.json()["cache_hit"] is False
+    again = live.post("/v1/traffic/render", json=_render_body(day))
+    assert again.json()["cache_hit"] is True

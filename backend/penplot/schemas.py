@@ -41,7 +41,7 @@ class PageParams(BaseModel):
 
     size: PageSizeName = "A4"
     orientation: Orientation = "portrait"
-    margin_mm: float = Field(default=10.0, ge=0.0, le=50.0)
+    margin_mm: float = Field(default=10.0, ge=10.0, le=30.0)
     padding_mm: float = Field(
         default=5.0, ge=0.0, le=20.0,
         description="Internal padding inside the margin/frame; artwork never touches the border.",
@@ -60,7 +60,7 @@ class PageParams(BaseModel):
     )
 
 
-LabelAlign = Literal["left", "right", "fill"]
+LabelAlign = Literal["left", "center", "right", "fill"]
 #: Where the title sits: ``inside`` the border (band, default) or outside it,
 #: ``below`` or ``above`` the page (frame gives up the strip, sheet stays A4).
 LabelPlacement = Literal["inside", "below", "above"]
@@ -654,6 +654,16 @@ class ComposeSheetRequest(BaseModel):
         description="Title then subtitle. Blank entries are dropped.",
     )
     context_table: ComposeContextTable = Field(default_factory=ComposeContextTable)
+    artwork: Literal["image", "inline"] = Field(
+        default="image",
+        description=(
+            "How the artwork is embedded. image: one base64 <image> (the preview). "
+            "inline: the artwork's own vector markup in one transformed <g>, "
+            "plottable; the sheet then carries no <image> and no <text>. Refused "
+            "(422): script, style, animation, external or escaped url(), "
+            "clip-path, mask, markers, and artwork that reaches past its box."
+        ),
+    )
 
     @model_validator(mode="after")
     def _no_control_chars(self) -> ComposeSheetRequest:

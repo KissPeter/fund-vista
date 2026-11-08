@@ -38,6 +38,13 @@ class AirportsSettings(BaseSettings):
         "https://overpass.openstreetmap.fr/api/interpreter",
         "https://overpass.nchc.org.tw/api/interpreter",
     ]
+    # Overture Maps base/infrastructure (ODbL-derived OSM copy, monthly
+    # release): the airfield core (runways, taxiways, aprons, stopways).
+    # Pinned so a render is reproducible; see backend.airports.sources.
+    overture_release: str = "2026-10-21.0"
+    overture_enabled: bool = True
+    # Wall clock for one Overture read (DuckDB + S3 cold start is ~7 s).
+    overture_timeout_s: float = 30.0
     overpass_timeout_s: float = 30.0
     overpass_retries: int = 1
     overpass_retry_backoff_s: float = 1.0

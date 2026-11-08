@@ -13,9 +13,12 @@ def perf_budget(seconds: float) -> float:
     """Wall-clock ceiling for a perf assertion, scaled by PERF_BUDGET_SCALE.
 
     The shared CI runner is often loaded; backend-tests.yml sets the scale
-    there. Locally it defaults to 1.0, so the assertion is unchanged.
+    there. Any other CI (``CI`` set, for example the pen-pixel-shop gate that
+    runs this suite) defaults to 3.0, the same headroom. Locally it defaults
+    to 1.0, so the assertion is unchanged.
     """
-    return seconds * float(os.environ.get("PERF_BUDGET_SCALE", "1.0"))
+    default = "3.0" if os.environ.get("CI") else "1.0"
+    return seconds * float(os.environ.get("PERF_BUDGET_SCALE", default))
 
 
 def png_bytes(width: int = 320, height: int = 240) -> bytes:

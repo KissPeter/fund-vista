@@ -145,7 +145,7 @@ docker start fundvista
   because the HU-only scope keeps them small. Daily ingest → push:
   `ops/traffic-ingest-daily.sh` (launchd agent
   `hu.linuxadm.traffic-ingest`, 08:10 + 20:10) POSTs `traffic_ingest` for
-  yesterday (UTC) per `TRAFFIC_ICAOS` (default `LHBP`), polls to terminal,
+  yesterday (UTC) per `TRAFFIC_ICAOS` (default: all 57 HU airports in the script), polls to terminal,
   exports new files from the store into the repo checkout and pushes to
   `origin/main`. Idempotent (cache_hit days commit nothing); push failures
   retry on the next run.

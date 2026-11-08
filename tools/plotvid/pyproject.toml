@@ -1,0 +1,26 @@
+[project]
+name = "plotvid"
+version = "0.1.0"
+description = "Cut pen-plotter recordings into short 9:16 clips at pen events"
+requires-python = "==3.13.*"
+# All permissive: NumPy BSD-3, Pillow HPND/MIT-CMU, PyYAML MIT.
+# ffmpeg/ffprobe are external binaries (licence depends on the build; a
+# libx264 build is GPL, which is fine for rendering our own videos).
+# opencv-python-headless (Apache-2.0) runs the video ink check.
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python-headless>=5.0.0.93",
+    "pillow>=10.0",
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.uv]
+# A CLI run from this directory (`python -m plotvid`), not a distributed package.
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

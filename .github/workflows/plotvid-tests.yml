@@ -1,0 +1,44 @@
+# plotvid (tools/plotvid) has its own lane: backend-tests.yml's paths filter
+# never covers it, so a plotvid-only PR got no CI at all. This runs the
+# plotvid pytest suite, including the ffmpeg render tests and the rsvg-convert
+# watermark/outro test, which skip when the binaries are missing, so the
+# job installs them and fails if either is absent.
+name: plotvid-tests
+
+on:
+  push:
+    branches: [main]
+    paths: &plotvid_paths
+      - tools/plotvid/**
+      - .claude/commands/plotvid.md
+      - .github/workflows/plotvid-tests.yml
+  pull_request:
+    paths: *plotvid_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plotvid:
+    runs-on: [self-hosted, linux, ARM64]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+
+      # ffmpeg/ffprobe: probe, ink and render tests; librsvg: outro + watermark SVGs.
+      - name: ffmpeg and rsvg-convert
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v rsvg-convert >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg librsvg2-bin
+          fi
+          ffmpeg -version | head -1
+          rsvg-convert --version
+
+      - name: Tests
+        working-directory: tools/plotvid
+        # uv reads pyproject.toml/uv.lock (Python 3.13, numpy, opencv, pillow,
+        # pyyaml, dev group). -rs lists skips; none are expected here.
+        run: uv run --locked pytest -q -rs

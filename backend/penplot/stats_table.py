@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from backend.penplot.hershey_fonts import FACES
 from backend.penplot.knockout import Rect
+from backend.penplot.labels import _rounded_rect
 from backend.penplot.methods import Polyline
 from backend.penplot.svgfont import FONT_ID as SVG_FONT_ID, get_svg_face
 
@@ -27,9 +28,9 @@ FONT = SVG_FONT_ID
 #: Glyph height of the table cells.
 HEIGHT_MM = 3.0
 #: Horizontal breathing room between cell text and the column rules.
-CELL_PAD_X_MM = 1.5
+CELL_PAD_X_MM = 2.5
 #: Vertical breathing room between cell text and the row rules.
-CELL_PAD_Y_MM = 1.0
+CELL_PAD_Y_MM = 1.8
 #: Gap kept from neighbouring strips (label divider / page edge rules).
 TABLE_GAP_MM = 1.0
 #: Hard cap so a hostile row list cannot blow up the geometry stage.
@@ -99,6 +100,7 @@ def layout_stats_table(
     pad_top_mm: float = 0.0,
     pad_bottom_mm: float = 0.0,
     display_keys: bool = True,
+    corner_radius_mm: float = 0.0,
 ) -> tuple[list[Polyline], list[str], Rect | None]:
     """Lay out the stats table in mm space. See module docstring.
 
@@ -113,7 +115,8 @@ def layout_stats_table(
     verbatim (gallery context rows: spec labels keep their own casing); values
     may then be strings. ``position`` is one of ``top-left``,
     ``top-right``, ``bottom-left``, ``bottom-right`` (anything else falls
-    back to ``top-right``).
+    back to ``top-right``). ``corner_radius_mm`` rounds the outer border (the
+    page frame radius; 0 is sharp).
     """
     warnings: list[str] = []
     cells = [
@@ -171,10 +174,11 @@ def layout_stats_table(
         return (x0 + x * fit, y0 + y * fit)
 
     lines: list[Polyline] = []
-    # Border: closed sharp-corner rect (a table frame, not a rounded page frame).
+    # Border: closed rect rounded by the page frame radius (in table units,
+    # so the mapped corner comes out at corner_radius_mm on the sheet).
     x1, y1 = table_w, table_h
-    lines.append([_map(x0_, y0_) for x0_, y0_ in
-                  [(0.0, 0.0), (x1, 0.0), (x1, y1), (0.0, y1), (0.0, 0.0)]])
+    border_r = corner_radius_mm / fit if fit > 0 else 0.0
+    lines.append([_map(x0_, y0_) for x0_, y0_ in _rounded_rect(0.0, 0.0, x1, y1, border_r)])
     # Column divider between key and value columns.
     lines.append([_map(col0, 0.0), _map(col0, table_h)])
     # Row dividers between cells.
