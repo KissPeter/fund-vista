@@ -28,7 +28,7 @@ os.environ.setdefault(
     "PENPLOT_DATA_DIR", tempfile.mkdtemp(prefix="penplot-fulfillment-")
 )
 os.environ["REDIS_CLOUD_URL"] = "redis://127.0.0.1:1/0"
-os.environ["PENPLOT_RATE_LIMIT"] = "100000"
+os.environ["DISABLE_RATELIMIT"] = "True"
 
 import httpx
 import pytest

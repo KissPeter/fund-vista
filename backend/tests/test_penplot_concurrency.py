@@ -24,7 +24,7 @@ import time
 # store points at a throwaway dir, never the repo's backend/.data.
 os.environ.setdefault("PENPLOT_DATA_DIR", tempfile.mkdtemp(prefix="penplot-conc-"))
 os.environ["REDIS_CLOUD_URL"] = "redis://127.0.0.1:1/0"  # hermetic: memory limiter
-os.environ["PENPLOT_RATE_LIMIT"] = "100000"
+os.environ["DISABLE_RATELIMIT"] = "True"
 
 from fastapi import FastAPI, Response  # noqa: E402
 
