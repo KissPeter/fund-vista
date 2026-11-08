@@ -28,7 +28,9 @@ deterministic.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
+from xml.sax.saxutils import quoteattr
 
 #: Plotter ink hexes — the shop's ``RUNWAY_INK_HEX`` (issue #938) plus white
 #: (electric-blue paper's single ink). The pass files are re-stroked to these.
@@ -204,6 +206,20 @@ def _restroke(open_tag: str, hex_color: str) -> str:
     return open_tag.replace("<g", f'<g stroke="{hex_color}"', 1)
 
 
+
+def _label_layer(open_tag: str, text: str) -> str:
+    """Name a group in Inkscape's layer panel (``inkscape:label``) after its ink."""
+    open_tag = re.sub(r'\sinkscape:label="[^"]*"', "", open_tag, count=1)
+    return open_tag.replace("<g", f"<g inkscape:label={quoteattr(text)}", 1)
+
+
+def _name_root(root: str) -> str:
+    """Declare the Inkscape namespace on the root so the label attribute parses."""
+    if "xmlns:inkscape=" in root:
+        return root
+    return root.replace("<svg", '<svg xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"', 1)
+
+
 def _has_ink(body: str) -> bool:
     """True when a group body would leave ink on the page (any element)."""
     return "<" in body
@@ -220,6 +236,7 @@ def split_by_ink(svg_text: str, group_ink) -> list[InkFile]:
     carried verbatim. Deterministic: same draft + same mapping ⇒ same bytes.
     """
     root, chunks = _find_top_level_groups(svg_text)
+    root = _name_root(root)
 
     # ink → list of (open_tag, body) / (element, None) chunks, source order.
     passes: dict[str, list[tuple[str, str | None]]] = {}
@@ -244,7 +261,7 @@ def split_by_ink(svg_text: str, group_ink) -> list[InkFile]:
                 gid = _group_id(open_tag)
                 if gid:
                     layers.append(gid)
-                parts.append(_restroke(open_tag, hex_color))
+                parts.append(_label_layer(_restroke(open_tag, hex_color), f"{ink} {gid}".strip()))
                 parts.append(maybe_body)
                 parts.append("</g>")
             else:
@@ -252,6 +269,35 @@ def split_by_ink(svg_text: str, group_ink) -> list[InkFile]:
         parts.append("</svg>")
         files.append(InkFile(ink=ink, layers=layers, svg="\n".join(parts) + "\n"))
     return files
+
+
+
+def composite_by_ink(svg_text: str, group_ink) -> InkFile | None:
+    """Merge every non-empty layer into one SVG, each group in its own ink.
+
+    Same chunking, order and root tag as ``split_by_ink``; returns ``None``
+    when no layer carries any ink.
+    """
+    root, chunks = _find_top_level_groups(svg_text)
+    parts: list[str] = [_name_root(root)]
+    layers: list[str] = []
+    for open_tag, maybe_body in chunks:
+        if maybe_body is None:
+            parts.append(open_tag)
+            continue
+        if not _has_ink(maybe_body):
+            continue
+        gid = _group_id(open_tag)
+        if gid:
+            layers.append(gid)
+        ink = group_ink(gid)
+        parts.append(_label_layer(_restroke(open_tag, INK_HEX.get(ink, "")), f"{ink} {gid}".strip()))
+        parts.append(maybe_body)
+        parts.append("</g>")
+    if not layers:
+        return None
+    parts.append("</svg>")
+    return InkFile(ink="composite", layers=layers, svg="\n".join(parts) + "\n")
 
 
 def _default_ink(group_ink):

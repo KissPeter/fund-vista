@@ -226,13 +226,16 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
         body.inks.pen if any(p.ink == body.inks.pen for p in passes)
         else (passes[0].ink if passes else "")
     )
-    for pass_file in passes:
+    composite = splitter.composite_by_ink(svg_text, group_ink)
+    outputs = passes + ([composite] if composite is not None else [])
+    for pass_file in outputs:
         pass_svg = pass_file.svg
         if body.convert is not None:
             try:
                 pass_svg = await asyncio.to_thread(
                     _compose_pass, pass_file, body.convert,
-                    draw_furniture=pass_file.ink == furniture_ink, warnings=warnings,
+                    draw_furniture=pass_file is composite or pass_file.ink == furniture_ink,
+                    warnings=warnings,
                 )
             except PenPlotError as exc:
                 log.warning("fulfill.ink-split design=%s pass=%s compose failed: %s",
