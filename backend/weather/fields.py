@@ -25,6 +25,9 @@ from typing import Protocol
 
 import numpy as np
 
+from backend.upstream_mock import ENV_VAR as UPSTREAM_MODE_ENV
+from backend.upstream_mock import UpstreamNotMocked
+from backend.upstream_mock import enabled as upstream_mock_enabled
 from backend.weather.config import EUROPE, LEVEL_WIND_HPA, LEVEL_Z_T_HPA, Region
 from backend.weather.config import settings as weather_settings
 from backend.weather.cache import cache_get, cache_set, weather_cache_key
@@ -182,6 +185,12 @@ class ArcoEra5Reader:
     """
 
     def __init__(self, url: str | None = None) -> None:
+        if upstream_mock_enabled():
+            # Fail closed: mock mode serves synthetic fields (backend/upstream_mock/weather.py).
+            raise UpstreamNotMocked(
+                "ArcoEra5Reader (GCS ERA5 store) is not constructible while "
+                f"{UPSTREAM_MODE_ENV}=mock; the weather layer uses the synthetic reader instead"
+            )
         self._url = url or weather_settings.store_url
         self._group = None
         self._axes: dict | None = None
@@ -265,7 +274,12 @@ def _convert(name: str, values: np.ndarray) -> np.ndarray:
 _default_reader: ArcoEra5Reader | None = None
 
 
-def default_reader() -> ArcoEra5Reader:
+def default_reader() -> FieldReader:
+    if upstream_mock_enabled():
+        # Mock mode: a fresh synthetic reader per call, no network, no cached store handle.
+        from backend.upstream_mock.weather import SyntheticEra5Reader
+
+        return SyntheticEra5Reader()
     global _default_reader
     if _default_reader is None:
         _default_reader = ArcoEra5Reader()
