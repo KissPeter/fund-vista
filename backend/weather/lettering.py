@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from backend.penplot.labels import _glyph_strokes
 from backend.weather.config import LABEL_FONT, LABEL_PAD_MM
 
@@ -66,6 +68,11 @@ def lettering(text: str, height_mm: float) -> Lettering:
     )
 
 
+def _hits_points(box: Box, points: np.ndarray) -> bool:
+    px, py = points[:, 0], points[:, 1]
+    return bool(np.any((px >= box.x0) & (px <= box.x1) & (py >= box.y0) & (py <= box.y1)))
+
+
 def choose_slot(
     text: Lettering,
     anchor: tuple[float, float, float, float],
@@ -73,13 +80,15 @@ def choose_slot(
     frame: Box,
     *,
     gap: float,
+    obstacles: np.ndarray | None = None,
 ) -> Box | None:
     """First free box around ``anchor`` for ``text``, or None.
 
     ``anchor`` is the (x0, y0, x1, y1) of the point being labelled (a dot or a
     marker letter). Candidates go right, left, above, below, then the four
-    diagonals; a candidate must sit inside ``frame`` and clear every box in
-    ``taken``.
+    diagonals; a candidate must sit inside ``frame``, clear every box in
+    ``taken`` and, when given, hold no ``obstacles`` point (an (n, 2) array of
+    paper points such as coastline vertices).
     """
     ax0, ay0, ax1, ay1 = anchor
     cx = (ax0 + ax1) / 2.0
@@ -101,6 +110,8 @@ def choose_slot(
         if not box.inside(frame):
             continue
         if any(box.overlaps(t) for t in taken):
+            continue
+        if obstacles is not None and obstacles.size and _hits_points(box, obstacles):
             continue
         return box
     return None

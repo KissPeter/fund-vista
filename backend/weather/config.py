@@ -66,19 +66,17 @@ EXTREMA_L_MAX_HPA = 1005.0
 STREAM_MAX_PATHS = 135
 STREAM_PAPER_BUDGET_MM = 9000.0
 PLOT_SPEED_MM_S = 40.0
-#: Millimetres of paper per degree of latitude on the Europe A4 landscape
-#: layout (176 mm of map height over 38 degrees, rounded down).
-EUROPE_MM_PER_DEG = 4.6
 #: Kilometres per degree of latitude (spherical approximation).
 KM_PER_DEG_LAT = 110.57
-#: Path-length budget in kilometres of physical wind path, derived from the
-#: paper budget above: 9 m of paper at 4.6 mm per degree.
-STREAM_MAX_TOTAL_KM = STREAM_PAPER_BUDGET_MM / EUROPE_MM_PER_DEG * KM_PER_DEG_LAT
-#: Longest single streamline (degrees of path), so no path hogs the budget.
-STREAM_MAX_LINE_DEG = 15.0
-#: Streamline seeding separation in grid cells (Jobard-Lefer style).
-STREAM_SEPARATION_CELLS = 2.2
-#: Minimum speed (m/s) for a streamline seed. 0 keeps every line.
+#: Streamline seeding separation on the sheet (mm), Jobard-Lefer style. The
+#: budget thins by growing this, never by truncating (streamlines.streamlines).
+STREAM_SEPARATION_MM = 6.0
+#: Shortest kept streamline (mm of paper): shorter dashes are dropped.
+STREAM_MIN_LENGTH_MM = 15.0
+#: Budget retries: the separation grows and the pass repeats, at most this often.
+STREAM_MAX_TRIES = 6
+#: Minimum speed (m/s) for a streamline seed. 0 keeps every line (the default
+#: hero layer); a future jet-only toggle passes a positive value.
 STREAM_MIN_SPEED_MS = 0.0
 #: Area below which a closed contour ring is dropped (km^2).
 MIN_CLOSED_AREA_KM2 = 2000.0

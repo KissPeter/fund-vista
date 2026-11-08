@@ -124,10 +124,30 @@ def _clip(pl: list[tuple[float, float]], box: Box) -> list[Polyline]:
     return [[(x + box.x0, y + box.y0) for x, y in piece] for piece in pieces]
 
 
+def _emit_xy(frame: Frame, x, y) -> list[Polyline]:
+    """Simplify and clip one paper-space polyline (mm) to the view."""
+    pts = simplify(list(zip(np.asarray(x, float).tolist(), np.asarray(y, float).tolist())), SIMPLIFY_MM)
+    return [p for p in _clip(pts, frame.box) if _length(p) >= MIN_PIECE_MM]
+
+
 def _emit_line(frame: Frame, lon, lat) -> list[Polyline]:
     x, y = frame.xy(lon, lat)
-    pts = simplify(list(zip(x.tolist(), y.tolist())), SIMPLIFY_MM)
-    return [p for p in _clip(pts, frame.box) if _length(p) >= MIN_PIECE_MM]
+    return _emit_xy(frame, x, y)
+
+
+def _obstacles(frame: Frame, geo: Geography) -> np.ndarray:
+    """Paper points (mm) of every coast and border vertex inside the view.
+
+    The H/L value labels avoid these, so a value never sits on a coastline
+    when a free spot exists (plan section 4 lettering rule, low priority).
+    """
+    pts = []
+    for line in list(geo.coast) + list(geo.borders):
+        x, y = frame.xy(line[:, 0], line[:, 1])
+        keep = (x >= frame.box.x0) & (x <= frame.box.x1) & (y >= frame.box.y0) & (y <= frame.box.y1)
+        if keep.any():
+            pts.append(np.column_stack([x[keep], y[keep]]))
+    return np.vstack(pts) if pts else np.zeros((0, 2))
 
 
 def _d(polylines: list[Polyline]) -> list[tuple[str, float]]:
@@ -192,9 +212,13 @@ def compose_artwork(
             inks["borders"].add(_emit_line(frame, line[:, 0], line[:, 1]))
 
     if "streamlines" in wanted:
-        u, v = fields["u250"], fields["v250"]
-        for line in streamlines(u, v, lat_grid, lon_grid):
-            inks["streamlines"].add(_emit_line(frame, line.lon, line.lat))
+        res = streamlines(fields["u250"], fields["v250"], lat_grid, lon_grid, frame=frame)
+        if res.thinned:
+            warnings.append("streamlines_thinned")
+        if res.over_budget:
+            warnings.append("streamlines_over_budget")
+        for line in res.lines:
+            inks["streamlines"].add(_emit_xy(frame, line.x, line.y))
 
     if "isobars" in wanted:
         mslp = fields["mslp_hpa"]
@@ -247,6 +271,7 @@ def compose_artwork(
     if "markers" in wanted:
         ink = inks["markers"]
         mslp = fields["mslp_hpa"]
+        obstacles = _obstacles(frame, geo)
         for ext in find_extrema(mslp, lon_grid, lat_grid):
             x, y = frame.xy_point(ext.lon, ext.lat)
             if not frame_box.x0 <= x <= frame_box.x1 or not frame_box.y0 <= y <= frame_box.y1:
@@ -262,7 +287,8 @@ def compose_artwork(
             ink.add(_clip_strokes(letter.placed(x - lw / 2, y - lh / 2), frame_box))
             value = lettering(str(int(round(ext.value_hpa))), LABEL_HEIGHT_MM)
             anchor = (x - lw / 2, y - lh / 2, x + lw / 2, y + lh / 2)
-            slot = choose_slot(value, anchor, taken, frame_box, gap=LABEL_GAP_MM / 2)
+            slot = choose_slot(value, anchor, taken, frame_box, gap=LABEL_GAP_MM / 2,
+                               obstacles=obstacles)
             if slot is None:
                 warnings.append("marker_value_skipped")
                 continue

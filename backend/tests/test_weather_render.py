@@ -73,9 +73,10 @@ def test_stats_minutes_follow_the_pen_speed(inputs):
 
 def test_streamline_budget_respected(inputs):
     fields, (lat, lon), _geo = inputs
-    lines = streamlines(fields["u250"], fields["v250"], lat, lon)
-    assert len(lines) <= C.STREAM_MAX_PATHS
-    assert sum(line.length_km for line in lines) <= C.STREAM_MAX_TOTAL_KM
+    res = streamlines(fields["u250"], fields["v250"], lat, lon,
+                      frame=fit_frame(C.EUROPE, "landscape"))
+    assert len(res.lines) <= C.STREAM_MAX_PATHS
+    assert sum(line.length_mm for line in res.lines) <= C.STREAM_PAPER_BUDGET_MM
 
 
 def test_city_label_slots_do_not_overlap():
