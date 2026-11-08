@@ -53,7 +53,6 @@ ink on white paper), no enabled sub-layer, or a board over the plot ceiling
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
@@ -68,7 +67,7 @@ from backend.http import error_response
 from backend.pcb import cache as pcb_cache
 from backend.pcb.config import settings as pcb_settings
 from backend.pcb.layers import board_shapes
-from backend.pcb.render import MAX_UPLOAD_BYTES, render_preview_svg, run_isolated
+from backend.pcb.render import MAX_UPLOAD_BYTES, render_preview_svg
 from backend.pcb.schemas import (
     DesignToken,
     PcbMetaResponse,
@@ -76,7 +75,7 @@ from backend.pcb.schemas import (
     PcbRenderResponse,
     SheetStats,
 )
-from backend.pcb.sheet import compose_sheet
+from backend.pcb.sheet import sheet_from_source
 from backend.fulfillment.ink_split import design_id_for
 from backend.penplot import tokens as design_tokens
 from backend.penplot.config import Settings
@@ -188,8 +187,7 @@ async def render(
         token, token_warnings = _sign(design_id, cached["expires_at"])
         return _response(request, spec, svg, design_id, token, cached, token_warnings, True)
 
-    shapes = await asyncio.to_thread(run_isolated, "backend.pcb.layers:board_shapes", data)
-    result = compose_sheet(shapes, spec)
+    result = await sheet_from_source(data, spec)
     svg = result.svg
     design_id = design_id_for(svg)
     expires_at = int(time.time()) + pcb_settings.cache_ttl_hours * 3600

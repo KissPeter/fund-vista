@@ -29,6 +29,7 @@ Guard rails:
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import logging
 import os
@@ -50,6 +51,7 @@ from backend.fulfillment.schemas import (
 )
 from backend.pcb import cache as pcb_cache
 from backend.pcb.schemas import PcbRenderParams
+from backend.pcb.sheet import sheet_from_source
 from backend.http import error_response
 from backend.penplot import imaging
 from backend.penplot.errors import PenPlotError
@@ -176,8 +178,8 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
     endpoint = "/v1/fulfill/ink-split"
     design_id = body.design.design_id.lower()
     if body.kind == "pcb":
-        # A PCB sheet is not in the image store and is never re-rendered (the
-        # Gerber is not kept): the draft is the sheet the render cached.
+        # A PCB sheet is not in the image store: the draft is the sheet the
+        # render cached, or, when that is gone, the stored source re-plotted.
         drafted = await _pcb_draft(body)
         if isinstance(drafted, JSONResponse):
             return drafted
@@ -280,10 +282,11 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
 async def _pcb_draft(body: InkSplitRequest):
     """The stored sheet of a PCB design, with the inks its render params gave.
 
-    The Gerber itself is not kept, so nothing is re-rendered: the sheet SVG and
-    the canonical params it was made with come from the render cache by design
-    id. The params must match the stored ones, so the split cannot ink a
-    different design. Returns the draft tuple or a refusal response.
+    The sheet SVG and the canonical params it was made with come from the render
+    cache by design id; the params must match the stored ones, so the split
+    cannot ink a different design. When the sheet is missing but the uploaded
+    source is cached, the sheet is re-plotted from it with the request params
+    and must hash to the design id. Returns the draft tuple or a refusal.
     """
     parsed = _parse_params(body.kind, body.params)
     if isinstance(parsed, JSONResponse):
@@ -291,21 +294,40 @@ async def _pcb_draft(body: InkSplitRequest):
     design_id = body.design.design_id.lower()
     found = await pcb_cache.cache_get_many([
         pcb_cache.svg_cache_key(design_id), pcb_cache.params_cache_key(design_id),
+        pcb_cache.source_cache_key(design_id),
     ])
     svg_text = found.get(pcb_cache.svg_cache_key(design_id))
     stored = found.get(pcb_cache.params_cache_key(design_id))
-    if svg_text is None or stored is None:
-        return error_response(
-            409, "draft_expired",
-            "The PCB sheet is no longer cached - re-run POST /v1/pcb/render, then order again.",
-        )
-    if stored != parsed.model_dump_json():
+    if stored is not None and stored != parsed.model_dump_json():
         return error_response(
             409, "design_mismatch",
             "The render params do not match the purchased design.",
         )
+    warnings, cache_hit = [], True
+    if svg_text is None:
+        # The sheet is gone: re-plot the stored source with the request's params
+        # (the same composition as /render) and accept it only if it hashes to
+        # the purchased design id.
+        source = found.get(pcb_cache.source_cache_key(design_id))
+        if source is None:
+            return error_response(
+                409, "draft_expired",
+                "The PCB sheet is no longer cached - re-run POST /v1/pcb/render, then order again.",
+            )
+        result = await sheet_from_source(base64.b64decode(source), parsed)
+        if splitter.design_id_for(result.svg) != design_id:
+            return error_response(
+                409, "design_mismatch",
+                "The stored Gerber does not re-render to the purchased design.",
+            )
+        svg_text, warnings, cache_hit = result.svg, ["rendered_from_stored_source"], False
+    elif stored is None:
+        return error_response(
+            409, "draft_expired",
+            "The PCB sheet is no longer cached - re-run POST /v1/pcb/render, then order again.",
+        )
     return (
-        svg_text, [], True, "PCB", _pcb_mapper(parsed),
+        svg_text, warnings, cache_hit, "PCB", _pcb_mapper(parsed),
         "PCB layout from the buyer's own Gerber or Excellon file.", parsed.pen,
     )
 

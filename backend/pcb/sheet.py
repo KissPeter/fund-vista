@@ -12,10 +12,12 @@ and ``dist`` (``backend.penplot.stages._grid``) and ``estimate_plot_time_s``
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from backend.fulfillment.ink_split import INK_HEX
 from backend.pcb.layers import SUBLAYER_IDS, Point, Shape, sublayer_groups
+from backend.pcb.render import run_isolated
 from backend.pcb.schemas import LayerOut, PcbRenderParams, SheetStats
 from backend.penplot.errors import ErrorCode, PenPlotError
 from backend.penplot.pipeline import estimate_plot_time_s
@@ -160,3 +162,13 @@ def compose_sheet(shapes: list[Shape], params: PcbRenderParams) -> SheetResult:
         if not any(shape.layer == layer for shape in shapes)
     ]
     return SheetResult(svg=svg, stats=stats, layers=layers, rotated=rotated, warnings=warnings)
+
+
+async def sheet_from_source(data: bytes, params: PcbRenderParams) -> SheetResult:
+    """The A4 sheet of one uploaded Gerber/Excellon file under ``params``.
+
+    The one composition path: ``POST /v1/pcb/render`` and the ink-split
+    fallback (re-render from the stored source) both call this.
+    """
+    shapes = await asyncio.to_thread(run_isolated, "backend.pcb.layers:board_shapes", data)
+    return compose_sheet(shapes, params)
