@@ -7,11 +7,15 @@ and the order's ink assignments.
 
 The purchased design is read from the penplot image store first: the bytes
 the buyer's import persisted (the order's ``POST /v1/images/{id}/retain``
-keeps them for the retained TTL). The draft is re-rendered through the
+keeps them for the retained TTL; the weather import retains at import).
+For the airport and traffic kinds the draft is re-rendered through the
 cache-aware render path only as a fallback, when no intact stored copy
-exists (missing, expired, not an SVG, not UTF-8, or hash drift). A
-re-render never runs when the stored design is intact, so a renderer or
-data-source change after purchase cannot break a paid order.
+exists (missing, expired, not an SVG, not UTF-8, or hash drift). The
+weather kind NEVER re-renders: its ERA5T values are revised after purchase,
+so a re-render would hash differently. A missing or non-intact weather copy
+answers ``410 weather_design_unavailable``. A re-render never runs when the
+stored design is intact, so a renderer or data-source change after purchase
+cannot break a paid order.
 
 Guard rails:
 
@@ -61,9 +65,7 @@ from backend.penplot.svgmeta import stamp as svgmeta_stamp
 from backend.traffic import router as traffic_router
 from backend.traffic.schemas import ATTRIBUTION as TRAFFIC_ATTRIBUTION
 from backend.traffic.schemas import RenderRequest as TrafficRenderRequest
-from backend.weather import router as weather_router
 from backend.weather.config import ATTRIBUTION as WEATHER_ATTRIBUTION
-from backend.weather.schemas import RenderRequest as WeatherRenderRequest
 
 log = logging.getLogger(__name__)
 
@@ -99,10 +101,7 @@ def _parse_params(kind: str, params: dict[str, object]) -> object | JSONResponse
     agree with the top-level ``kind``.
     """
     cleaned = {k: v for k, v in params.items() if k != "kind"}
-    model = {
-        "traffic": TrafficRenderRequest,
-        "weather": WeatherRenderRequest,
-    }.get(kind, AirportRenderRequest)
+    model = TrafficRenderRequest if kind == "traffic" else AirportRenderRequest
     try:
         return model(**cleaned)  # type: ignore[call-arg]
     except ValidationError as exc:
@@ -197,6 +196,12 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
         place = _place_from_params(body.params)
         warnings, cache_hit = ["fulfilled_from_stored_design"], True
     else:
+        if body.kind == "weather":
+            return error_response(
+                410, "weather_design_unavailable",
+                "The retained weather design is gone and weather is never re-rendered "
+                "(ERA5T values change after purchase). Re-import the design to order again.",
+            )
         parsed = _parse_params(body.kind, body.params)
         if isinstance(parsed, JSONResponse):
             return parsed
@@ -206,14 +211,6 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
                 return info
             svg_text, warnings, cache_hit = info["svg_text"], info["warnings"], info["cache_hit"]
             place = info["icao"]
-        elif body.kind == "weather":
-            got = await weather_router._render(parsed)
-            if isinstance(got, JSONResponse):
-                return got
-            _spec, info = got
-            # The weather artwork is the draft itself (no frame, no text).
-            svg_text, warnings, cache_hit = info["svg"], list(info["warnings"]), info["cache_hit"]
-            place = _place_from_params(body.params)
         else:
             info = await airports_router.render_document(
                 parsed, request, endpoint=endpoint, started_mono=started)

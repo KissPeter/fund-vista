@@ -76,11 +76,16 @@ class InkAssignment(BaseModel):
     ) -> dict[str, WeatherInkName] | None:
         if v is None:
             return v
+        from backend.fulfillment.ink_split import WEATHER_PEN_LAYERS
         from backend.weather.config import LAYER_IDS
 
         unknown = sorted(set(v) - set(LAYER_IDS))
         if unknown:
             raise ValueError(f"unknown weather layer id(s): {', '.join(unknown)}")
+        pen_only = sorted(set(v) & WEATHER_PEN_LAYERS)
+        if pen_only:
+            raise ValueError(
+                f"weather layer(s) always ride the pen ink, no own ink: {', '.join(pen_only)}")
         return v
 
 

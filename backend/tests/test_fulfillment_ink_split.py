@@ -777,7 +777,7 @@ def _no_rerender(monkeypatch):
 
     monkeypatch.setattr("backend.traffic.router.render_document", _boom)
     monkeypatch.setattr("backend.airports.router.render_document", _boom)
-    monkeypatch.setattr("backend.weather.router._render", _boom)
+    monkeypatch.setattr("backend.weather.service.render", _boom)
 
 
 WEATHER_BODY = {"date": "2005-05-20", "time": 12, "layers": list(WEATHER_LAYERS)}
@@ -843,6 +843,9 @@ def _stored_path(design_id: str) -> str:
 
 
 KINDS = ["traffic", "airport", "weather"]
+#: Kinds whose missing or damaged stored copy may be re-rendered. Weather never
+#: re-renders (ERA5T values are revised after purchase): see the weather tests.
+RERENDER_KINDS = ["traffic", "airport"]
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -868,7 +871,7 @@ def test_stored_design_is_split_without_rerendering(live, monkeypatch, tmp_path,
         assert expected in body["attribution"]
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", RERENDER_KINDS)
 @pytest.mark.parametrize("corruption", ["other_svg", "not_utf8"])
 def test_corrupt_stored_design_falls_back_to_rerender(
         live, monkeypatch, tmp_path, kind, corruption):
@@ -906,7 +909,7 @@ def _write(path: str, data: bytes) -> None:
         fh.write(data)
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", RERENDER_KINDS)
 def test_no_stored_design_rerenders_and_mismatch_is_still_409(
         live, monkeypatch, tmp_path, kind):
     """(c) With no stored copy the re-render path runs as before; a draft that
@@ -930,7 +933,7 @@ def test_no_stored_design_rerenders_and_mismatch_is_still_409(
     assert mismatch.json()["error"]["code"] == "design_mismatch"
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", RERENDER_KINDS)
 def test_non_svg_stored_design_falls_back(live, monkeypatch, tmp_path, kind):
     """(d) A stored copy that is not an SVG file is never used, even when its
     bytes would hash back to the design: the re-render serves the order."""
@@ -1023,4 +1026,51 @@ def test_weather_unknown_ink_and_layer_are_422_over_http(live):
     })
     assert unknown_ink.status_code == 422, unknown_ink.text
     assert unknown_layer.status_code == 422, unknown_layer.text
+
+
+@pytest.mark.parametrize("damage", ["missing", "other_svg"])
+def test_weather_never_rerenders_without_an_intact_copy(live, monkeypatch, tmp_path, damage):
+    """A paid weather order whose retained copy is gone answers 410 and never
+    re-renders: a re-render hashes differently after ERA5T revisions."""
+    design_id, request = _order(live, monkeypatch, tmp_path, "weather")
+    _no_rerender(monkeypatch)
+    path = _stored_path(design_id)
+    original = _read(path)
+    try:
+        if damage == "missing":
+            os.remove(path)
+        else:
+            _write(path, b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>')
+        resp = live.post("/v1/fulfill/ink-split", json=request)
+    finally:
+        _write(path, original)
+    assert resp.status_code == 410, resp.text
+    assert resp.json()["error"]["code"] == "weather_design_unavailable"
+
+
+def test_weather_import_is_retained_for_the_order_window(live, monkeypatch, tmp_path):
+    """The weather import promotes its copy to the retained TTL (90 days)."""
+    from backend.penplot.router import store as penplot_store
+
+    design_id, _ = _order(live, monkeypatch, tmp_path, "weather")
+    assert penplot_store.is_retained(_stored_path(design_id))
+
+
+def test_weather_pen_only_layer_key_is_422_over_http(live):
+    resp = live.post("/v1/fulfill/ink-split", json={
+        "design": _mint("a" * 64), "kind": "weather", "params": WEATHER_BODY,
+        "inks": {"pen": "black", "weather_layer_colors": {"coast": "red"}},
+    })
+    assert resp.status_code == 422, resp.text
+
+
+def test_weather_pen_only_layer_key_is_refused_by_the_schema():
+    from pydantic import ValidationError
+
+    from backend.fulfillment.schemas import InkAssignment
+
+    for layer in ("coast", "borders", "cities"):
+        with pytest.raises(ValidationError):
+            InkAssignment(pen="black", weather_layer_colors={layer: "red"})
+    InkAssignment(pen="black", weather_layer_colors={"streamlines": "red"})  # allowed
 
