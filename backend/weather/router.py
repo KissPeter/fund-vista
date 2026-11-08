@@ -24,6 +24,38 @@ from backend.weather.schemas import AvailabilityResponse, ImportResponse, Render
 
 router = APIRouter(prefix="/v1/weather", tags=["weather-v1"])
 
+#: The shared ``{"error": {"code", "message"}}`` envelope every refusal uses
+#: (:func:`backend.http.errors.error_response`), declared for the OpenAPI document.
+_ERROR_SCHEMA = {
+    "type": "object",
+    "required": ["error"],
+    "properties": {
+        "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {"code": {"type": "string"}, "message": {"type": "string"}},
+        }
+    },
+}
+
+
+def _refusal(description: str) -> dict:
+    """OpenAPI response entry for one refusal status: the error envelope."""
+    return {"description": description, "content": {"application/json": {"schema": _ERROR_SCHEMA}}}
+
+
+_RENDER_REFUSALS = {
+    422: _refusal("out_of_range (date outside the window), weather_too_long, or invalid_params."),
+    502: _refusal("weather_source_unavailable: the field store could not be read; retry later."),
+}
+_IMPORT_REFUSALS = {
+    **_RENDER_REFUSALS,
+    500: _refusal("weather_retention_failed: the design could not be kept for the order retention."),
+}
+_RESULT_REFUSALS = {
+    404: _refusal("result_not_found: the render token is unknown or expired."),
+}
+
 
 @router.get("/availability", response_model=AvailabilityResponse, dependencies=[Depends(require_rate_limit)])
 async def availability(
@@ -44,7 +76,8 @@ async def _render(body: RenderRequest) -> tuple[service.RenderSpec, dict] | JSON
         return error_response(exc.status, exc.code, exc.message)
 
 
-@router.post("/render", response_model=RenderResponse, dependencies=[Depends(require_rate_limit)])
+@router.post("/render", response_model=RenderResponse, dependencies=[Depends(require_rate_limit)],
+             responses=_RENDER_REFUSALS)
 async def render(body: RenderRequest, request: Request) -> RenderResponse | JSONResponse:
     """Render one weather map (layered SVG, artwork only) and return its URL."""
     got = await _render(body)
@@ -61,7 +94,8 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
     )
 
 
-@router.post("/import", response_model=ImportResponse, dependencies=[Depends(require_rate_limit)])
+@router.post("/import", response_model=ImportResponse, dependencies=[Depends(require_rate_limit)],
+             responses=_IMPORT_REFUSALS)
 async def import_artwork(body: RenderRequest) -> ImportResponse | JSONResponse:
     """Render the weather map and register it as a penplot image.
 
@@ -94,7 +128,7 @@ async def import_artwork(body: RenderRequest) -> ImportResponse | JSONResponse:
     )
 
 
-@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)])
+@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)], responses=_RESULT_REFUSALS)
 async def get_result(token: str) -> Response:
     """Serve a cached weather SVG (sha1 token from ``svg_url``)."""
     svg_text = await service.load_result_svg(token)
