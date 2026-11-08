@@ -41,7 +41,7 @@ class PageParams(BaseModel):
 
     size: PageSizeName = "A4"
     orientation: Orientation = "portrait"
-    margin_mm: float = Field(default=10.0, ge=0.0, le=50.0)
+    margin_mm: float = Field(default=10.0, ge=10.0, le=30.0)
     padding_mm: float = Field(
         default=5.0, ge=0.0, le=20.0,
         description="Internal padding inside the margin/frame; artwork never touches the border.",

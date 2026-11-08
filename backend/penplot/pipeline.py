@@ -587,6 +587,7 @@ def run_convert(
                 pad_right_mm=params.stats_table.pad_right_mm,
                 pad_top_mm=params.stats_table.pad_top_mm,
                 pad_bottom_mm=params.stats_table.pad_bottom_mm,
+                corner_radius_mm=params.page.frame_radius_mm,
             )
             warnings.extend(table_warnings)
             if table_keepout is not None:
@@ -609,6 +610,7 @@ def run_convert(
                 pad_top_mm=params.context_table.pad_top_mm,
                 pad_bottom_mm=params.context_table.pad_bottom_mm,
                 display_keys=False,
+                corner_radius_mm=params.page.frame_radius_mm,
             )
             table_lines = table_lines + ctx_lines
             warnings.extend(ctx_warnings)
