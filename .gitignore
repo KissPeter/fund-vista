@@ -23,3 +23,8 @@ dist/
 # plotvid: raw plotter recordings and render output (local only).
 /video/
 tools/plotvid/out/
+
+# Traffic day/pass slices: exported by ops/traffic-ingest-daily.sh, never
+# versioned (they bloat every clone). Only the README in slices/ is tracked.
+backend/traffic/slices/day/
+backend/traffic/slices/pass/

@@ -93,10 +93,10 @@ container and rolls back to the previous image if that smoke fails.
 - Host disk matters: the engine's disk image is on the Mac's disk too. A
   full disk (127 MB free once) corrupted the engine's metadata store and
   broke every mutating `docker` call.
-- Traffic day slices live in git (`backend/traffic/slices/`): the launchd
-  agent `hu.linuxadm.traffic-ingest` (08:10 + 20:10) runs
-  `ops/traffic-ingest-daily.sh` (ingest yesterday → export from the store
-  → commit → push to main).
+- Traffic day slices are not in git (`backend/traffic/slices/day|pass` are
+  gitignored): the launchd agent `hu.linuxadm.traffic-ingest` (08:10 + 20:10)
+  runs `ops/traffic-ingest-daily.sh` (ingest yesterday → export from the
+  store to the checkout; no commit, no push).
 - The Mac is the only backend; FastAPI Cloud is the only fallback, and it
   has no traffic slices and no job state — `/v1/traffic/*` must not fall
   back to it.

@@ -141,14 +141,13 @@ docker start fundvista
   visible; the shop UI shows "traffic temporarily unavailable" instead.
   This restriction goes away with Phase 7 (R2 bucket behind the same
   `SliceStore` keys + `TRAFFIC_STORE=r2`).
-- Day slices live in git (`backend/traffic/slices/`, ~2 MB per airport-day)
-  because the HU-only scope keeps them small. Daily ingest → push:
-  `ops/traffic-ingest-daily.sh` (launchd agent
-  `hu.linuxadm.traffic-ingest`, 08:10 + 20:10) POSTs `traffic_ingest` for
-  yesterday (UTC) per `TRAFFIC_ICAOS` (default `LHBP`), polls to terminal,
-  exports new files from the store into the repo checkout and pushes to
-  `origin/main`. Idempotent (cache_hit days commit nothing); push failures
-  retry on the next run.
+- Day slices are not versioned: `backend/traffic/slices/day/` and `pass/` are
+  gitignored (~2 MB per airport-day). Daily ingest: `ops/traffic-ingest-daily.sh`
+  (launchd agent `hu.linuxadm.traffic-ingest`, 08:10 + 20:10) POSTs
+  `traffic_ingest` for yesterday (UTC) per `TRAFFIC_ICAOS` (default `LHBP`),
+  polls to terminal, and exports files from the store into the checkout
+  without committing or pushing. The app's live copy is the `/data/traffic`
+  volume. Idempotent (cache_hit days export nothing new).
 - The ingest knobs live in the Mac's `.env` (gitignored, the deploy's
   `--env-file`): `TRAFFIC_INGEST_WORKERS` (archive parse in a process
   pool) and `TRAFFIC_INGEST_DOWNLOAD_WORKERS` (the tar parts fetched
