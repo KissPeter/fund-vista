@@ -45,6 +45,25 @@ paper, pen and inks server-side::
                                "drills": {"enabled": false, "ink": "auto"}}}}
     404 {"error": {"code": "result_not_found", ...}}  unknown id or past the 7 day window
 
+``GET /v1/pcb/results/{design_id}/source`` returns the uploaded Gerber or
+Excellon bytes as ``application/octet-stream``. It needs the design token as
+the ``exp`` and ``sig`` query parameters (the ``design`` object of the
+render): 403 ``token_invalid`` for a bad or expired token, 404 once the
+source is gone.
+
+Cache window: a render, its stored params, its stats and its uploaded source
+are kept for 7 days (``PCB_CACHE_TTL_HOURS``, default 168) from the render. A
+cache hit needs all four keys; a partly expired entry is a miss and the file
+is rendered again. The token ``exp`` is capped at the window end.
+
+Ink-split fallback: ``POST /v1/fulfill/ink-split`` (kind ``pcb``) reads the
+cached sheet first. When the sheet is gone but the source is kept, it
+re-plots the source with the request params through the same composition
+as ``/render`` (``backend.pcb.sheet.sheet_from_source``). The result is
+accepted only if its hash is the purchased ``design_id``; the response then
+carries the warning ``rendered_from_stored_source``. With neither sheet nor
+source it answers 409 ``draft_expired``.
+
 Errors use the usual envelope ``{"error": {"code", "message"}}``: 413 above
 5 MB, 422 ``invalid_params`` for a bad file, bad params (for example white
 ink on white paper), no enabled sub-layer, or a board over the plot ceiling
