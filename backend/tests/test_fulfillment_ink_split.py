@@ -1,4 +1,4 @@
-"""Fulfillment ink-split (fund-vista #147, shop #1079) — two layers.
+"""Fulfillment ink-split (fund-vista #147, shop #1079) - two layers.
 
 Unit (no server): the group-id → ink mapping, shared-color merging,
 empty-layer dropping, byte-preserving re-stroke and determinism, on
@@ -7,7 +7,7 @@ synthetic drafts shaped exactly like the renderer output (traffic r3
 / ``context-*`` / ``taxiway-labels`` groups).
 
 API (in-process uvicorn, per test_traffic_api.py / test_airports_api.py):
-the full fulfillment path over real HTTP — import mints ``image_id`` (=
+the full fulfillment path over real HTTP - import mints ``image_id`` (=
 ``design_id``), the token is signed with the shared test secret, the
 ink-split re-renders through the L4 cache, verifies the digest and
 splits. Traffic stubs its L1 store + basemap (no network); airports runs
@@ -199,6 +199,119 @@ def test_traffic_go_around_wire_id_maps_to_go_around_suffix():
     assert ink_split.TRAFFIC_WIRE_TO_SUFFIX["goAround"] == "go_around"
 
 
+# --------------------------------------------- unit: weather mapping ----
+
+WEATHER_LAYERS = ("coast", "borders", "streamlines", "isobars", "z500",
+                  "isotherms", "markers", "cities")
+
+
+def weather_draft(layers: tuple[str, ...] = WEATHER_LAYERS) -> str:
+    """A weather-shaped draft (weather/render.py ``_assemble``): one group per
+    layer, ``id`` and ``data-layer`` both the layer id, two paths each."""
+    out = [
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+        'viewBox="0 0 297 210" width="297mm" height="210mm">'
+    ]
+    for n, layer in enumerate(layers):
+        out.append(
+            f'<g id="{layer}" data-layer="{layer}" inkscape:groupmode="layer" '
+            f'inkscape:label="{layer}" fill="none" stroke="#000000" stroke-width="0.25" '
+            f'stroke-linejoin="round" stroke-linecap="round">'
+        )
+        out.append(f'<path d="M{n},0 L{n},10"/>')
+        out.append(f'<path d="M0,{n} L10,{n}"/>')
+        out.append("</g>")
+    out.append("</svg>")
+    return "\n".join(out) + "\n"
+
+
+def _weather_files(inks: dict[str, str] | None, pen: str = "black", draft: str | None = None):
+    def mapper(gid: str):
+        return ink_split.weather_group_ink(gid, pen, inks)
+
+    return ink_split.split_by_ink(draft or weather_draft(), mapper)
+
+
+def _path_lines(svg: str) -> list[str]:
+    import re
+
+    return re.findall(r'<path d="[^"]*"/>', svg)
+
+
+def test_weather_data_layers_take_their_own_ink():
+    files = _inks_of(_weather_files({
+        "streamlines": "red", "isobars": "blue", "isotherms": "red", "markers": "blue",
+    }))
+    assert sorted(files) == ["black", "blue", "red"]
+    assert sorted(files["red"].layers) == ["isotherms", "streamlines"]
+    assert sorted(files["blue"].layers) == ["isobars", "markers"]
+
+
+def test_weather_basemap_and_cities_always_ride_the_pen():
+    # Even when the buyer names an ink for them, coast/borders/cities stay Pen.
+    files = _inks_of(_weather_files({
+        "coast": "red", "borders": "red", "cities": "red", "streamlines": "blue",
+    }))
+    assert sorted(files) == ["black", "blue"]
+    # Unpicked data layers (isobars, z500, isotherms, markers) ride the Pen too.
+    assert sorted(files["black"].layers) == sorted(
+        ["borders", "cities", "coast", "isobars", "z500", "isotherms", "markers"])
+    assert files["blue"].layers == ["streamlines"]
+
+
+def test_weather_auto_resolves_to_the_pen_ink():
+    files = _inks_of(_weather_files({"z500": "auto", "isobars": "red"}, pen="blue"))
+    assert sorted(files) == ["blue", "red"]
+    assert "z500" in files["blue"].layers
+    assert files["red"].layers == ["isobars"]
+
+
+def test_weather_single_ink_gives_one_file():
+    files = _weather_files(None, pen="black")
+    assert len(files) == 1 and files[0].ink == "black"
+    assert files[0].layers == list(WEATHER_LAYERS)
+
+
+def test_weather_all_layers_on_one_chosen_ink_gives_one_file():
+    files = _weather_files({layer: "red" for layer in WEATHER_LAYERS if layer not in
+                            {"coast", "borders", "cities"}}, pen="red")
+    assert [f.ink for f in files] == ["red"]
+    assert len(files[0].layers) == len(WEATHER_LAYERS)
+
+
+def test_weather_layers_are_never_lost_or_duplicated():
+    """The union of the pass paths equals the input paths, each exactly once."""
+    draft = weather_draft()
+    files = _weather_files({
+        "streamlines": "red", "isobars": "blue", "z500": "green", "markers": "red",
+    })
+    union = sorted(line for f in files for line in _path_lines(f.svg))
+    assert union == sorted(_path_lines(draft))
+    layers = sorted(layer for f in files for layer in f.layers)
+    assert layers == sorted(WEATHER_LAYERS)
+
+
+def test_weather_passes_keep_the_sheet_viewbox_and_have_no_text_or_image():
+    for f in _weather_files({"streamlines": "red"}):
+        assert 'viewBox="0 0 297 210"' in f.svg
+        assert "<text" not in f.svg and "<image" not in f.svg
+
+
+def test_weather_unknown_layer_and_unknown_ink_are_refused_by_the_schema():
+    from pydantic import ValidationError
+
+    from backend.fulfillment.schemas import InkAssignment
+
+    with pytest.raises(ValidationError):
+        InkAssignment(pen="black", weather_layer_colors={"aurora": "red"})
+    with pytest.raises(ValidationError):
+        InkAssignment(pen="black", weather_layer_colors={"streamlines": "purple"})
+    with pytest.raises(ValidationError):
+        InkAssignment(pen="black", weather_layer_colors={"streamlines": "red"},
+                      unexpected=1)  # extra="forbid"
+
+
 # ---------------------------------------------- unit: split mechanics -------
 
 
@@ -299,7 +412,7 @@ def live():
 
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch, tmp_path):
-    """Mock edge, HMAC secret, caches — per test (shared module server)."""
+    """Mock edge, HMAC secret, caches - per test (shared module server)."""
     from backend import upstream_mock
     from backend.airports import cache as airports_cache
     from backend.fulfillment import router as fulfillment_router
@@ -624,7 +737,7 @@ def test_green_is_an_accepted_ink_everywhere():
 
 def test_ink_split_of_an_all_empty_draft_serves_no_files(live, monkeypatch):
     """Every layer unticked + nothing drawn: the split is an honest empty
-    list (200), not an error — there is nothing to plot."""
+    list (200), not an error - there is nothing to plot."""
     from backend.fulfillment.ink_split import design_id_for
 
     empty_layers = "\n".join([
@@ -664,6 +777,27 @@ def _no_rerender(monkeypatch):
 
     monkeypatch.setattr("backend.traffic.router.render_document", _boom)
     monkeypatch.setattr("backend.airports.router.render_document", _boom)
+    monkeypatch.setattr("backend.weather.router._render", _boom)
+
+
+WEATHER_BODY = {"date": "2005-05-20", "time": 12, "layers": list(WEATHER_LAYERS)}
+
+
+def _stub_weather(monkeypatch):
+    """Offline weather: the fixture field reader and geography (no network)."""
+    from backend.tests.weather_render_fixtures import FakeReader, fixture_geo
+    from backend.weather import cache as weather_cache
+    from backend.weather import service
+    from backend.weather.fields import load_subset as real_load_subset
+
+    reader = FakeReader()
+
+    async def fake_load_subset(when, region, _reader, fields):
+        return await real_load_subset(when, region, reader, fields)
+
+    monkeypatch.setattr(service, "load_subset", fake_load_subset)
+    monkeypatch.setattr(service, "load_geography", lambda: fixture_geo())
+    weather_cache.configure_weather_redis(None)
 
 
 def _order(live, monkeypatch, tmp_path, kind: str) -> tuple[str, dict]:
@@ -679,6 +813,15 @@ def _order(live, monkeypatch, tmp_path, kind: str) -> tuple[str, dict]:
         request = {
             "kind": "traffic", "params": {"kind": "traffic", **params},
             "inks": {"pen": "black", "layer_colors": {"departures": "red"}},
+        }
+    elif kind == "weather":
+        _stub_weather(monkeypatch)
+        imported = live.post("/v1/weather/import", json=WEATHER_BODY)
+        request = {
+            "kind": "weather", "params": {"kind": "weather", **WEATHER_BODY},
+            "inks": {"pen": "black", "weather_layer_colors": {
+                "streamlines": "red", "isobars": "blue", "isotherms": "auto",
+            }},
         }
     else:
         imported = live.post("/v1/airports/import", json={"icao": "LHBP"})
@@ -699,7 +842,7 @@ def _stored_path(design_id: str) -> str:
     return path
 
 
-KINDS = ["traffic", "airport"]
+KINDS = ["traffic", "airport", "weather"]
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -716,8 +859,13 @@ def test_stored_design_is_split_without_rerendering(live, monkeypatch, tmp_path,
     assert body["warnings"] == [STORED_MARK]
     assert body["files"], "the stored design has drawn layers"
     assert all(f["svg"].startswith("<svg") for f in body["files"])
-    expected = "adsb.lol" if kind == "traffic" else "OpenStreetMap"
-    assert expected in body["attribution"]
+    expected = {"traffic": "adsb.lol", "airport": "OpenStreetMap"}.get(kind, "")
+    if kind == "weather":
+        from backend.weather.config import ATTRIBUTION as WEATHER_ATTRIBUTION
+
+        assert body["attribution"] == WEATHER_ATTRIBUTION
+    else:
+        assert expected in body["attribution"]
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -843,3 +991,36 @@ def test_no_stored_design_and_bad_params_is_422(live):
     })
     assert resp.status_code == 422, resp.text
     assert resp.json()["error"]["code"] == "invalid_params"
+
+
+def test_weather_ink_split_over_http(live, monkeypatch, tmp_path):
+    """Import → token → split: one file per distinct ink, sha256 = design_id."""
+    design_id, request = _order(live, monkeypatch, tmp_path, "weather")
+    resp = live.post("/v1/fulfill/ink-split", json=request)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["design_id"] == design_id and body["kind"] == "weather"
+    assert _digest_of(_stored_path(design_id)) == design_id
+    inks = {f["ink"]: f for f in body["files"]}
+    assert sorted(inks) == ["black", "blue", "red"]
+    assert "streamlines" in inks["red"]["layers"]
+    assert "isobars" in inks["blue"]["layers"]
+    assert "coast" in inks["black"]["layers"]
+    assert all("<text" not in f["svg"] and "<image" not in f["svg"] for f in body["files"])
+
+
+def _digest_of(path: str) -> str:
+    return ink_split.design_id_for(_read(path).decode("utf-8"))
+
+
+def test_weather_unknown_ink_and_layer_are_422_over_http(live):
+    base = {"design": _mint("a" * 64), "kind": "weather", "params": WEATHER_BODY}
+    unknown_ink = live.post("/v1/fulfill/ink-split", json={
+        **base, "inks": {"pen": "black", "weather_layer_colors": {"streamlines": "purple"}},
+    })
+    unknown_layer = live.post("/v1/fulfill/ink-split", json={
+        **base, "inks": {"pen": "black", "weather_layer_colors": {"aurora": "red"}},
+    })
+    assert unknown_ink.status_code == 422, unknown_ink.text
+    assert unknown_layer.status_code == 422, unknown_layer.text
+
