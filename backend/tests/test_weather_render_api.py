@@ -123,3 +123,43 @@ def test_source_failure_answers_generically_without_bucket_paths(client, monkeyp
     assert "gs://" not in resp.text
     assert "secret-bucket" not in resp.text
 
+
+def test_repeat_import_of_the_same_design_is_200_with_the_same_image_id(client):
+    first = client.post("/v1/weather/import", json=BODY)
+    again = client.post("/v1/weather/import", json=BODY)
+    assert first.status_code == 200, first.text
+    assert again.status_code == 200, again.text
+    assert again.json()["image_id"] == first.json()["image_id"]
+
+
+@pytest.mark.parametrize("days", [2, 89])
+def test_repeat_import_after_a_clock_advance_is_still_200(client, monkeypatch, days):
+    import datetime as real_dt
+
+    from backend.penplot import store as penplot_store_module
+
+    first = client.post("/v1/weather/import", json=BODY)
+    assert first.status_code == 200, first.text
+    offset = real_dt.timedelta(days=days)
+
+    class Clock(real_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_dt.datetime.now(tz) + offset
+
+    monkeypatch.setattr(penplot_store_module, "datetime", Clock)
+    again = client.post("/v1/weather/import", json=BODY)
+    assert again.status_code == 200, again.text
+    assert again.json()["image_id"] == first.json()["image_id"]
+
+
+def test_store_with_a_retained_ttl_below_90_days_is_refused(client, monkeypatch):
+    import datetime as real_dt
+
+    from backend.penplot.router import store as penplot_store
+
+    monkeypatch.setattr(penplot_store, "retained_ttl", real_dt.timedelta(days=30))
+    resp = client.post("/v1/weather/import", json=BODY)
+    assert resp.status_code == 500, resp.text
+    assert resp.json()["error"]["code"] == "weather_retention_failed"
+

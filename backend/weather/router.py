@@ -78,8 +78,14 @@ async def import_artwork(body: RenderRequest) -> ImportResponse | JSONResponse:
         return error_response(exc.status, exc.code, exc.message)
     image_id = penplot_store.put_image_bytes(data, "svg")
     # Promote the copy to the order retention at import (never re-rendered later).
-    retained = penplot_store.retain_image(image_id)
-    if retained is None or (retained[1] - dt.datetime.now(dt.timezone.utc)).total_seconds() < WEATHER_RETAIN_HOURS * 3600 - 60:
+    # retain_image is idempotent and keeps the original marker time, so the check is
+    # the store's configured retained TTL, not the time left on a repeat import.
+    retained_ttl_s = penplot_store.retained_ttl.total_seconds()
+    if retained_ttl_s < WEATHER_RETAIN_HOURS * 3600:
+        return error_response(500, "weather_retention_failed",
+                              "The image store's retained TTL is below the weather order "
+                              f"retention ({WEATHER_RETAIN_HOURS} h); set retained_ttl_hours.")
+    if penplot_store.retain_image(image_id) is None:
         return error_response(500, "weather_retention_failed",
                               "The weather design could not be kept for the order retention.")
     return ImportResponse(
