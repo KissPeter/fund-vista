@@ -483,6 +483,7 @@ def _plan_sheet(body: ComposeSheetRequest, art: _Artwork) -> _Plan:
             pad_top_mm=table.pads.top,
             pad_bottom_mm=table.pads.bottom,
             display_keys=False,
+            corner_radius_mm=page.frame_radius_mm,
         )
 
     # Artwork: centred in [margin+pad+top, band_top] x [margin+pad, w-margin-pad],

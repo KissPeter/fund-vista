@@ -372,7 +372,7 @@ VALID = {
     "ink_hex": "#1a1a1a",
     "layout": {
         "page": {"orientation": "portrait", "margin_mm": 10, "padding_mm": 5,
-                 "frame": True, "frame_radius_mm": 2},
+                 "frame": True, "frame_radius_mm": 10},
         "label": {"align": "right", "height_mm": 5, "font": "znikoslsvginot",
                   "border": True, "border_radius_mm": 2, "pad_left_mm": 0, "pad_right_mm": 5},
     },
@@ -457,7 +457,8 @@ def test_http_oversize_is_413(http_client):
 # -- title placement outside the border (below / above) -----------------------
 
 #: Pinned before the placement change: the inside sheet must stay byte-identical.
-FRAMED_INSIDE_SHA256 = "dde9ba18ba685ad9ab3c9ba7eae81bd7ea72167b6eaeabec7c341fc34f321bfb"
+#: Re-pinned when the frame radius range moved to 10-30 mm (default 10, was 2).
+FRAMED_INSIDE_SHA256 = "10c07d4b60947cc14781ce097d90e2a625db107d397eebc56dfc8f2194451c50"
 TITLE, SUB = "Title here", "Sub line"
 
 

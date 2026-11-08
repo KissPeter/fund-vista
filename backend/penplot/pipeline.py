@@ -149,6 +149,13 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
     # Gallery context table (issue #1058) is off by default: keep its key out.
     if not data.get("context_table", {}).get("enabled"):
         data.pop("context_table", None)
+    # The frame radius draws only with the page frame or a table (it is the
+    # tables' corner radius too). With neither on it is inert: it keys as the
+    # pre-range default (2.0) so the cache entries from before the 10-30 mm
+    # range stay valid, whatever value the request carried.
+    if (not data["page"].get("frame") and not data.get("stats_table", {}).get("enabled")
+            and "context_table" not in data):
+        data["page"]["frame_radius_mm"] = 2.0
     for field, default in (("thin_lines", False), ("circles", False), ("solids", False),
                            ("trace_upscale", 1), ("strip_frame", False),
                            ("cross_hatch", True)):
@@ -587,6 +594,7 @@ def run_convert(
                 pad_right_mm=params.stats_table.pad_right_mm,
                 pad_top_mm=params.stats_table.pad_top_mm,
                 pad_bottom_mm=params.stats_table.pad_bottom_mm,
+                corner_radius_mm=params.page.frame_radius_mm,
             )
             warnings.extend(table_warnings)
             if table_keepout is not None:
@@ -609,6 +617,7 @@ def run_convert(
                 pad_top_mm=params.context_table.pad_top_mm,
                 pad_bottom_mm=params.context_table.pad_bottom_mm,
                 display_keys=False,
+                corner_radius_mm=params.page.frame_radius_mm,
             )
             table_lines = table_lines + ctx_lines
             warnings.extend(ctx_warnings)
