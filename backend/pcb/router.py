@@ -54,12 +54,13 @@ ink on white paper), no enabled sub-layer, or a board over the plot ceiling
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
 import time
 
-from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -146,9 +147,10 @@ async def _load_cached(request_key: str) -> dict | None:
         pcb_cache.svg_cache_key(design_id),
         pcb_cache.params_cache_key(design_id),
         pcb_cache.meta_cache_key(design_id),
+        pcb_cache.source_cache_key(design_id),
     ])
-    if len(parts) != 3:
-        return None
+    if len(parts) != 4:
+        return None  # a partly expired entry is a miss: render (and store) again
     meta["svg"] = parts[pcb_cache.svg_cache_key(design_id)]
     return meta  # meta["expires_at"] caps the token below
 
@@ -204,6 +206,7 @@ async def render(
         pcb_cache.svg_cache_key(design_id): svg,
         pcb_cache.params_cache_key(design_id): canonical,
         pcb_cache.meta_cache_key(design_id): json.dumps(meta["stats"]),
+        pcb_cache.source_cache_key(design_id): base64.b64encode(data).decode("ascii"),
         request_key: json.dumps(meta),
     }, ttl_s=pcb_settings.cache_ttl_hours * 3600)
     log.info(
@@ -264,6 +267,41 @@ async def get_meta(design_id: str) -> PcbMetaResponse | JSONResponse:
     return PcbMetaResponse(
         stats=SheetStats(**json.loads(found[pcb_cache.meta_cache_key(token)])),
         params=PcbRenderParams.model_validate_json(found[pcb_cache.params_cache_key(token)]),
+    )
+
+
+@router.get("/results/{design_id}/source", dependencies=[Depends(require_rate_limit)])
+async def get_source(
+    design_id: str,
+    exp: str = Query(default=""),
+    sig: str = Query(default=""),
+) -> Response:
+    """The uploaded Gerber/Excellon bytes behind a cached sheet.
+
+    Requires the design token (``exp`` and ``sig`` query parameters, the same
+    triple ``/render`` returns). 403 for a bad or expired token, 404 once the
+    stored source is gone.
+    """
+    token = design_id.lower()
+    try:
+        expires = int(exp)
+    except ValueError:
+        return error_response(403, "token_invalid", "Design token refused (bad_expiry).")
+    valid, reason = design_tokens.verify_design_token(
+        design_id=token, exp=expires, sig=sig,
+        secret=_settings.hmac_secret, previous_secret=_settings.hmac_previous_secret,
+    )
+    if not valid:
+        return error_response(403, "token_invalid", f"Design token refused ({reason}).")
+    stored = await pcb_cache.cache_get(pcb_cache.source_cache_key(token))
+    if stored is None:
+        return error_response(
+            404, "result_not_found",
+            "PCB source expired or unknown - re-run POST /v1/pcb/render.",
+        )
+    return Response(
+        content=base64.b64decode(stored), media_type="application/octet-stream",
+        headers={"cache-control": "no-store"},
     )
 
 

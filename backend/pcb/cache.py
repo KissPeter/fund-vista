@@ -59,3 +59,8 @@ def meta_cache_key(design_id: str) -> str:
 def params_cache_key(design_id: str) -> str:
     """Key of the canonical render params a design id was made with."""
     return pcb_cache_key("params", design_id)
+
+
+def source_cache_key(design_id: str) -> str:
+    """Key of the uploaded Gerber/Excellon bytes (base64) of one design id."""
+    return pcb_cache_key("source", design_id)
