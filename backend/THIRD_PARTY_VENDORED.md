@@ -25,7 +25,7 @@ Decisions D1–D4 (issue #58, not renegotiated here):
 |---|---|---|---|---|---|
 | `backend/penplot/fonts/Znikoslsvginot8-GOB3y.ttf` | ZnikoSL-SVGinOT-8 (`znikoslsvginot`) | (c) 2011-2021 gluk (www.glukfonts.pl), Reserved Font Names Znikomit and ZnikoSL | SIL OFL 1.1 | `backend/penplot/fonts/OFL-1.1.txt` | https://www.glukfonts.pl (Grzegorz Luka) |
 | `backend/penplot/fonts/Excalifont-Regular.ttf` | Excalifont (`excalifont`) | (c) 2024 by Excalidraw (font: Jan Filipek / DizajnDesign) | SIL OFL 1.1 (upstream `OFL.txt`; embedded name table holds only the (c) notice) | `backend/penplot/fonts/OFL-1.1.txt` | https://github.com/excalidraw/excalifont |
-| `backend/penplot/fonts/ComicShanns-Regular.ttf` | Comic Shanns (`comic-shanns`) | Copyright 2020 Shannon Miwa | **MIT — NOT OFL** (grant embedded in nameID 13) | `backend/penplot/fonts/MIT.txt` | https://github.com/shannpersand/comic-shanns |
+| `backend/penplot/fonts/ComicShanns-Regular.ttf` | Comic Shanns (`comic-shanns`) | Copyright 2020 Shannon Miwa | **MIT - NOT OFL** (grant embedded in nameID 13) | `backend/penplot/fonts/MIT.txt` | https://github.com/shannpersand/comic-shanns |
 | `backend/penplot/fonts/Nunito-Regular.ttf` | Nunito (`nunito`) | Copyright 2014 The Nunito Project Authors (upstream author Vernon Adams) | SIL OFL 1.1 | `backend/penplot/fonts/OFL-1.1.txt` | https://github.com/googlefonts/nunito (Excalidraw weight-500 Latin-subset build) |
 | `backend/wordmark/fonts/Poppins-Bold.ttf` | Poppins Bold (`poppins-bold`) | Copyright 2020 The Poppins Project Authors; Indian Type Foundry; Ninad Kale (Devanagari), Jonny Pinhorn (Latin) | SIL OFL 1.1 | `backend/wordmark/fonts/OFL-1.1.txt` | https://github.com/itfoundry/Poppins |
 
@@ -42,8 +42,8 @@ never enter geometry, stats or the plotter recipe
 
 | Path | Id | Provenance (recorded in `backgrounds.py`) | Licence |
 |---|---|---|---|
-| `backend/penplot/backgrounds/dark-texture.jpg` | `dark-texture` | https://www.ilmarket.hu/cdn/shop/files/078231209_0_1448x2006.jpg?v=1789241014 (white e-commerce frame trimmed at vendor time) | **UNKNOWN — not clarified.** Product photo from a webshop CDN; no licence statement found. Kept display-only; replacement is a separate decision (not made here). |
-| `backend/penplot/backgrounds/light-texture.jpg` | `light-texture` | https://s13emagst.akamaized.net/products/132357/132356154/images/res_c62ebfeeaa56d62efb5003123f1de3e1.jpg?width=720&height=720&hash=7032669015377C063DF4421280F4AD24 (white e-commerce frame trimmed at vendor time) | **UNKNOWN — not clarified.** Same situation as above; replacement is a separate decision (not made here). |
+| `backend/penplot/backgrounds/dark-texture.jpg` | `dark-texture` | https://www.ilmarket.hu/cdn/shop/files/078231209_0_1448x2006.jpg?v=1789241014 (white e-commerce frame trimmed at vendor time) | **UNKNOWN - not clarified.** Product photo from a webshop CDN; no licence statement found. Kept display-only; replacement is a separate decision (not made here). |
+| `backend/penplot/backgrounds/light-texture.jpg` | `light-texture` | https://s13emagst.akamaized.net/products/132357/132356154/images/res_c62ebfeeaa56d62efb5003123f1de3e1.jpg?width=720&height=720&hash=7032669015377C063DF4421280F4AD24 (white e-commerce frame trimmed at vendor time) | **UNKNOWN - not clarified.** Same situation as above; replacement is a separate decision (not made here). |
 
 ## 3. Hershey stroke tables (code, not files)
 
@@ -73,6 +73,18 @@ binary). Sources already noted in the module docstrings, collected here:
 - The Tesseract engine itself (libtesseract via the `tesserocr` wheel, or the
   `tesseract` binary for the `pytesseract` fallback) is **not vendored**; it is
   Apache-2.0 upstream (https://github.com/tesseract-ocr/tesseract).
+
+## 4a. Natural Earth geography (weather map, Phase 2)
+
+- `backend/weather/data/coast.json` (Natural Earth 1:50m coastline) and
+  `backend/weather/data/borders.json` (Natural Earth 1:50m admin-0 boundary lines,
+  land): public domain (https://www.naturalearthdata.com/about/terms-of-use/).
+  Fetched 2026-11-08 from
+  https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/
+  (`ne_50m_coastline.geojson`, `ne_50m_admin_0_boundary_lines_land.geojson`),
+  simplified with Ramer-Douglas-Peucker at 0.05 degree by
+  `backend/weather/geo_build.py`. No attribution is required; the source is named
+  here for provenance.
 
 ## 5. Deliberately NOT vendored / NOT dependencies
 

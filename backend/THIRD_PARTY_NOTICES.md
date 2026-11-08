@@ -52,6 +52,11 @@ has a shop-side step.
   `backend/THIRD_PARTY_VENDORED.md` §2; licence UNKNOWN (replacement is a
   separate, not-yet-made decision).
 
+- Natural Earth 1:50m coastline and admin-0 boundary lines (public domain),
+  vendored as `backend/weather/data/coast.json` and `borders.json` for the weather
+  map; provenance in `backend/THIRD_PARTY_VENDORED.md` section 4a. Natural Earth
+  requires no attribution.
+
 ## B. Python dependencies (`backend/pyproject.toml`)
 
 All permissive. Licence labels verified against the PyPI `license` /
