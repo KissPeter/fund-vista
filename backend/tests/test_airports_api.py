@@ -499,7 +499,7 @@ def test_airport_import_convert_runway_band_spans_the_strip(live: httpx.Client):
         "linemerge_tolerance_mm": 0.5, "linesimplify_tolerance_mm": 0.1,
         "linesort": True, "reloop_tolerance_mm": 0.05,
         "page": {"size": "A4", "orientation": "portrait", "margin_mm": 10,
-                 "padding_mm": 5, "frame": True, "frame_radius_mm": 10},
+                 "padding_mm": 5, "frame": True, "frame_radius_mm": 2},
         "pen": {"pen_lift_s": 0.3},
         "line_color": "black", "background": "none",
     }

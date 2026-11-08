@@ -589,8 +589,8 @@ def suggest_table_fixes(body: ComposeSheetRequest, art: _Artwork) -> list[dict]:
     if clears(_with_page(body, orientation=flipped)):
         fixes.append({"kind": "orientation", "orientation": flipped})
 
-    # 5. Page margin and padding at their slider minimums (0 mm).
-    if clears(_with_page(body, margin_mm=0.0, padding_mm=0.0)):
+    # 5. Page margin and padding at their slider minimums (margin 10 mm, padding 0 mm).
+    if clears(_with_page(body, margin_mm=10.0, padding_mm=0.0)):
         fixes.append({"kind": "margins"})
 
     # 6. Title block outside the frame: only when it is inside now. The first

@@ -109,10 +109,10 @@ def test_cli_builds_the_preset_params():
     assert img2plot.build_params(args) == ConvertParams(**drawing.DRAWING_PRESET)
     args = img2plot.make_parser().parse_args(
         ["x.png", "--upscale", "2", "--no-ocr", "--keep-frame", "--frame",
-         "--frame-radius-mm", "12", "--label", "PLAN 1"])
+         "--frame-radius-mm", "6", "--label", "PLAN 1"])
     tweaked = img2plot.build_params(args)
     assert tweaked.trace_upscale == 2 and not tweaked.ocr_text.enabled
-    assert tweaked.strip_frame is False and tweaked.page.frame and tweaked.page.frame_radius_mm == 12
+    assert tweaked.strip_frame is False and tweaked.page.frame and tweaked.page.frame_radius_mm == 6
     assert tweaked.label.enabled and tweaked.label.text == "PLAN 1"
 
 

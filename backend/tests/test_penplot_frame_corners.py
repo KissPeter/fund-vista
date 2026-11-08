@@ -84,7 +84,7 @@ def _corner_counts(pts: list[tuple[float, float]], radius: float) -> list[int]:
     return counts
 
 
-@pytest.mark.parametrize("radius", [10.0, 20.0, 30.0])
+@pytest.mark.parametrize("radius", [1.0, 2.0, 3.0, 4.0])
 def test_frame_corner_arcs_survive_default_linesimplify(http_client, radius):
     # The regression: at the default 0.1 mm tolerance every corner arc used
     # to simplify to one chord (a chamfer). Each corner must keep >= 4
@@ -109,14 +109,24 @@ def test_tighter_linesimplify_still_keeps_the_corners_round(http_client):
     # Even an aggressive tolerance must not eat furniture: the bypass is
     # unconditional, so 0.01 mm behaves the same as the 0.1 mm default.
     image_id = upload(http_client, png_bytes()).json()["image_id"]
-    params = _framed(frame=True, frame_radius_mm=10.0)
+    params = _framed(frame=True, frame_radius_mm=2.0)
     params["linesimplify_tolerance_mm"] = 0.01
     body = _convert(http_client, image_id, params).json()
     svg = http_client.get(body["svg_url"]).text
-    counts = _corner_counts(_frame_path(svg, 10.0), 10.0)
+    counts = _corner_counts(_frame_path(svg, 2.0), 2.0)
     assert all(n >= 4 for n in counts), f"corners lost at 0.01mm: {counts}"
 
 
+def test_sharp_frame_has_no_corner_arcs(http_client):
+    # radius 0 is a sharp rect: the corners carry no arc bulge, which is
+    # the baseline the "smooth" assertions are measured against. The
+    # closed path repeats its start point, so a sharp corner reads 2.
+    image_id = upload(http_client, png_bytes()).json()["image_id"]
+    body = _convert(
+        http_client, image_id, _framed(frame=True, frame_radius_mm=0.0)).json()
+    svg = http_client.get(body["svg_url"]).text
+    counts = _corner_counts(_frame_path(svg, 0.0), 0.0)
+    assert all(n <= 2 for n in counts), f"sharp frame grew arcs: {counts}"
 
 
 def test_larger_radius_keeps_at_least_as_many_arc_points(http_client):
@@ -124,17 +134,17 @@ def test_larger_radius_keeps_at_least_as_many_arc_points(http_client):
     # the point count so a regression can't hide behind a radius bump.
     image_id = upload(http_client, png_bytes()).json()["image_id"]
     tall = _convert(
-        http_client, image_id, _framed(frame=True, frame_radius_mm=20.0)).json()
+        http_client, image_id, _framed(frame=True, frame_radius_mm=6.0)).json()
     svg_tall = http_client.get(tall["svg_url"]).text
-    tall_counts = _corner_counts(_frame_path(svg_tall, 20.0), 20.0)
-    assert all(n >= 4 for n in tall_counts), f"20mm corners lost points: {tall_counts}"
+    tall_counts = _corner_counts(_frame_path(svg_tall, 6.0), 6.0)
+    assert all(n >= 4 for n in tall_counts), f"6mm corners lost points: {tall_counts}"
 
 
 def test_page_furniture_is_present_in_the_output(http_client):
     # Guards the intermediate state where furniture was dropped entirely:
     # frame + label + stats table must all still ink alongside the image.
     image_id = upload(http_client, png_bytes()).json()["image_id"]
-    params = _framed(frame=True, frame_radius_mm=10.0)
+    params = _framed(frame=True, frame_radius_mm=2.0)
     params["label"] = {
         "enabled": True, "text": "A-1", "align": "right", "height_mm": 5.0,
         "font": "futural", "border": True,
@@ -150,7 +160,7 @@ def test_page_furniture_is_present_in_the_output(http_client):
 
     # Frame only: baseline stroke count.
     frame_only = _convert(http_client, image_id, _framed(
-        frame=True, frame_radius_mm=10.0)).json()
+        frame=True, frame_radius_mm=2.0)).json()
     base_paths = len(_paths(http_client.get(frame_only["svg_url"]).text))
     # Frame + label + table must draw strictly more than the frame alone.
     assert len(_paths(svg)) > base_paths, "label + table added no strokes"

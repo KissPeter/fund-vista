@@ -541,7 +541,7 @@ def test_solid_panorama_stays_above_the_band_over_http(http_client):
     params = default_params("hatch")
     params["label"] = label
     params["page"] = {"size": "A4", "orientation": "portrait", "margin_mm": 10.0,
-                      "frame": True, "frame_radius_mm": 10.0}
+                      "frame": True, "frame_radius_mm": 0.0}
     body = http_client.post(
         "/v1/convert", json={"image_id": image_id, "params": params}).json()
     svg = http_client.get(body["svg_url"]).text

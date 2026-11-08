@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import re
 
-import pytest
 from PIL import Image as PILImage
 
 from backend.penplot import labels
@@ -28,7 +27,7 @@ def test_page_frame_adds_one_stroke_over_http(http_client):
     image_id = upload(http_client, png_bytes()).json()["image_id"]
     plain = _convert(http_client, image_id, default_params("hatch")).json()
     params = default_params("hatch")
-    _with_page(params, frame=True, frame_radius_mm=10.0)
+    _with_page(params, frame=True, frame_radius_mm=2.0)
     framed = _convert(http_client, image_id, params).json()
     assert framed["svg_url"] != plain["svg_url"]
     assert framed["stats"]["strokes"] == plain["stats"]["strokes"] + 1
@@ -47,7 +46,7 @@ def test_page_frame_and_label_band_are_independent(http_client):
     label_only = _convert(http_client, image_id, params).json()
     params2 = default_params("hatch")
     params2["label"] = dict(label)
-    _with_page(params2, frame=True, frame_radius_mm=15.0)
+    _with_page(params2, frame=True, frame_radius_mm=5.0)
     both = _convert(http_client, image_id, params2).json()
     # The page frame adds its own stroke on top of the band.
     assert both["stats"]["strokes"] == label_only["stats"]["strokes"] + 1
@@ -95,7 +94,7 @@ def test_page_frame_with_borderless_label(http_client):
     text_only = _convert(http_client, image_id, params).json()
     params2 = default_params("hatch")
     params2["label"] = dict(label)
-    _with_page(params2, frame=True, frame_radius_mm=10.0)
+    _with_page(params2, frame=True, frame_radius_mm=0.0)
     framed = _convert(http_client, image_id, params2).json()
     assert framed["stats"]["strokes"] == text_only["stats"]["strokes"] + 1
 
@@ -107,15 +106,6 @@ def test_page_frame_invalid_radius_422(http_client):
     resp = _convert(http_client, image_id, params)
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "invalid_params"
-
-
-@pytest.mark.parametrize("radius", [9.5, 30.5])
-def test_page_frame_radius_outside_10_to_30_is_422(http_client, radius):
-    image_id = upload(http_client, png_bytes()).json()["image_id"]
-    params = default_params("hatch")
-    _with_page(params, frame=True, frame_radius_mm=radius)
-    resp = _convert(http_client, image_id, params)
-    assert resp.status_code == 422
 
 
 def test_max_linemerge_cannot_fuse_across_strip_over_http(http_client):
@@ -132,7 +122,7 @@ def test_max_linemerge_cannot_fuse_across_strip_over_http(http_client):
     params = default_params("hatch")
     params["label"] = label
     params["page"] = {"size": "A4", "orientation": "portrait", "margin_mm": 10.0,
-                      "frame": True, "frame_radius_mm": 10.0}
+                      "frame": True, "frame_radius_mm": 0.0}
     params["linemerge_tolerance_mm"] = 5.0
     body = _convert(http_client, image_id, params).json()
     svg = http_client.get(body["svg_url"]).text

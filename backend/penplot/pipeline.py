@@ -149,13 +149,6 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
     # Gallery context table (issue #1058) is off by default: keep its key out.
     if not data.get("context_table", {}).get("enabled"):
         data.pop("context_table", None)
-    # The frame radius draws only with the page frame or a table (it is the
-    # tables' corner radius too). With neither on it is inert: it keys as the
-    # pre-range default (2.0) so the cache entries from before the 10-30 mm
-    # range stay valid, whatever value the request carried.
-    if (not data["page"].get("frame") and not data.get("stats_table", {}).get("enabled")
-            and "context_table" not in data):
-        data["page"]["frame_radius_mm"] = 2.0
     for field, default in (("thin_lines", False), ("circles", False), ("solids", False),
                            ("trace_upscale", 1), ("strip_frame", False),
                            ("cross_hatch", True)):

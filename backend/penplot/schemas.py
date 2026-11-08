@@ -41,7 +41,7 @@ class PageParams(BaseModel):
 
     size: PageSizeName = "A4"
     orientation: Orientation = "portrait"
-    margin_mm: float = Field(default=10.0, ge=0.0, le=50.0)
+    margin_mm: float = Field(default=10.0, ge=10.0, le=30.0)
     padding_mm: float = Field(
         default=5.0, ge=0.0, le=20.0,
         description="Internal padding inside the margin/frame; artwork never touches the border.",
@@ -55,11 +55,8 @@ class PageParams(BaseModel):
         ),
     )
     frame_radius_mm: float = Field(
-        default=10.0, ge=10.0, le=30.0,
-        description=(
-            "Corner radius of the page frame (10-30 mm). The statistics and "
-            "context tables inherit it as their corner radius."
-        ),
+        default=2.0, ge=0.0, le=20.0,
+        description="Corner radius of the page frame; 0 is sharp.",
     )
 
 
