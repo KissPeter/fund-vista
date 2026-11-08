@@ -284,15 +284,16 @@ def test_final_segment_runs_to_source_end():
     assert ends[0][1].end_s == big[0].duration_s
 
 
-def test_several_sources_each_file_is_one_part():
-    tls = _timeline(blocks=40, sources=2)
-    res = assign.assign(tls, SegmentConfig(), VideosConfig(count=2, parts=3), BUDGET)
+def test_parts_are_equal_time_ranges_not_files():
+    tls = _timeline(blocks=40, sources=5)
+    res = assign.assign(tls, SegmentConfig(), VideosConfig(count=1, parts=3), BUDGET)
     assert res.clips
-    # A new part starts where a file starts: 2 files = 2 parts.
-    assert len(res.parts) == 2
+    # Parts follow videos.parts, not the number of files: 5 files, 3 parts.
+    assert len(res.parts) == 3
+    width = res.parts[0][1] - res.parts[0][0]
+    assert all(hi - lo == pytest.approx(width) for lo, hi in res.parts)
     for c in res.clips:
-        assert assign.story_ok(c.segments, 2)
-        assert [s.source for s in c.segments] == sorted(s.source for s in c.segments)
+        assert assign.story_ok(c.segments, 3)
 
 
 @pytest.mark.parametrize("w, h, expect", [
