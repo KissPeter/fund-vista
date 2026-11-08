@@ -97,6 +97,11 @@ class SegmentConfig:
     # The plot's very last segment may run to the end of the last source and
     # exceed max_s by up to this much, so the pen's trip home is not cut off.
     final_extra_s: float = 3.0
+    # Every clip opens with one uninterrupted take of first_min_s..first_max_s:
+    # YouTube retention for spiro-curve-3.mp4 fell off a cliff at the first cut
+    # (~5 s, 100% -> 77%), so the first cut must come after first_min_s.
+    first_min_s: float = 10.0
+    first_max_s: float = 14.0
 
 
 @dataclass(frozen=True)
@@ -278,6 +283,8 @@ def load(path: str | Path) -> Config:
         raise ConfigError("segment: max_relax within 0..3, relax_penalty within (0, 1]")
     if segment.final_extra_s < 0:
         raise ConfigError("segment: final_extra_s must be >= 0")
+    if not 0 <= segment.first_min_s <= segment.first_max_s:
+        raise ConfigError("segment: need 0 <= first_min_s <= first_max_s")
 
     videos = _build(VideosConfig, raw.get("videos"), "videos")
     if not (videos.count == "auto" or (isinstance(videos.count, int) and videos.count >= 1)):

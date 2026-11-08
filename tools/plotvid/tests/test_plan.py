@@ -213,6 +213,20 @@ def test_story_assignment_every_clip_covers_all_parts():
             assert not x.overlaps(y)  # footage never reused
 
 
+def test_every_clip_opens_with_a_long_take():
+    tls = _timeline(blocks=40, sources=3)
+    seg = SegmentConfig()
+    a = assign.assign(tls, seg, VIDS, BUDGET)
+    assert a.clips
+    for c in a.clips:
+        first = c.segments[0]
+        assert first.opening and first.part == 0
+        # first cut (start of the crossfade) comes after first_min_s
+        assert first.duration_s - BUDGET.join_s >= seg.first_min_s - 1e-6
+        assert first.duration_s <= seg.first_max_s + 1e-6
+        assert sum(1 for s in c.segments if s.part == 0) == 1
+
+
 def test_story_assignment_deterministic_and_seeded():
     tls = _timeline()
     a = assign.assign(tls, SegmentConfig(), VIDS, BUDGET)
