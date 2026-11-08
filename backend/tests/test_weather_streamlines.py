@@ -96,3 +96,25 @@ def test_too_dense_start_is_thinned_with_a_flag():
     assert res.thinned
     assert res.separation_mm > 2.0
     assert len(res.lines) <= C.STREAM_MAX_PATHS
+
+
+def test_over_budget_reports_the_separation_actually_used(monkeypatch):
+    """When no pass fits the budget, the reported separation is the one the
+    last pass ran with, not the untested next value."""
+    from backend.weather import streamlines as S
+
+    used: list[float] = []
+    real_pass = S._one_pass
+
+    def spy(*args):
+        used.append(args[6])  # the separation argument of _one_pass
+        return real_pass(*args)
+
+    monkeypatch.setattr(S, "_one_pass", spy)
+    lat, lon, u, v = rotating_wind()
+    res = streamlines(u, v, lat, lon, frame=_frame(), max_paths=1,
+                      max_total_mm=1.0, tries=3)
+    assert res.over_budget
+    assert len(used) == 3
+    assert res.separation_mm == used[-1]
+

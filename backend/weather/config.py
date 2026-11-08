@@ -85,6 +85,10 @@ MIN_CLOSED_AREA_KM2 = 2000.0
 
 #: Every layer id the render can draw; each is one SVG group ``data-layer``.
 LAYER_IDS = ("coast", "borders", "streamlines", "isobars", "z500", "isotherms", "markers", "cities")
+#: Order retention for a weather design (days, in hours). A weather copy is
+#: promoted to the retained TTL at import so a paid order can always be split
+#: from the stored bytes: the re-render would not match after ERA5T revisions.
+WEATHER_RETAIN_HOURS = 90 * 24
 #: Layers drawn when the request names none. The 250 hPa streamlines are the hero.
 DEFAULT_LAYERS = ("coast", "borders", "streamlines", "cities")
 #: Fields each layer needs; load_subset reads only the union for the request.

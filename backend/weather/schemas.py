@@ -11,7 +11,18 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from backend.weather.config import ALLOWED_HOURS, CITIES, DEFAULT_CITIES, DEFAULT_LAYERS, LAYER_IDS, REGIONS
+from backend.weather.config import (
+    ALLOWED_HOURS,
+    CITIES,
+    DEFAULT_CITIES,
+    DEFAULT_LAYERS,
+    LAYER_IDS,
+    REGIONS,
+)
+
+#: Request list caps: every layer once, and a sane number of cities.
+MAX_LAYERS = len(LAYER_IDS)
+MAX_CITIES = 12
 
 
 class NearestPoint(BaseModel):
@@ -37,8 +48,10 @@ class RenderRequest(BaseModel):
     time: int = Field(12, description="UTC analysis hour; offered: 0, 6, 12, 18.")
     region: str = Field("europe", description="Region preset.")
     orientation: Literal["landscape", "portrait"] = "landscape"
-    layers: list[str] = Field(default_factory=lambda: list(DEFAULT_LAYERS), min_length=1)
-    cities: list[str] = Field(default_factory=lambda: list(DEFAULT_CITIES))
+    layers: list[str] = Field(default_factory=lambda: list(DEFAULT_LAYERS),
+                              min_length=1, max_length=MAX_LAYERS)
+    cities: list[str] = Field(default_factory=lambda: list(DEFAULT_CITIES),
+                              max_length=MAX_CITIES)
 
     @field_validator("date")
     @classmethod
@@ -69,6 +82,8 @@ class RenderRequest(BaseModel):
         unknown = sorted(set(v) - set(LAYER_IDS))
         if unknown:
             raise ValueError(f"unknown layers: {unknown}")
+        if len(set(v)) != len(v):
+            raise ValueError("duplicate layers are not allowed")
         return v
 
     @field_validator("cities")
@@ -77,6 +92,8 @@ class RenderRequest(BaseModel):
         unknown = sorted(set(v) - set(CITIES))
         if unknown:
             raise ValueError(f"unknown cities: {unknown}")
+        if len(set(v)) != len(v):
+            raise ValueError("duplicate cities are not allowed")
         return v
 
 

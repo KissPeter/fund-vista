@@ -18,6 +18,7 @@ from backend.penplot.errors import PenPlotError
 from backend.penplot.router import require_rate_limit, resolve_public_base
 from backend.penplot.router import store as penplot_store
 from backend.weather import availability as _avail
+from backend.weather.config import WEATHER_RETAIN_HOURS
 from backend.weather import service
 from backend.weather.schemas import AvailabilityResponse, ImportResponse, RenderRequest, RenderResponse
 
@@ -76,6 +77,11 @@ async def import_artwork(body: RenderRequest) -> ImportResponse | JSONResponse:
     except PenPlotError as exc:
         return error_response(exc.status, exc.code, exc.message)
     image_id = penplot_store.put_image_bytes(data, "svg")
+    # Promote the copy to the order retention at import (never re-rendered later).
+    retained = penplot_store.retain_image(image_id)
+    if retained is None or (retained[1] - dt.datetime.now(dt.timezone.utc)).total_seconds() < WEATHER_RETAIN_HOURS * 3600 - 60:
+        return error_response(500, "weather_retention_failed",
+                              "The weather design could not be kept for the order retention.")
     return ImportResponse(
         image_id=image_id, date=body.date, time=body.time, layers=list(spec.layers),
         stats=info["stats"], warnings=info["warnings"], attribution=info["attribution"],

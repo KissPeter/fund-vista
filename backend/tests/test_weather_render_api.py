@@ -94,3 +94,32 @@ def test_import_returns_an_image_id(client):
     doc = r.json()
     assert re.fullmatch(r"[0-9a-f]{64}", doc["image_id"])
     assert "CC BY 4.0" in doc["attribution"]
+
+
+def test_duplicate_and_oversized_layer_and_city_lists_are_422(client):
+    from backend.weather.config import DEFAULT_CITIES
+
+    dup_layers = client.post("/v1/weather/render", json={**BODY, "layers": ["coast", "coast"]})
+    too_many_layers = client.post("/v1/weather/render",
+                                  json={**BODY, "layers": ["coast"] * 9})
+    dup_cities = client.post("/v1/weather/render",
+                             json={**BODY, "cities": [DEFAULT_CITIES[0]] * 2})
+    too_many_cities = client.post("/v1/weather/render",
+                                  json={**BODY, "cities": [DEFAULT_CITIES[0]] * 13})
+    assert dup_layers.status_code == 422, dup_layers.text
+    assert too_many_layers.status_code == 422, too_many_layers.text
+    assert dup_cities.status_code == 422, dup_cities.text
+    assert too_many_cities.status_code == 422, too_many_cities.text
+
+
+def test_source_failure_answers_generically_without_bucket_paths(client, monkeypatch):
+    async def boom(*args, **kwargs):
+        raise RuntimeError("cannot read gs://secret-bucket/era5/store.zarr")
+
+    monkeypatch.setattr(service, "load_subset", boom)
+    resp = client.post("/v1/weather/render", json={**BODY, "date": "2005-05-19"})
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["error"]["code"] == "weather_source_unavailable"
+    assert "gs://" not in resp.text
+    assert "secret-bucket" not in resp.text
+

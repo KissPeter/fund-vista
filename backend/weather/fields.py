@@ -47,9 +47,14 @@ ARCO_VARS = {
 #: Z500 and T500 are optional layers and are read only when asked for.
 DEFAULT_FIELDS: frozenset[str] = frozenset({"mslp_hpa", "u250", "v250"})
 
-#: Upper bound on concurrent chunk reads. A 4D chunk is about 150 MB decoded,
-#: so two at a time keeps the peak under about 300 MB on the 512 MB worker.
-MAX_CONCURRENT_READS = 2
+#: Field reads in flight across ALL requests (process-wide). One read at a
+#: time: a 4D chunk is about 150 MB decoded and a read holds READ_WORKERS of
+#: them, so the field reads never hold more than about 300 MB at once on the
+#: 512 MB worker. A second request waits for the slot instead of adding chunks.
+MAX_CONCURRENT_READS = 1
+#: Chunks one read decodes in parallel (threads inside a single read).
+READ_WORKERS = 2
+_READ_SLOTS = asyncio.Semaphore(MAX_CONCURRENT_READS)
 
 
 def check_fields(fields) -> frozenset[str]:
@@ -234,10 +239,10 @@ class ArcoEra5Reader:
                 values = values[::-1]
             return name, _convert(name, values)
 
-        # Only the requested variables are read; at most two at a time.
+        # Only the requested variables are read; READ_WORKERS chunks at a time.
         t_read = time.perf_counter()
         items = [(name, spec) for name, spec in ARCO_VARS.items() if name in wanted]
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_READS) as pool:
+        with ThreadPoolExecutor(max_workers=READ_WORKERS) as pool:
             out = dict(pool.map(one, items))
         self.last_timing = {"open_s": self._open_s, "read_s": time.perf_counter() - t_read}
 
@@ -311,7 +316,8 @@ async def load_subset(when: dt.datetime, region: Region = EUROPE,
 
     if missing:
         src = reader or default_reader()
-        sub = await asyncio.to_thread(src.read, when, region, frozenset(missing))
+        async with _READ_SLOTS:
+            sub = await asyncio.to_thread(src.read, when, region, frozenset(missing))
         grid = (sub.lat, sub.lon)
         for name in missing:
             values = sub.field(name)

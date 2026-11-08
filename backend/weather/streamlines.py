@@ -268,7 +268,9 @@ def streamlines(
     best: tuple[list[Streamline], float] | None = None
     last: list[Streamline] = []
     thinned = False
+    last_sep = sep
     for attempt in range(max(1, tries)):
+        last_sep = sep  # the separation this pass actually used
         lines = _one_pass(ux, uy, speed, lon_axis, lat_axis, frame, sep,
                           min_speed, step_mm, min_length_mm)
         total = total_length_mm(lines)
@@ -293,7 +295,7 @@ def streamlines(
             sep = lo * grow
     if best is not None:
         return StreamResult(lines=best[0], separation_mm=best[1], thinned=thinned, over_budget=False)
-    return StreamResult(lines=last, separation_mm=sep, thinned=thinned, over_budget=True)
+    return StreamResult(lines=last, separation_mm=last_sep, thinned=thinned, over_budget=True)
 
 
 def total_length_mm(lines: list[Streamline]) -> float:

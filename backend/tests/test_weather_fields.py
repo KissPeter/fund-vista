@@ -221,3 +221,36 @@ def test_live_arco_smoke_2005_05_20_12utc():
     assert np.all(np.diff(sub.lat) > 0) and sub.lat[0] == 33.0 and sub.lat[-1] == 71.0
     assert 950.0 <= float(np.nanmin(sub.mslp_hpa)) and float(np.nanmax(sub.mslp_hpa)) <= 1060.0
     print(f"LIVE mslp min={float(np.nanmin(sub.mslp_hpa)):.1f} max={float(np.nanmax(sub.mslp_hpa)):.1f}")
+
+
+def test_concurrent_load_subset_never_overlaps_beyond_the_read_cap():
+    """Two requests in flight: their field reads never run together (cap 1)."""
+    import threading
+    import time
+
+    from backend.tests.weather_render_fixtures import fixture_subset
+
+    lock = threading.Lock()
+    state = {"active": 0, "peak": 0, "calls": 0}
+
+    class SlowReader:
+        def read(self, when, region, fields):
+            with lock:
+                state["active"] += 1
+                state["calls"] += 1
+                state["peak"] = max(state["peak"], state["active"])
+            time.sleep(0.2)
+            with lock:
+                state["active"] -= 1
+            return fixture_subset(fields)
+
+    async def run():
+        await asyncio.gather(
+            F.load_subset(dt.datetime(1999, 12, 30, 18), EUROPE, SlowReader(), frozenset({"mslp_hpa"})),
+            F.load_subset(dt.datetime(1999, 12, 31, 6), EUROPE, SlowReader(), frozenset({"mslp_hpa"})),
+        )
+
+    asyncio.run(run())
+    assert state["calls"] == 2
+    assert state["peak"] == F.MAX_CONCURRENT_READS == 1
+

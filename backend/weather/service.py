@@ -14,6 +14,7 @@ import asyncio
 import datetime as dt
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 
@@ -30,6 +31,8 @@ from backend.weather.config import (
 from backend.weather.fields import FieldReader, load_subset
 from backend.weather.geography import Geography, load_geography
 from backend.weather.render import compose_artwork
+
+log = logging.getLogger(__name__)
 
 #: Bump when the composed SVG changes meaning, so cached renders expire.
 RENDER_VERSION = "r1"
@@ -132,8 +135,10 @@ async def render(spec: RenderSpec, *, reader: FieldReader | None = None,
         except ValueError as exc:
             raise WeatherError(422, "out_of_range", str(exc)) from exc
         except Exception as exc:
+            # The raw error can name bucket paths: log it here, answer generically.
+            log.warning("weather field read failed (%s): %s", spec.date.isoformat(), exc)
             raise WeatherError(502, "weather_source_unavailable",
-                               f"Weather field read failed: {exc}") from exc
+                               "Weather field source is unavailable; retry later.") from exc
         fields = {name: sub.field(name) for name in needed}
         grid = (sub.lat, sub.lon)
 
