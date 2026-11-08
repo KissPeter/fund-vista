@@ -1,6 +1,6 @@
 """Fulfillment endpoints (fund-vista #147, shop #1079).
 
-``POST /v1/fulfill/ink-split`` — one SVG per distinct ink from the purchased
+``POST /v1/fulfill/ink-split`` - one SVG per distinct ink from the purchased
 design's layer-grouped draft. The request carries the design's HMAC token,
 the render params persisted on the WordPress order (the shop half of #1079)
 and the order's ink assignments.
@@ -16,8 +16,8 @@ data-source change after purchase cannot break a paid order.
 Guard rails:
 
 - the token triple is verified with the shared shop secret (same HMAC as
-  ``/v1/tokens``) — an unauthenticated fulfillment call never reads or renders;
-- the draft used for the split — stored or re-rendered — must hash back to
+  ``/v1/tokens``) - an unauthenticated fulfillment call never reads or renders;
+- the draft used for the split - stored or re-rendered - must hash back to
   the ``design_id`` (sha256 of the exact bytes); the stored file name is
   never trusted. With no intact stored copy and a re-render that does not
   match, the call fails loudly with ``409 design_mismatch`` instead of
@@ -61,6 +61,9 @@ from backend.penplot.svgmeta import stamp as svgmeta_stamp
 from backend.traffic import router as traffic_router
 from backend.traffic.schemas import ATTRIBUTION as TRAFFIC_ATTRIBUTION
 from backend.traffic.schemas import RenderRequest as TrafficRenderRequest
+from backend.weather import router as weather_router
+from backend.weather.config import ATTRIBUTION as WEATHER_ATTRIBUTION
+from backend.weather.schemas import RenderRequest as WeatherRenderRequest
 
 log = logging.getLogger(__name__)
 
@@ -96,7 +99,10 @@ def _parse_params(kind: str, params: dict[str, object]) -> object | JSONResponse
     agree with the top-level ``kind``.
     """
     cleaned = {k: v for k, v in params.items() if k != "kind"}
-    model = TrafficRenderRequest if kind == "traffic" else AirportRenderRequest
+    model = {
+        "traffic": TrafficRenderRequest,
+        "weather": WeatherRenderRequest,
+    }.get(kind, AirportRenderRequest)
     try:
         return model(**cleaned)  # type: ignore[call-arg]
     except ValidationError as exc:
@@ -175,6 +181,9 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
     if body.kind == "traffic":
         attribution = TRAFFIC_ATTRIBUTION
         group_ink = _traffic_mapper(body.inks)
+    elif body.kind == "weather":
+        attribution = WEATHER_ATTRIBUTION
+        group_ink = _weather_mapper(body.inks)
     else:
         attribution = AIRPORT_ATTRIBUTION
         group_ink = _airport_mapper(body.inks)
@@ -197,6 +206,14 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
                 return info
             svg_text, warnings, cache_hit = info["svg_text"], info["warnings"], info["cache_hit"]
             place = info["icao"]
+        elif body.kind == "weather":
+            got = await weather_router._render(parsed)
+            if isinstance(got, JSONResponse):
+                return got
+            _spec, info = got
+            # The weather artwork is the draft itself (no frame, no text).
+            svg_text, warnings, cache_hit = info["svg"], list(info["warnings"]), info["cache_hit"]
+            place = _place_from_params(body.params)
         else:
             info = await airports_router.render_document(
                 parsed, request, endpoint=endpoint, started_mono=started)
@@ -215,7 +232,7 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
         return error_response(
             409, "design_mismatch",
             "No intact stored copy of the purchased design exists and the re-rendered "
-            "draft does not match it — the renderer or its data changed since purchase.",
+            "draft does not match it - the renderer or its data changed since purchase.",
         )
 
     files: list[InkFileOut] = []
@@ -238,7 +255,7 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
                 log.warning("fulfill.ink-split design=%s pass=%s compose failed: %s",
                             body.design.design_id[:12], pass_file.ink, exc.code)
                 return error_response(exc.status, exc.code, exc.message)
-        stamped = svgmeta_stamp(pass_svg, _settings, title=f"{place} — {pass_file.ink} pass")
+        stamped = svgmeta_stamp(pass_svg, _settings, title=f"{place} - {pass_file.ink} pass")
         try:
             imaging.parse_svg_vectors(stamped.encode("utf-8"))
         except Exception as exc:  # unplottable pass: refuse the whole split
@@ -274,8 +291,8 @@ def _compose_pass(
 ) -> str:
     """Lay one ink pass out on the buyer's sheet (page, margins, title strip).
 
-    The pass keeps the draft's root tag, so its source size — and with it the
-    placement — is identical for every pass and for the preview convert. Only
+    The pass keeps the draft's root tag, so its source size - and with it the
+    placement - is identical for every pass and for the preview convert. Only
     the Pen pass draws the furniture; the others reserve the same title strip
     so the artwork registers across pens. Every stroke is black on a plain page
     (the ink is carried by the file name, shop D0): the display colour and
@@ -294,6 +311,14 @@ def _compose_pass(
         if warning not in warnings:
             warnings.append(warning)
     return result.svg_text
+
+
+def _weather_mapper(inks):
+    """Group-id → ink mapping for the weather kind (data layers → their buyer
+    ink, basemap and city labels → the Pen)."""
+    def group_ink(group_id: str) -> str:
+        return splitter.weather_group_ink(group_id, inks.pen, inks.weather_layer_colors)
+    return group_ink
 
 
 def _airport_mapper(inks):
