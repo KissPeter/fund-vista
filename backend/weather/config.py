@@ -63,14 +63,14 @@ EXTREMA_L_MAX_HPA = 1005.0
 
 #: Line budget (plan section 10): about 135 stream paths and 9 m of stream
 #: line on the Europe A4 landscape sheet, at the assumed 40 mm/s pen speed.
-STREAM_MAX_PATHS = 135
-STREAM_PAPER_BUDGET_MM = 9000.0
+STREAM_MAX_PATHS = 100
+STREAM_PAPER_BUDGET_MM = 7000.0
 PLOT_SPEED_MM_S = 40.0
 #: Kilometres per degree of latitude (spherical approximation).
 KM_PER_DEG_LAT = 110.57
 #: Streamline seeding separation on the sheet (mm), Jobard-Lefer style. The
 #: budget thins by growing this, never by truncating (streamlines.streamlines).
-STREAM_SEPARATION_MM = 6.0
+STREAM_SEPARATION_MM = 8.0
 #: Shortest kept streamline (mm of paper): shorter dashes are dropped.
 STREAM_MIN_LENGTH_MM = 15.0
 #: Budget retries: the separation grows and the pass repeats, at most this often.
