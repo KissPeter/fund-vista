@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# crop-portrait FILE_OR_DIR... [--crf N]
+# Landscape clips -> centre 9:16 crop at full source height, written next to the
+# original as <name>_9x16.mp4. Originals are untouched; audio is copied as is.
+set -euo pipefail
+
+crf=16
+inputs=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --crf) crf="$2"; shift 2 ;;
+    -h|--help) sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) inputs+=("$1"); shift ;;
+  esac
+done
+[ ${#inputs[@]} -gt 0 ] || { echo "usage: crop-portrait FILE_OR_DIR... [--crf N]" >&2; exit 2; }
+
+crop_one() {
+  local src="$1" dir base out w h cw
+  dir="$(dirname "$src")"; base="$(basename "${src%.*}")"
+  out="$dir/${base}_9x16.mp4"
+  [ -e "$out" ] && { echo "skip (exists): $out"; return; }
+  IFS=, read -r w h < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
+    -of csv=p=0 "$src")
+  # 9:16 of the source height, rounded to an even width (yuv420p needs it)
+  cw=$(( (h * 9 / 16 + 1) / 2 * 2 ))
+  [ "$cw" -le "$w" ] || { echo "skip (already narrower than 9:16): $src" >&2; return; }
+  echo "$src (${w}x${h}) -> $out (${cw}x${h})"
+  ffmpeg -v error -nostdin -stats -i "$src" -map 0:v:0 -map '0:a?' -map_metadata 0 \
+    -vf "crop=${cw}:${h}:(iw-${cw})/2:0" -c:v libx264 -crf "$crf" -preset slow \
+    -pix_fmt yuv420p -c:a copy -movflags +faststart "$out"
+}
+
+for p in "${inputs[@]}"; do
+  if [ -d "$p" ]; then
+    while IFS= read -r -d '' f; do crop_one "$f"; done < <(
+      find "$p" -maxdepth 1 -type f \( -iname '*.mp4' -o -iname '*.mov' -o -iname '*.mts' -o -iname '*.m2ts' \) \
+        ! -iname '*_9x16.mp4' -print0 | sort -z)
+  else
+    crop_one "$p"
+  fi
+done
