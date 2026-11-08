@@ -41,7 +41,7 @@ import time
 from urllib.parse import urlsplit
 
 os.environ.setdefault("PENPLOT_DATA_DIR", tempfile.mkdtemp(prefix="penplot-citymap-api-"))
-os.environ["PENPLOT_RATE_LIMIT"] = "100000"
+os.environ["DISABLE_RATELIMIT"] = "True"
 
 import httpx
 import pytest

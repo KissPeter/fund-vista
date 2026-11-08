@@ -177,7 +177,8 @@ jobs:
           # developer-style environment.
           PENPLOT_DATA_DIR: /tmp/fundvista-testdata
           REDIS_CLOUD_URL: redis://127.0.0.1:1/0
-          PENPLOT_RATE_LIMIT: "100000"
+          # Rate limiter genuinely off in CI (same switch as affilio).
+          DISABLE_RATELIMIT: "True"
           PENPIXEL_HMAC_SECRET: test-secret-ci
           PYTHONPATH: .
           # Shared runner is loaded: wall-clock perf budgets get 3x headroom

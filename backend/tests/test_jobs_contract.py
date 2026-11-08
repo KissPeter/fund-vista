@@ -28,7 +28,7 @@ from typing import get_args
 
 os.environ.setdefault("PENPLOT_DATA_DIR", tempfile.mkdtemp(prefix="penplot-jobs-"))
 os.environ["REDIS_CLOUD_URL"] = "redis://127.0.0.1:1/0"
-os.environ["PENPLOT_RATE_LIMIT"] = "100000"
+os.environ["DISABLE_RATELIMIT"] = "True"
 
 import pytest
 from fastapi import FastAPI

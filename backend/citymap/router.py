@@ -264,6 +264,10 @@ async def _render_uncached(
     # Thread may have finished just as the client went away — do not
     # poison the cache with a run nobody will use.
     await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
+    if "partial_data" in warnings:
+        # Upstream lost layers/cells: serve what we have, but never pin it
+        # as the final render — the next request must refetch the gaps.
+        return svg_text, path_counts, raw_counts, False
     if store_me is not None:
         await _store_split(bbox, layers, store_me[0], store_me[1])
     await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)

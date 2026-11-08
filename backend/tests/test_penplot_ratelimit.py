@@ -29,6 +29,7 @@ def limited_server(tmp_path_factory: pytest.TempPathFactory):
     env = dict(os.environ)
     env["PENPLOT_DATA_DIR"] = data_dir
     env["LOG_LEVEL"] = "WARNING"
+    env.pop("DISABLE_RATELIMIT", None)  # this server exercises the limiter
     env["PENPLOT_RATE_LIMIT"] = "2"
     env["PENPLOT_RATE_LIMIT_WINDOW_S"] = "60"
     env["REDIS_CLOUD_URL"] = "redis://127.0.0.1:1/0"  # force memory fallback
@@ -94,6 +95,7 @@ def test_rate_limit_whitelisted_ip_not_throttled(tmp_path_factory):
     env = dict(os.environ)
     env["PENPLOT_DATA_DIR"] = data_dir
     env["LOG_LEVEL"] = "WARNING"
+    env.pop("DISABLE_RATELIMIT", None)
     env["PENPLOT_RATE_LIMIT"] = "1"
     env["PENPLOT_RATE_LIMIT_WHITELIST"] = "127.0.0.1"
     env["REDIS_CLOUD_URL"] = "redis://127.0.0.1:1/0"  # force memory fallback
