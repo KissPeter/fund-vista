@@ -111,7 +111,7 @@ def test_keys_namespace_by_kind():
 
 
 class _FlakyRedis:
-    """Every operation raises — a cache must degrade, never propagate."""
+    """Every operation raises - a cache must degrade, never propagate."""
 
     async def get(self, key):
         raise RuntimeError("redis down")
@@ -145,3 +145,34 @@ def test_corrupt_compressed_entry_reads_as_a_miss():
     cache = _cache()
     cache.configure(_CorruptRedis())
     assert asyncio.run(cache.get("k")) is None
+
+
+def test_memory_fallback_evicts_the_least_recently_used_entry():
+    cache = RedisCache("test:v1", lambda: _Settings(), "test", memory_max_entries=2)
+
+    async def run():
+        await cache.set("a", "1")
+        await cache.set("b", "2")
+        assert await cache.get("a") == "1"  # a is now the most recent
+        await cache.set("c", "3")  # over the entry cap: b goes
+        assert await cache.get("b") is None
+        assert await cache.get("a") == "1"
+        assert await cache.get("c") == "3"
+
+    asyncio.run(run())
+
+
+def test_memory_fallback_caps_total_bytes_and_refuses_a_value_over_the_cap():
+    cache = RedisCache("test:v1", lambda: _Settings(), "test", memory_max_bytes=10)
+
+    async def run():
+        assert await cache.set("a", "aaaaaa")  # 6 bytes
+        assert await cache.set("b", "bbbbbb")  # 12 bytes total: a is evicted
+        assert await cache.get("a") is None
+        assert await cache.get("b") == "bbbbbb"
+        assert not await cache.set("huge", "x" * 11)  # over the whole cap
+        assert await cache.get("huge") is None
+        assert await cache.get("b") == "bbbbbb"
+
+    asyncio.run(run())
+

@@ -7,7 +7,7 @@ settings binding.
 
 Two behaviours matter for cache hit rate:
 
-*Compression* — raw Overpass payloads and rendered SVGs are JSON/XML text
+*Compression* - raw Overpass payloads and rendered SVGs are JSON/XML text
 that deflates 6-10x. Values above ``compress_min_bytes`` are stored zlib'd
 behind a 4-byte magic header, and the ``max_cached_bytes`` ceiling is
 checked against the *stored* size. Before this, dense metro fetches
@@ -16,7 +16,7 @@ most expensive renders in the system re-fetched from Overpass every time.
 Values written before compression existed have no magic header and are
 still read back verbatim, so the change needs no key-space bump.
 
-*Batching* — tile-granular caching turns one lookup into dozens, so
+*Batching* - tile-granular caching turns one lookup into dozens, so
 ``cache_get_many``/``cache_set_many`` use MGET and a pipeline. Doing that
 serially would trade an Overpass round-trip for 90 Redis round-trips.
 """
@@ -27,10 +27,16 @@ import hashlib
 import logging
 import time
 import zlib
+from collections import OrderedDict
 
 # Marks a zlib-deflated value. Chosen to be invalid UTF-8 so it can never
 # collide with a legacy plain-text entry written before compression.
 _MAGIC = b"\x1fZL1"
+
+#: In-process fallback caps (Redis down). Least recently used entries go first
+#: once either cap is exceeded; a value bigger than the byte cap is not kept.
+MEMORY_MAX_BYTES = 64 * 1024 * 1024
+MEMORY_MAX_ENTRIES = 256
 
 
 def cache_key(prefix: str, kind: str, *parts: str) -> str:
@@ -64,13 +70,19 @@ class RedisCache:
     Redis errors are swallowed to a warning and reported as a miss.
     """
 
-    def __init__(self, prefix: str, settings_loader, label: str) -> None:
+    def __init__(self, prefix: str, settings_loader, label: str, *,
+                 memory_max_bytes: int = MEMORY_MAX_BYTES,
+                 memory_max_entries: int = MEMORY_MAX_ENTRIES) -> None:
         self.prefix = prefix
         self.label = label
         self._settings_loader = settings_loader
         self._log = logging.getLogger(f"backend.{label}.cache")
         self._redis = None
-        self._memory: dict[str, tuple[float, str]] = {}
+        # key -> (expires_at, value, size_bytes), least recently used first.
+        self._memory: OrderedDict[str, tuple[float, str, int]] = OrderedDict()
+        self._memory_bytes = 0
+        self._memory_max_bytes = memory_max_bytes
+        self._memory_max_entries = memory_max_entries
 
     # -- wiring -----------------------------------------------------------
 
@@ -78,6 +90,7 @@ class RedisCache:
         """Inject the shared Redis client (None = memory fallback)."""
         self._redis = client
         self._memory.clear()
+        self._memory_bytes = 0
 
     @property
     def redis(self):
@@ -89,8 +102,33 @@ class RedisCache:
     # -- internals --------------------------------------------------------
 
     def _prune(self, now: float) -> None:
-        for k in [k for k, (exp, _) in self._memory.items() if exp <= now]:
-            del self._memory[k]
+        for k in [k for k, entry in self._memory.items() if entry[0] <= now]:
+            self._memory_bytes -= self._memory.pop(k)[2]
+
+    def _memory_get(self, key: str) -> str | None:
+        entry = self._memory.get(key)
+        if entry is None:
+            return None
+        self._memory.move_to_end(key)
+        return entry[1]
+
+    def _memory_put(self, key: str, expires_at: float, value: str) -> bool:
+        """Store in the fallback; evicts least recently used past the caps."""
+        size = len(value.encode("utf-8"))
+        if size > self._memory_max_bytes:
+            return False
+        old = self._memory.pop(key, None)
+        if old is not None:
+            self._memory_bytes -= old[2]
+        self._memory[key] = (expires_at, value, size)
+        self._memory_bytes += size
+        while self._memory and (
+            len(self._memory) > self._memory_max_entries
+            or self._memory_bytes > self._memory_max_bytes
+        ):
+            _, evicted = self._memory.popitem(last=False)
+            self._memory_bytes -= evicted[2]
+        return True
 
     def _limits(self) -> tuple[int, int, int]:
         s = self._settings_loader()
@@ -119,8 +157,7 @@ class RedisCache:
                 return None
         now = time.time()
         self._prune(now)
-        entry = self._memory.get(key)
-        return entry[1] if entry is not None else None
+        return self._memory_get(key)
 
     async def get_many(self, keys: list[str]) -> dict[str, str]:
         """MGET ``keys``; missing/undecodable entries are simply absent."""
@@ -144,9 +181,9 @@ class RedisCache:
         now = time.time()
         self._prune(now)
         for key in keys:
-            entry = self._memory.get(key)
-            if entry is not None:
-                out[key] = entry[1]
+            value = self._memory_get(key)
+            if value is not None:
+                out[key] = value
         return out
 
     # -- writes -----------------------------------------------------------
@@ -171,8 +208,7 @@ class RedisCache:
                 self._log.warning("%s cache write failed for %s: %s", self.label, key, exc)
                 return False
         self._prune(time.time())
-        self._memory[key] = (time.time() + ttl_s, value)
-        return True
+        return self._memory_put(key, time.time() + ttl_s, value)
 
     async def set_many(self, items: dict[str, str], ttl_s: int | None = None) -> int:
         """Pipeline ``items`` in one round-trip. Returns the number stored."""
@@ -208,6 +244,8 @@ class RedisCache:
                 return 0
         self._prune(time.time())
         expiry = time.time() + ttl_s
+        stored = 0
         for key in encoded:
-            self._memory[key] = (expiry, items[key])
-        return len(encoded)
+            if self._memory_put(key, expiry, items[key]):
+                stored += 1
+        return stored
