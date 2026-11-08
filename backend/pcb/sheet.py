@@ -72,15 +72,21 @@ def compose_sheet(shapes: list[Shape], params: PcbRenderParams) -> SheetResult:
         )
     xmin, ymin, xmax, ymax = _bounds(shapes)
     width, height = xmax - xmin, ymax - ymin
-    if width <= 0 or height <= 0:
+    if width <= 0 and height <= 0:
         raise PenPlotError(
             status=422, code=ErrorCode.INVALID_PARAMS,
             message="The board has no area to plot.",
         )
 
     avail_w, avail_h = A4_W_MM - 2 * MARGIN_MM, A4_H_MM - 2 * MARGIN_MM
-    plain_scale = min(avail_w / width, avail_h / height)
-    turned_scale = min(avail_w / height, avail_h / width)
+    def fit(span_x: float, span_y: float) -> float:
+        # A zero span does not limit that axis (a lone horizontal track).
+        limit_x = avail_w / span_x if span_x > 0 else float("inf")
+        limit_y = avail_h / span_y if span_y > 0 else float("inf")
+        return min(limit_x, limit_y)
+
+    plain_scale = fit(width, height)
+    turned_scale = fit(height, width)
     rotated = turned_scale > plain_scale
     scale = turned_scale if rotated else plain_scale
     span_u = (height if rotated else width) * scale

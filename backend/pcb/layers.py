@@ -128,6 +128,10 @@ def _object_shapes(obj, excellon: bool) -> list[Shape]:
         return []
     shapes: list[Shape] = []
     for prim in obj.to_primitives(unit=MM):
+        # An aperture-macro primitive can carry its own clear exposure; a clear
+        # primitive removes material, so it is not drawn.
+        if not getattr(prim, "polarity_dark", True):
+            continue
         points = _outline_points(prim) if closed else _stroke_points(prim)
         points = _clean(points)
         if len(points) >= (3 if closed else 2):

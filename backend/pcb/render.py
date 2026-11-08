@@ -14,6 +14,7 @@ import asyncio
 import importlib
 import multiprocessing
 import os
+import re
 import tempfile
 import xml.etree.ElementTree as ET
 
@@ -30,6 +31,9 @@ SVG_NS = "http://www.w3.org/2000/svg"
 # Markers from the first 2 KB: RS-274X (%FS, G04, %MO, G75/G01) or Excellon (M48).
 _GERBER_MARKERS = ("%FS", "G04", "%MO", "G75", "G01")
 _EXCELLON_MARKER = "M48"
+# An Excellon header is M48 at the start of a line. It is checked before the
+# Gerber markers, because a routed Excellon (G05, G01 slots) also has G01.
+_EXCELLON_HEADER = re.compile(r"^\s*M48\b", re.MULTILINE)
 _STRIPPED_TAGS = {"image", "text"}
 
 # Spawn (not fork): the server process runs threads, and a fresh interpreter
@@ -44,6 +48,8 @@ def _sniff(data: bytes) -> str:
             status=422, code=ErrorCode.INVALID_PARAMS, message="The uploaded file is empty."
         )
     head = data[:SNIFF_BYTES].decode("utf-8", errors="replace")
+    if _EXCELLON_HEADER.search(head):
+        return "excellon"
     if any(marker in head for marker in _GERBER_MARKERS):
         return "gerber"
     if _EXCELLON_MARKER in head:
@@ -88,7 +94,11 @@ def _child_main(conn, target: str, data: bytes) -> None:
         module_name, _, func_name = target.partition(":")
         func = getattr(importlib.import_module(module_name), func_name)
         message = ("ok", func(data))
-    except Exception:  # any child failure is a parse failure for the parent
+    except PenPlotError as exc:
+        # A refusal raised by our own code carries a fixed, safe message
+        # (for example the object-count limit): pass it to the buyer.
+        message = ("refused", exc.message)
+    except Exception:  # any other child failure is a parse failure for the parent
         message = ("error", None)
     try:
         conn.send(message)
@@ -130,6 +140,8 @@ def run_isolated(target: str, data: bytes, timeout_s: float = PARSE_TIMEOUT_S):
         if proc.is_alive():
             proc.kill()
         proc.join()
+    if status == "refused":
+        raise PenPlotError(status=422, code=ErrorCode.INVALID_PARAMS, message=str(payload))
     if status != "ok":
         raise PenPlotError(
             status=422,

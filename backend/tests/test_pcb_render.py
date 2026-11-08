@@ -279,3 +279,64 @@ def test_meta_serves_stored_params_from_cache(monkeypatch):
     body = asyncio.run(pcb_router.get_meta(design_id))
     assert body.stats.model_dump() == stats
     assert body.params == params
+
+
+SINGLE_HORIZONTAL = (
+    b"G04 one horizontal track: zero height*\n"
+    b"%FSLAX26Y26*%\n%MOMM*%\n%ADD10C,0.250*%\nG75*\nG01*\nD10*\n"
+    b"X0Y0D02*\nX10000000Y0D01*\nM02*\n"
+)
+
+
+def test_a_zero_height_board_is_fitted_from_its_width():
+    res = _compose(SINGLE_HORIZONTAL, PcbRenderParams(layers={"tracks": {"enabled": True}}))
+    assert res.rotated is True
+    assert res.stats.strokes == 1
+    # 10 mm wide, scaled to the 277 mm long side of the sheet.
+    assert res.stats.pen_down_mm == pytest.approx(277.0, abs=0.01)
+
+
+def test_a_zero_area_board_is_still_refused():
+    from backend.pcb.layers import Shape
+
+    shapes = [Shape(layer="tracks", points=((1.0, 1.0), (1.0, 1.0)), closed=False)]
+    with pytest.raises(PenPlotError) as exc:
+        compose_sheet(shapes, PcbRenderParams(layers={"tracks": {"enabled": True}}))
+    assert "no area to plot" in exc.value.message
+
+
+def test_token_expiry_is_capped_at_the_cache_window(monkeypatch):
+    import time as time_mod
+
+    from backend.pcb import router as pcb_router
+
+    monkeypatch.setattr(
+        pcb_router, "_settings",
+        pcb_router._settings.model_copy(update={"hmac_secret": "test-secret"}),
+    )
+    window_end = int(time_mod.time()) + 300
+    token, warnings = pcb_router._sign("ab" * 32, window_end)
+    assert warnings == []
+    assert token.exp == window_end  # 24 h token capped to the 5 min window
+    uncapped, _ = pcb_router._sign("ab" * 32)
+    assert uncapped.exp > window_end
+
+
+def test_a_cache_entry_past_its_window_is_a_miss(monkeypatch):
+    import asyncio
+    import json as json_mod
+    import time as time_mod
+
+    from backend.pcb import router as pcb_router
+
+    stale = {"design_id": "ab" * 32, "expires_at": int(time_mod.time()) - 1}
+
+    async def hit(key):
+        return json_mod.dumps(stale)
+
+    async def parts(keys):
+        return {key: "x" for key in keys}
+
+    monkeypatch.setattr(pcb_router.pcb_cache, "cache_get", hit)
+    monkeypatch.setattr(pcb_router.pcb_cache, "cache_get_many", parts)
+    assert asyncio.run(pcb_router._load_cached("request-key")) is None

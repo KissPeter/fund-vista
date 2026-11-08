@@ -43,3 +43,18 @@ def test_child_exception_returns_422_without_leaking_detail():
     assert exc.value.status == 422
     assert exc.value.message == "The Gerber file could not be parsed."
     assert multiprocessing.active_children() == []
+
+
+def refuse(data: bytes) -> str:
+    """Stand-in for a parser refusal with a fixed, safe message."""
+    from backend.penplot.errors import ErrorCode
+
+    raise PenPlotError(status=422, code=ErrorCode.INVALID_PARAMS,
+                       message="The file has more than 50000 drawn objects; it is too large to plot.")
+
+
+def test_child_refusal_message_reaches_the_buyer():
+    with pytest.raises(PenPlotError) as exc:
+        run_isolated("backend.tests.test_pcb_isolation:refuse", b"x", timeout_s=20.0)
+    assert exc.value.status == 422
+    assert exc.value.message == "The file has more than 50000 drawn objects; it is too large to plot."

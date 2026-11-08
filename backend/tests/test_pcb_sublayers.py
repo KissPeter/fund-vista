@@ -76,3 +76,16 @@ def test_too_many_objects_is_rejected(monkeypatch):
         board_shapes((FIXTURES / "pcb_sublayers.gbr").read_bytes())
     assert exc.value.status == 422
     assert "too large to plot" in exc.value.message
+
+
+# A clear primitive inside an aperture macro (7-parameter vector line, exposure
+# 0) must not be drawn: only the dark circle is a pad.
+CLEAR_MACRO = (
+    b"G04 clear primitive inside a macro*\n%FSLAX26Y26*%\n%MOMM*%\n"
+    b"%AMCLR*1,1,2.0,0,0*20,0,0.6,-1,0,1,0,0*%\n%ADD10CLR*%\nD10*\nX0Y0D03*\nM02*\n"
+)
+
+
+def test_clear_macro_primitive_is_not_drawn():
+    shapes = board_shapes(CLEAR_MACRO)
+    assert _layer_counts(shapes) == {"pads": 1}

@@ -110,11 +110,19 @@ async def preview(file: UploadFile = File(...)) -> Response:
     )
 
 
-def _sign(design_id: str) -> tuple[DesignToken | None, list[str]]:
-    """The design token triple, or None with a warning when unsigned."""
+def _sign(
+    design_id: str, expires_at: int | None = None,
+) -> tuple[DesignToken | None, list[str]]:
+    """The design token triple, or None with a warning when unsigned.
+
+    ``exp`` is capped at ``expires_at`` (the cache window of the draft): the
+    draft is gone when that window ends, so a token must not outlive it.
+    """
     if not _settings.hmac_secret:
         return None, ["token_signing_unavailable"]
     exp = int(time.time()) + _settings.token_ttl_hours * 3600
+    if expires_at is not None:
+        exp = min(exp, expires_at)
     sig = design_tokens.sign_design_token(
         design_id=design_id, exp=exp, secret=_settings.hmac_secret
     )
@@ -130,6 +138,9 @@ async def _load_cached(request_key: str) -> dict | None:
         meta = json.loads(found)
     except ValueError:
         return None
+    expires_at = meta.get("expires_at")
+    if not isinstance(expires_at, int) or expires_at <= time.time():
+        return None  # no expiry recorded, or the window has ended: render again
     design_id = meta["design_id"]
     parts = await pcb_cache.cache_get_many([
         pcb_cache.svg_cache_key(design_id),
@@ -139,7 +150,7 @@ async def _load_cached(request_key: str) -> dict | None:
     if len(parts) != 3:
         return None
     meta["svg"] = parts[pcb_cache.svg_cache_key(design_id)]
-    return meta
+    return meta  # meta["expires_at"] caps the token below
 
 
 @router.post("/render", response_model=PcbRenderResponse,
@@ -172,16 +183,18 @@ async def render(
     cached = await _load_cached(request_key)
     if cached is not None:
         design_id, svg = cached["design_id"], cached["svg"]
-        token, token_warnings = _sign(design_id)
+        token, token_warnings = _sign(design_id, cached["expires_at"])
         return _response(request, spec, svg, design_id, token, cached, token_warnings, True)
 
     shapes = await asyncio.to_thread(run_isolated, "backend.pcb.layers:board_shapes", data)
     result = compose_sheet(shapes, spec)
     svg = result.svg
     design_id = design_id_for(svg)
-    token, token_warnings = _sign(design_id)
+    expires_at = int(time.time()) + pcb_settings.cache_ttl_hours * 3600
+    token, token_warnings = _sign(design_id, expires_at)
     meta = {
         "design_id": design_id,
+        "expires_at": expires_at,
         "stats": result.stats.model_dump(),
         "layers": [layer.model_dump() for layer in result.layers],
         "rotated": result.rotated,
