@@ -1,23 +1,27 @@
 """Fulfillment endpoints (fund-vista #147, shop #1079).
 
-``POST /v1/fulfill/ink-split`` — one SVG per distinct ink from the purchased
+``POST /v1/fulfill/ink-split`` - one SVG per distinct ink from the purchased
 design's layer-grouped draft. The request carries the design's HMAC token,
 the render params persisted on the WordPress order (the shop half of #1079)
 and the order's ink assignments.
 
 The purchased design is read from the penplot image store first: the bytes
 the buyer's import persisted (the order's ``POST /v1/images/{id}/retain``
-keeps them for the retained TTL). The draft is re-rendered through the
+keeps them for the retained TTL; the weather import retains at import).
+For the airport and traffic kinds the draft is re-rendered through the
 cache-aware render path only as a fallback, when no intact stored copy
-exists (missing, expired, not an SVG, not UTF-8, or hash drift). A
-re-render never runs when the stored design is intact, so a renderer or
-data-source change after purchase cannot break a paid order.
+exists (missing, expired, not an SVG, not UTF-8, or hash drift). The
+weather kind NEVER re-renders: its ERA5T values are revised after purchase,
+so a re-render would hash differently. A missing or non-intact weather copy
+answers ``410 weather_design_unavailable``. A re-render never runs when the
+stored design is intact, so a renderer or data-source change after purchase
+cannot break a paid order.
 
 Guard rails:
 
 - the token triple is verified with the shared shop secret (same HMAC as
-  ``/v1/tokens``) — an unauthenticated fulfillment call never reads or renders;
-- the draft used for the split — stored or re-rendered — must hash back to
+  ``/v1/tokens``) - an unauthenticated fulfillment call never reads or renders;
+- the draft used for the split - stored or re-rendered - must hash back to
   the ``design_id`` (sha256 of the exact bytes); the stored file name is
   never trusted. With no intact stored copy and a re-render that does not
   match, the call fails loudly with ``409 design_mismatch`` instead of
@@ -65,6 +69,7 @@ from backend.penplot.svgmeta import stamp as svgmeta_stamp
 from backend.traffic import router as traffic_router
 from backend.traffic.schemas import ATTRIBUTION as TRAFFIC_ATTRIBUTION
 from backend.traffic.schemas import RenderRequest as TrafficRenderRequest
+from backend.weather.config import ATTRIBUTION as WEATHER_ATTRIBUTION
 
 log = logging.getLogger(__name__)
 
@@ -188,9 +193,13 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
         if body.kind == "traffic":
             attribution = TRAFFIC_ATTRIBUTION
             group_ink = _traffic_mapper(body.inks)
+        elif body.kind == "weather":
+            attribution = WEATHER_ATTRIBUTION
+            group_ink = _weather_mapper(body.inks)
         else:
             attribution = AIRPORT_ATTRIBUTION
             group_ink = _airport_mapper(body.inks)
+
         pen_ink = body.inks.pen
 
         # The stored design goes first and needs no schema check: an intact paid
@@ -202,6 +211,12 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
             place = _place_from_params(body.params)
             warnings, cache_hit = ["fulfilled_from_stored_design"], True
         else:
+            if body.kind == "weather":
+                return error_response(
+                    410, "weather_design_unavailable",
+                    "The retained weather design is gone and weather is never re-rendered "
+                    "(ERA5T values change after purchase). Re-import the design to order again.",
+                )
             parsed = _parse_params(body.kind, body.params)
             if isinstance(parsed, JSONResponse):
                 return parsed
@@ -221,6 +236,7 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
                 warnings, cache_hit = info["warnings"], info["cache_hit"]
                 place = info["icao"]
 
+
     # Whichever draft was used must be the purchased design: sha256 == design_id.
     digest = splitter.design_id_for(svg_text)
     if digest != design_id:
@@ -229,7 +245,7 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
         return error_response(
             409, "design_mismatch",
             "No intact stored copy of the purchased design exists and the re-rendered "
-            "draft does not match it — the renderer or its data changed since purchase.",
+            "draft does not match it - the renderer or its data changed since purchase.",
         )
 
     files: list[InkFileOut] = []
@@ -341,8 +357,8 @@ def _compose_pass(
 ) -> str:
     """Lay one ink pass out on the buyer's sheet (page, margins, title strip).
 
-    The pass keeps the draft's root tag, so its source size — and with it the
-    placement — is identical for every pass and for the preview convert. Only
+    The pass keeps the draft's root tag, so its source size - and with it the
+    placement - is identical for every pass and for the preview convert. Only
     the Pen pass draws the furniture; the others reserve the same title strip
     so the artwork registers across pens. Every stroke is black on a plain page
     (the ink is carried by the file name, shop D0): the display colour and
@@ -361,6 +377,14 @@ def _compose_pass(
         if warning not in warnings:
             warnings.append(warning)
     return result.svg_text
+
+
+def _weather_mapper(inks):
+    """Group-id → ink mapping for the weather kind (data layers → their buyer
+    ink, basemap and city labels → the Pen)."""
+    def group_ink(group_id: str) -> str:
+        return splitter.weather_group_ink(group_id, inks.pen, inks.weather_layer_colors)
+    return group_ink
 
 
 def _airport_mapper(inks):

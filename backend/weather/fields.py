@@ -25,6 +25,9 @@ from typing import Protocol
 
 import numpy as np
 
+from backend.upstream_mock import ENV_VAR as UPSTREAM_MODE_ENV
+from backend.upstream_mock import UpstreamNotMocked
+from backend.upstream_mock import enabled as upstream_mock_enabled
 from backend.weather.config import EUROPE, LEVEL_WIND_HPA, LEVEL_Z_T_HPA, Region
 from backend.weather.config import settings as weather_settings
 from backend.weather.cache import cache_get, cache_set, weather_cache_key
@@ -47,9 +50,14 @@ ARCO_VARS = {
 #: Z500 and T500 are optional layers and are read only when asked for.
 DEFAULT_FIELDS: frozenset[str] = frozenset({"mslp_hpa", "u250", "v250"})
 
-#: Upper bound on concurrent chunk reads. A 4D chunk is about 150 MB decoded,
-#: so two at a time keeps the peak under about 300 MB on the 512 MB worker.
-MAX_CONCURRENT_READS = 2
+#: Field reads in flight across ALL requests (process-wide). One read at a
+#: time: a 4D chunk is about 150 MB decoded and a read holds READ_WORKERS of
+#: them, so the field reads never hold more than about 300 MB at once on the
+#: 512 MB worker. A second request waits for the slot instead of adding chunks.
+MAX_CONCURRENT_READS = 1
+#: Chunks one read decodes in parallel (threads inside a single read).
+READ_WORKERS = 2
+_READ_SLOTS = asyncio.Semaphore(MAX_CONCURRENT_READS)
 
 
 def check_fields(fields) -> frozenset[str]:
@@ -177,6 +185,12 @@ class ArcoEra5Reader:
     """
 
     def __init__(self, url: str | None = None) -> None:
+        if upstream_mock_enabled():
+            # Fail closed: mock mode serves synthetic fields (backend/upstream_mock/weather.py).
+            raise UpstreamNotMocked(
+                "ArcoEra5Reader (GCS ERA5 store) is not constructible while "
+                f"{UPSTREAM_MODE_ENV}=mock; the weather layer uses the synthetic reader instead"
+            )
         self._url = url or weather_settings.store_url
         self._group = None
         self._axes: dict | None = None
@@ -234,10 +248,10 @@ class ArcoEra5Reader:
                 values = values[::-1]
             return name, _convert(name, values)
 
-        # Only the requested variables are read; at most two at a time.
+        # Only the requested variables are read; READ_WORKERS chunks at a time.
         t_read = time.perf_counter()
         items = [(name, spec) for name, spec in ARCO_VARS.items() if name in wanted]
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_READS) as pool:
+        with ThreadPoolExecutor(max_workers=READ_WORKERS) as pool:
             out = dict(pool.map(one, items))
         self.last_timing = {"open_s": self._open_s, "read_s": time.perf_counter() - t_read}
 
@@ -260,7 +274,12 @@ def _convert(name: str, values: np.ndarray) -> np.ndarray:
 _default_reader: ArcoEra5Reader | None = None
 
 
-def default_reader() -> ArcoEra5Reader:
+def default_reader() -> FieldReader:
+    if upstream_mock_enabled():
+        # Mock mode: a fresh synthetic reader per call, no network, no cached store handle.
+        from backend.upstream_mock.weather import SyntheticEra5Reader
+
+        return SyntheticEra5Reader()
     global _default_reader
     if _default_reader is None:
         _default_reader = ArcoEra5Reader()
@@ -311,7 +330,8 @@ async def load_subset(when: dt.datetime, region: Region = EUROPE,
 
     if missing:
         src = reader or default_reader()
-        sub = await asyncio.to_thread(src.read, when, region, frozenset(missing))
+        async with _READ_SLOTS:
+            sub = await asyncio.to_thread(src.read, when, region, frozenset(missing))
         grid = (sub.lat, sub.lon)
         for name in missing:
             values = sub.field(name)

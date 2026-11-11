@@ -63,25 +63,92 @@ EXTREMA_L_MAX_HPA = 1005.0
 
 #: Line budget (plan section 10): about 135 stream paths and 9 m of stream
 #: line on the Europe A4 landscape sheet, at the assumed 40 mm/s pen speed.
-STREAM_MAX_PATHS = 135
-STREAM_PAPER_BUDGET_MM = 9000.0
+STREAM_MAX_PATHS = 100
+STREAM_PAPER_BUDGET_MM = 7000.0
 PLOT_SPEED_MM_S = 40.0
-#: Millimetres of paper per degree of latitude on the Europe A4 landscape
-#: layout (176 mm of map height over 38 degrees, rounded down).
-EUROPE_MM_PER_DEG = 4.6
 #: Kilometres per degree of latitude (spherical approximation).
 KM_PER_DEG_LAT = 110.57
-#: Path-length budget in kilometres of physical wind path, derived from the
-#: paper budget above: 9 m of paper at 4.6 mm per degree.
-STREAM_MAX_TOTAL_KM = STREAM_PAPER_BUDGET_MM / EUROPE_MM_PER_DEG * KM_PER_DEG_LAT
-#: Longest single streamline (degrees of path), so no path hogs the budget.
-STREAM_MAX_LINE_DEG = 15.0
-#: Streamline seeding separation in grid cells (Jobard-Lefer style).
-STREAM_SEPARATION_CELLS = 2.2
-#: Minimum speed (m/s) for a streamline seed. 0 keeps every line.
+#: Streamline seeding separation on the sheet (mm), Jobard-Lefer style. The
+#: budget thins by growing this, never by truncating (streamlines.streamlines).
+STREAM_SEPARATION_MM = 8.0
+#: Shortest kept streamline (mm of paper): shorter dashes are dropped.
+STREAM_MIN_LENGTH_MM = 15.0
+#: Budget retries: the separation grows and the pass repeats, at most this often.
+STREAM_MAX_TRIES = 6
+#: Minimum speed (m/s) for a streamline seed. 0 keeps every line (the default
+#: hero layer); a future jet-only toggle passes a positive value.
 STREAM_MIN_SPEED_MS = 0.0
 #: Area below which a closed contour ring is dropped (km^2).
 MIN_CLOSED_AREA_KM2 = 2000.0
+
+# -- Phase 2: render layers, cities, plot time ------------------------------
+
+#: Every layer id the render can draw; each is one SVG group ``data-layer``.
+LAYER_IDS = ("coast", "borders", "streamlines", "isobars", "z500", "isotherms", "markers", "cities")
+#: Order retention for a weather design (days, in hours). A weather copy is
+#: promoted to the retained TTL at import so a paid order can always be split
+#: from the stored bytes: the re-render would not match after ERA5T revisions.
+WEATHER_RETAIN_HOURS = 90 * 24
+#: Layers drawn when the request names none. The 250 hPa streamlines are the hero.
+DEFAULT_LAYERS = ("coast", "borders", "streamlines", "cities")
+#: Fields each layer needs; load_subset reads only the union for the request.
+LAYER_FIELDS: dict[str, frozenset[str]] = {
+    "coast": frozenset(),
+    "borders": frozenset(),
+    "cities": frozenset(),
+    "streamlines": frozenset({"u250", "v250"}),
+    "isobars": frozenset({"mslp_hpa"}),
+    "markers": frozenset({"mslp_hpa"}),
+    "z500": frozenset({"z500_gpm"}),
+    "isotherms": frozenset({"t500_c"}),
+}
+#: Isotherms: every n-th level is drawn heavier (plan section 1).
+ISOTHERM_HEAVY_EVERY = 4
+
+#: Sheet sizes in mm (A4 only, plan section 9 decision 1) and the artwork inset.
+#: The inset is the artwork's own clearance from the sheet edge; the frame,
+#: title and table are lettered by POST /v1/compose-sheet, not here.
+SHEET_MM = {"landscape": (297.0, 210.0), "portrait": (210.0, 297.0)}
+ARTWORK_INSET_MM = 12.0
+
+#: Plot time: pen speed in mm/s (no lift time, plan section 1 / Phase 0b).
+PLOT_SPEED_MM_S = 40.0
+#: Render refuses above this total line length (metres): ``weather_too_long``.
+#: Proposal; the owner tunes it (plan section 4).
+MAX_PLOT_LENGTH_M = 40.0
+
+#: Stroke widths in mm for the artwork groups (plotter pen widths).
+STROKE_MM = 0.25
+STROKE_HEAVY_MM = 0.5
+CITY_DOT_MM = 0.6
+#: Lettering height in mm for city, H/L and value labels (stroke font).
+LABEL_HEIGHT_MM = 2.2
+LABEL_FONT = "futural"
+LABEL_PAD_MM = 0.4
+
+#: Credit for the artwork's data (render response). The exact Copernicus wording
+#: is PENDING verification against the C3S licence page (docs/weather-sources.md);
+#: this is the placeholder from the plan, lettered by compose-sheet, not drawn here.
+ATTRIBUTION = (
+    "ERA5 reanalysis, ECMWF / Copernicus Climate Change Service, CC BY 4.0, data modified"
+)
+
+#: Region cities, label text and (lat, lon). Budapest is the default city.
+CITIES: dict[str, tuple[float, float]] = {
+    "Budapest": (47.4979, 19.0402),
+    "Vienna": (48.2082, 16.3738),
+    "Prague": (50.0755, 14.4378),
+    "Warsaw": (52.2297, 21.0122),
+    "Berlin": (52.52, 13.405),
+    "Paris": (48.8566, 2.3522),
+    "London": (51.5074, -0.1278),
+    "Madrid": (40.4168, -3.7038),
+    "Rome": (41.9028, 12.4964),
+    "Athens": (37.9838, 23.7275),
+    "Moscow": (55.7558, 37.6173),
+    "Stockholm": (59.3293, 18.0686),
+}
+DEFAULT_CITIES = ("Budapest",)
 
 
 class WeatherSettings(BaseSettings):
