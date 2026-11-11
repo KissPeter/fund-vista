@@ -52,6 +52,15 @@ dependencies = [
     # meets spec §7. Its spatial/httpfs extensions are preinstalled in the
     # Dockerfile so no runtime download is needed.
     "duckdb>=2.0",
+    # Weather map (backend/weather): contour lines on the pressure and
+    # geopotential grids. contourpy is BSD-3-Clause (Matplotlib's contour
+    # engine, no matplotlib import). Lazy-loaded by backend/weather/contours.py.
+    "contourpy>=1.2",
+    # Weather map real field reader (backend/weather/fields.py): the ARCO
+    # ERA5 Zarr store on GCS, anonymous read. zarr and gcsfs are BSD / BSD-3
+    # respectively (permissive, meets spec section 7). Imported lazily.
+    "zarr>=3.0",
+    "gcsfs>=2024.2",
 ]
 
 [dependency-groups]

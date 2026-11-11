@@ -34,6 +34,8 @@ from backend.jobs.router import router as jobs_router
 from backend.jobs.store import configure_jobs_redis
 from backend.traffic.cache import configure_traffic_redis
 from backend.traffic.router import router as traffic_router
+from backend.weather.cache import configure_weather_redis
+from backend.weather.router import router as weather_router
 from backend.penplot.compose_sheet import router as compose_sheet_router
 from backend.penplot.errors import PenPlotError
 from backend.penplot.ratelimit import configure_redis
@@ -167,6 +169,8 @@ app.include_router(airports_ui_router)
 app.include_router(wordmark_router)
 # Airport traffic (Phase 1: availability + ingest job; Mac-only until R2).
 app.include_router(traffic_router)
+# Weather map (Phase 1: availability; render and import in Phase 2).
+app.include_router(weather_router)
 # Fulfillment ink-split (fund-vista #147): one SVG per distinct ink.
 app.include_router(fulfillment_router)
 # Gerber single-file SVG preview (POST /v1/pcb/preview): same /v1 rule.
@@ -220,6 +224,7 @@ async def _startup() -> None:
         configure_pcb_redis(redis_client)
         configure_jobs_redis(redis_client)
         configure_traffic_redis(redis_client)
+        configure_weather_redis(redis_client)
         configure_mirror_health_redis(redis_client)
     except Exception as exc:
         redis_client = None
@@ -230,6 +235,7 @@ async def _startup() -> None:
         configure_pcb_redis(None)
         configure_jobs_redis(None)
         configure_traffic_redis(None)
+        configure_weather_redis(None)
         configure_mirror_health_redis(None)
         print(f"Redis unavailable, continuing without cache: {exc}")
 

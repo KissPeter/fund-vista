@@ -3,7 +3,7 @@
 The consumer is the shop's fulfillment step (shop #1079): it sends the
 order's design token (HMAC, same triple the buyer flow minted), the render
 params persisted on the WordPress order line (the shop half landed as
-``CartItem.renderParams`` — a flat JSON-safe record that embeds its
+``CartItem.renderParams`` - a flat JSON-safe record that embeds its
 ``kind`` marker) and the order's ink assignments (the #923 runway and the
 #1078 traffic layer inks). Everything is re-validated server-side; nothing
 about money or the customer passes through here.
@@ -11,13 +11,13 @@ about money or the customer passes through here.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.penplot.schemas import ConvertParams
 
-#: The buyer-pickable inks (the runway ink set, issues #923/#1078) — every
+#: The buyer-pickable inks (the runway ink set, issues #923/#1078) - every
 #: assignment is one of these, or the Pen.
 #: Green is the fourth ink of ``PAPER_PEN_MATRIX.white`` in the shop
 #: (``src/lib/runway.ts`` ``RUNWAY_INK_HEX``), so a green runway / layer pick
@@ -26,7 +26,10 @@ InkName = Literal["black", "red", "blue", "green"]
 #: The Pen itself may be white (electric-blue paper's single ink).
 PenName = Literal["black", "red", "blue", "green", "white"]
 
-Kind = Literal["airport", "traffic", "pcb"]
+#: The buyer's weather layer ink: a buyer-pickable ink, or ``auto`` (= Pen).
+WeatherInkName = Literal["black", "red", "blue", "green", "auto"]
+
+Kind = Literal["airport", "traffic", "pcb", "weather"]
 
 
 class DesignToken(BaseModel):
@@ -43,7 +46,7 @@ class InkAssignment(BaseModel):
     """The order's ink assignments: the Pen plus the explicit layer picks.
 
     Only *explicit* choices ride along (the #1078 cart contract): an absent
-    runway / layer entry means "auto" — the layer uses the Pen ink.
+    runway / layer entry means "auto" - the layer uses the Pen ink.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -51,6 +54,8 @@ class InkAssignment(BaseModel):
     pen: PenName
     runway: InkName | None = None
     layer_colors: dict[str, InkName] | None = None
+    #: Weather layer inks (the weather design only); ``auto`` = the Pen.
+    weather_layer_colors: dict[str, WeatherInkName] | None = None
 
     @field_validator("layer_colors")
     @classmethod
@@ -62,6 +67,25 @@ class InkAssignment(BaseModel):
         unknown = sorted(set(v) - set(TRAFFIC_WIRE_TO_SUFFIX))
         if unknown:
             raise ValueError(f"unknown traffic layer id(s): {', '.join(unknown)}")
+        return v
+
+    @field_validator("weather_layer_colors")
+    @classmethod
+    def _known_weather_layers(
+        cls, v: dict[str, WeatherInkName] | None
+    ) -> dict[str, WeatherInkName] | None:
+        if v is None:
+            return v
+        from backend.fulfillment.ink_split import WEATHER_PEN_LAYERS
+        from backend.weather.config import LAYER_IDS
+
+        unknown = sorted(set(v) - set(LAYER_IDS))
+        if unknown:
+            raise ValueError(f"unknown weather layer id(s): {', '.join(unknown)}")
+        pen_only = sorted(set(v) & WEATHER_PEN_LAYERS)
+        if pen_only:
+            raise ValueError(
+                f"weather layer(s) always ride the pen ink, no own ink: {', '.join(pen_only)}")
         return v
 
 
@@ -90,8 +114,8 @@ class InkSplitRequest(BaseModel):
     @classmethod
     def _params_shape(cls, v: dict[str, object]) -> dict[str, object]:
         marker = v.get("kind")
-        if marker is not None and marker not in ("airport", "traffic", "pcb"):
-            raise ValueError("params.kind must be 'airport', 'traffic' or 'pcb'")
+        if marker is not None and marker not in get_args(Kind):
+            raise ValueError("params.kind must be 'airport', 'traffic', 'pcb' or 'weather'")
         return v
 
     @model_validator(mode="after")
@@ -106,8 +130,16 @@ class InkSplitRequest(BaseModel):
             raise ValueError(f"'inks' is required for the {self.kind} design.")
         if self.kind == "airport" and self.inks.layer_colors:
             raise ValueError("layer colors belong to the traffic design")
+        if self.kind == "airport" and self.inks.weather_layer_colors:
+            raise ValueError("weather layer inks belong to the weather design")
         if self.kind == "traffic" and self.inks.runway is not None:
             raise ValueError("runway ink belongs to the airport design")
+        if self.kind == "traffic" and self.inks.weather_layer_colors:
+            raise ValueError("weather layer inks belong to the weather design")
+        if self.kind == "weather" and self.inks.runway is not None:
+            raise ValueError("runway ink belongs to the airport design")
+        if self.kind == "weather" and self.inks.layer_colors:
+            raise ValueError("layer colors belong to the traffic design")
         return self
 
 

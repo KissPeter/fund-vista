@@ -1,9 +1,9 @@
 """Live-server fixtures: REAL HTTP over a socket, no FastAPI TestClient.
 
 A separate uvicorn *subprocess* is spawned per test session on an ephemeral
-port and driven with httpx over 127.0.0.1. This exercises the full stack —
+port and driven with httpx over 127.0.0.1. This exercises the full stack -
 ASGI server, multipart parsing, routing order vs. the catch-all proxy,
-error handlers — exactly as production serves it.
+error handlers - exactly as production serves it.
 
 Point PENPLOT_DATA_DIR at a tmp dir so tests never touch real data.
 """
@@ -113,3 +113,19 @@ def _reset_overpass_mirror_parks():
     overpass_mirrors.reset()
     yield
     overpass_mirrors.reset()
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "network: live call to an external store; skipped unless selected with -m network"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Network-marked tests run only when explicitly selected with -m network."""
+    if "network" in (config.getoption("-m") or ""):
+        return
+    skip = pytest.mark.skip(reason="live network test; run with -m network")
+    for item in items:
+        if "network" in item.keywords:
+            item.add_marker(skip)

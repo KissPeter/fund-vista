@@ -3,11 +3,13 @@
 The renderers emit one top-level ``<g id="...">`` group per layer
 (``backend/traffic/render.py``: ``traffic-<layer>``; ``backend/airports/render.py``:
 ``runways`` / ``runway-marks`` / ``osm-runways`` / ``context-*`` / ``osm-*``;
-``backend/citymap/render.py``: ``citymap-<layer>``). The split is **pure group
-filtering by documented group ids** — no renderer changes (shop #1079):
+``backend/citymap/render.py``: ``citymap-<layer>``; ``backend/weather/render.py``:
+``coast`` / ``borders`` / ``streamlines`` / ``isobars`` / ``z500`` / ``isotherms`` /
+``markers`` / ``cities``). The split is **pure group
+filtering by documented group ids** - no renderer changes (shop #1079):
 
 - basemap / frame / title block / label groups stay on the **Pen ink**;
-- each buyer-pickable layer group goes to its chosen ink (``auto`` ⇒ Pen —
+- each buyer-pickable layer group goes to its chosen ink (``auto`` ⇒ Pen -
   a layer without an entry uses the Pen ink, the #1078 fulfilment rule);
 - groups sharing a color merge into **one file** (one pen swap);
 - empty layers (no drawn children) produce **nothing**.
@@ -15,7 +17,7 @@ filtering by documented group ids** — no renderer changes (shop #1079):
 The splitter is byte-preserving: kept groups are carried verbatim, only the
 ``stroke=`` of a carried group's open tag is re-pointed at the pass's ink hex
 (``RUNWAY_INK_HEX`` in the shop's ``src/lib/runway.ts`` is the canonical
-palette — mirrored here as ``INK_HEX`` so a pass is internally consistent).
+palette - mirrored here as ``INK_HEX`` so a pass is internally consistent).
 Unknown group ids default to the Pen ink, so a renderer that grows a new
 layer can never strand ink outside a pass.
 
@@ -30,7 +32,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 
-#: Plotter ink hexes — the shop's ``RUNWAY_INK_HEX`` (issue #938) plus white
+#: Plotter ink hexes - the shop's ``RUNWAY_INK_HEX`` (issue #938) plus white
 #: (electric-blue paper's single ink). The pass files are re-stroked to these.
 INK_HEX: dict[str, str] = {
     "black": "#1a1a1a",
@@ -40,7 +42,7 @@ INK_HEX: dict[str, str] = {
     "white": "#ffffff",
 }
 
-#: Airport draft groups that belong to the runway layer — the shop's
+#: Airport draft groups that belong to the runway layer - the shop's
 #: ``RUNWAY_GROUP_IDS`` (``src/lib/airportSvgTint.ts``, "live backend shape";
 #: ``runway`` is a legacy alias kept for old drafts). The runway labels
 #: (``runway-marks``) are text, not the runway layer: the buyer's preview draws
@@ -99,7 +101,7 @@ def traffic_group_ink(
     """Traffic mapping: ``traffic-<suffix>`` → the buyer's layer ink or Pen.
 
     ``layer_inks`` uses the shop's wire layer ids (``arrivals`` / ``departures``
-    / ``holding`` / ``goAround`` — ``goAround`` maps to the draft's
+    / ``holding`` / ``goAround`` - ``goAround`` maps to the draft's
     ``go_around`` suffix). A suffix that is not a buyer-pickable layer
     (basemap, airfield, category pens, anything unknown) rides the Pen ink.
     """
@@ -128,6 +130,28 @@ def pcb_group_ink(group_id: str, pen_ink: str, layer_inks: dict[str, str]) -> st
     suffix = group_id[len(PCB_GROUP_PREFIX):] if group_id.startswith(PCB_GROUP_PREFIX) else ""
     return layer_inks.get(suffix) or pen_ink
 
+#: Weather layers that always ride the Pen ink: the basemap (coast,
+#: borders) and the city labels. The data layers (streamlines, isobars,
+#: z500, isotherms, markers) take their own ink when the buyer picks one.
+WEATHER_PEN_LAYERS: frozenset[str] = frozenset({"coast", "borders", "cities"})
+
+
+def weather_group_ink(
+    group_id: str, pen_ink: str, layer_inks: dict[str, str] | None
+) -> str:
+    """Weather mapping: a data layer → its buyer ink or Pen; basemap/cities → Pen.
+
+    ``layer_inks`` uses the weather layer ids (``backend/weather/config.py``
+    ``LAYER_IDS``). ``auto`` (or no entry) rides the Pen ink, like a layer the
+    buyer never picked. Unknown group ids ride the Pen ink.
+    """
+    if group_id in WEATHER_PEN_LAYERS or not layer_inks:
+        return pen_ink
+    chosen = layer_inks.get(group_id)
+    if not chosen or chosen == "auto":
+        return pen_ink
+    return chosen
+
 
 def _find_top_level_groups(svg_text: str) -> tuple[str, list[tuple[str, str | None]]]:
     """Split a draft into ``(root_open_tag, [(open_tag, body_or_None), ...])``.
@@ -136,7 +160,7 @@ def _find_top_level_groups(svg_text: str) -> tuple[str, list[tuple[str, str | No
     order: a chunk is a ``(<g ...>, body)`` pair for a group (``body`` is the
     text between the open tag and its matching ``</g>``) or a ``(element,
     None)`` pair for any other top-level element. Text between elements
-    (whitespace) is dropped — the writer re-joins with newlines, matching
+    (whitespace) is dropped - the writer re-joins with newlines, matching
     the renderers' ``"\\n".join`` output shape.
     """
     root_start = svg_text.find("<svg")
@@ -277,7 +301,7 @@ def _default_ink(group_ink):
 def design_id_for(svg_text: str) -> str:
     """The content-addressed design id of a draft (sha256 hex, lowercase).
 
-    ``design_id`` reuses the penplot ``image_id`` — the sha256 of the exact
+    ``design_id`` reuses the penplot ``image_id`` - the sha256 of the exact
     bytes (``backend/penplot/tokens.py``). Fulfillment re-renders from the
     persisted params and checks this digest before splitting, so a stale
     cache or a renderer-version bump fails loudly instead of plotting the
