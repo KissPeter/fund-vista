@@ -44,6 +44,12 @@ class Settings(BaseSettings):
         default=100, validation_alias="PENPLOT_RATE_LIMIT"
     )
     rate_limit_window_s: int = 60
+    # Master kill switch (same env name as the affilio redirect service's
+    # DISABLE_RATELIMIT): when true require_rate_limit is a no-op, so CI and
+    # local test runs are never throttled. Unset in production.
+    disable_ratelimit: bool = Field(
+        default=False, validation_alias="DISABLE_RATELIMIT"
+    )
     # NoDecode: source-side JSON decode is skipped so the raw "a, b, c" string
     # reaches the split validator below (a frozenset is a "complex" env type).
     rate_limit_whitelist: Annotated[frozenset[str], NoDecode] = frozenset()

@@ -24,8 +24,10 @@ from backend.citymap.router import router as citymap_router
 from backend.citymap.ui import ui_router as citymap_ui_router
 from backend.airports.cache import configure_airports_redis
 from backend.fulfillment.router import router as fulfillment_router
+from backend.pcb.router import router as pcb_router
 from backend.airports.router import router as airports_router
 from backend.airports.ui import ui_router as airports_ui_router
+from backend.pcb.cache import configure_pcb_redis
 from backend.wordmark.cache import configure_wordmark_redis
 from backend.wordmark.router import router as wordmark_router
 from backend.jobs.router import router as jobs_router
@@ -122,7 +124,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allow_origins,
     allow_origin_regex=settings.cors_allow_origin_regex,
-    # Shop work order §1: no credentials mode — all shop-facing endpoints
+    # Shop work order §1: no credentials mode - all shop-facing endpoints
     # stay unauthenticated, abuse-controlled by rate limits.
     allow_credentials=False,
     allow_methods=["*"],
@@ -171,6 +173,8 @@ app.include_router(traffic_router)
 app.include_router(weather_router)
 # Fulfillment ink-split (fund-vista #147): one SVG per distinct ink.
 app.include_router(fulfillment_router)
+# Gerber single-file SVG preview (POST /v1/pcb/preview): same /v1 rule.
+app.include_router(pcb_router)
 app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
 
@@ -217,6 +221,7 @@ async def _startup() -> None:
         configure_citymap_redis(redis_client)
         configure_airports_redis(redis_client)
         configure_wordmark_redis(redis_client)
+        configure_pcb_redis(redis_client)
         configure_jobs_redis(redis_client)
         configure_traffic_redis(redis_client)
         configure_weather_redis(redis_client)
@@ -227,6 +232,7 @@ async def _startup() -> None:
         configure_citymap_redis(None)
         configure_airports_redis(None)
         configure_wordmark_redis(None)
+        configure_pcb_redis(None)
         configure_jobs_redis(None)
         configure_traffic_redis(None)
         configure_weather_redis(None)

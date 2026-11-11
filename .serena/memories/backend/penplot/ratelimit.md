@@ -20,6 +20,6 @@ per-IP with a fixed-window counter — a port of the affilio project's
 - main.py startup calls `configure_redis(redis_client)` (or None on failure).
 - Tests: `backend/tests/test_penplot_ratelimit.py` (3 tests: real-HTTP 429+
   headers via `limited_server` low-limit fixture, whitelist exemption, memory
-  fallback). `conftest.py` pins session server to `PENPLOT_RATE_LIMIT=100000`
+  fallback). `conftest.py` pins session server to `DISABLE_RATELIMIT=True` (kill switch, from affilio)
   and unreachable `REDIS_CLOUD_URL=redis://127.0.0.1:1/0` for hermeticity.
 - Run backend tests: `.venv/bin/python -m pytest backend/tests` (40 passed).

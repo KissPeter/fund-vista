@@ -46,9 +46,20 @@ def test_two_rows_draw_border_column_and_row_dividers():
     assert abs(row[0][1] - row[1][1]) < 1e-9  # horizontal
 
 
+def test_corner_radius_rounds_the_border_and_zero_stays_sharp():
+    # The frame radius is the table's corner radius: a rounded border has
+    # arc points, the default 0 keeps the sharp 5-point rect.
+    sharp = _render()[0][0]
+    assert len(sharp) == 5
+    rounded, _, _ = stats_table.layout_stats_table(
+        ROWS, position="top-right", page_w=210.0, page_h=297.0, margin_mm=10.0,
+        corner_radius_mm=10.0)
+    assert len(rounded[0]) > 5
+
+
 def test_key_capitalized_in_drawn_text_extent():
     # "roads" (5 narrow glyphs) vs "16404": the value column exists and
-    # the table is wider than either bare string — i.e. two columns drew.
+    # the table is wider than either bare string - i.e. two columns drew.
     lines, _ = _render([("roads", 16404)])
     x0, _, x1, _ = _bbox(lines)
     assert x1 - x0 > 10.0
@@ -169,7 +180,7 @@ def test_pads_compose_on_the_anchored_side_only():
 def test_oversized_pads_stay_on_page_and_do_not_crash():
     # Max pads (20 mm each side) on A4: the table is laid out in the
     # shrunken inner rect, stays on the page, and does not raise. It need
-    # not fit-scale — the 2-row table still fits comfortably.
+    # not fit-scale - the 2-row table still fits comfortably.
     lines, _ = _render(
         position="top-right",
         pad_left_mm=20.0, pad_right_mm=20.0, pad_top_mm=20.0, pad_bottom_mm=20.0,
@@ -250,7 +261,7 @@ def test_stats_table_adds_strokes_over_http(http_client):
 
 def test_stats_table_disabled_is_noop_over_http(http_client):
     # Disabled-with-rows still salts the result cache key (rows are part of
-    # the canonical params), so filenames differ — but the artwork must be
+    # the canonical params), so filenames differ - but the artwork must be
     # byte-identical and the stats equal.
     image_id = upload(http_client, png_bytes()).json()["image_id"]
     plain = _convert(http_client, image_id, default_params("hatch")).json()

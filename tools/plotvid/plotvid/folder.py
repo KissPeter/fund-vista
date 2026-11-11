@@ -7,10 +7,12 @@
   keeps its own start and end: its stages begin and end with the file.
 - Images: found in FOLDER and shown as a slideshow, ``--slide-s`` seconds each
   (default 3), ordered by EXIF capture time (file mtime when missing).
+- Intro: images in FOLDER/``intro`` (if it exists), shown as a slideshow of
+  ``INTRO_SLIDE_S`` seconds each with the same settings, ordered the same way.
 - Outro: the YAML ``outro`` image or video, relative to the YAML file.
 - Config: the bundled ``folder.yaml`` unless ``--config`` is given.
 
-Order in the MP4: footage, slideshow, outro. Output goes to the same path
+Order in the MP4: intro, footage, slideshow, outro. Output goes to the same path
 with the ``raw`` folder replaced by ``processed`` (``.../raw/lhbp`` ->
 ``.../processed/lhbp/lhbp_NN.mp4``); earlier clips of that name are replaced.
 Temporary files (cache, stills, slideshow) go to ``$TMPDIR/plotvid/<folder>/``.
@@ -33,7 +35,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import yaml
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from plotvid import assign, cli, config, events, probe, render
 
@@ -45,6 +47,7 @@ EXIF_IFD = 0x8769
 EXIF_ORIENTATION = 274
 ROTATED = {5, 6, 7, 8}  # orientations that swap width and height
 PHOTO_ONLY_SIZE = (1080, 1920)
+INTRO_SLIDE_S = 2.0  # seconds per intro image, whatever --slide-s says
 
 
 def output_dir(folder: Path) -> Path:
@@ -147,13 +150,42 @@ def _outro(cfg: config.Config, size: tuple[int, int], work: Path) -> Path:
 
 
 def _still(path: Path, size: tuple[int, int], out: Path) -> Path:
-    """Full-size photo cropped to the output frame. ffmpeg re-decodes a still on
-    every frame of its 3 s hold, so a 4000+ px photo is shrunk once here."""
+    """Full-size photo, turned to portrait when the output frame is portrait, then
+    scaled to fit the frame with all of it visible. The space left over is a blurred
+    copy of the photo. Orientation comes from the pixels only: the camera's tag is
+    not reliable. ffmpeg re-decodes a still on every frame of its 3 s hold, so a
+    4000+ px photo is shrunk once here."""
     with Image.open(path) as img:
-        img = ImageOps.exif_transpose(img).convert("RGB")
-        img = ImageOps.fit(img, size, method=Image.Resampling.LANCZOS)
-        img.save(out, quality=95)
+        img = img.convert("RGB")
+        if size[1] > size[0] and img.width > img.height:
+            img = img.rotate(90, expand=True)  # PIL turns counter-clockwise, as the videos are
+        backdrop = ImageOps.fit(img, size, method=Image.Resampling.BILINEAR)
+        backdrop = backdrop.filter(ImageFilter.GaussianBlur(radius=max(size) // 40))
+        fit = ImageOps.contain(img, size, method=Image.Resampling.LANCZOS)
+        backdrop.paste(fit, ((size[0] - fit.width) // 2, (size[1] - fit.height) // 2))
+        backdrop.save(out, quality=95)
     return out
+
+
+def _shots(images: list[Path]) -> list[tuple[dt.datetime, tuple[int, int], Path]]:
+    return sorted(((taken, size, p) for p in images
+                   for taken, size in [_image_info(p)]), key=lambda t: (t[0], t[2].name))
+
+
+def _slideshow(shots: list[tuple[dt.datetime, tuple[int, int], Path]], size: tuple[int, int],
+               fps: float, cfg: config.Config, slide_s: float, work: Path,
+               label: str) -> render.Part | None:
+    """The images as one silent video of ``slide_s`` seconds each; None without images."""
+    if not shots:
+        return None
+    stills = work / f"{label}_stills"
+    stills.mkdir(exist_ok=True)
+    slides = [render.Part(kind="image", path=_still(p, size, stills / f"{i:03d}.jpg"),
+                          duration_s=slide_s, has_audio=False)
+              for i, (_, _, p) in enumerate(shots)]
+    video = work / f"{label}.mp4"
+    render.render(slides, size, fps, replace(cfg.render, transition="cut"), video)
+    return render.asset_part(video, None)
 
 
 def _footage_clips(cfg: config.Config, infos: list[probe.SourceInfo],
@@ -210,8 +242,9 @@ def process(folder: Path, cfg_path: Path, slide_s: float,
         raise RuntimeError(f"{folder}: no videos or images")
     cfg = _load_config(cfg_path, videos, work)
     infos = probe.order_sources(videos, cfg.render.rotate) if videos else []
-    shots = sorted(((taken, size, p) for p in images
-                    for taken, size in [_image_info(p)]), key=lambda t: (t[0], t[2].name))
+    shots = _shots(images)
+    intro_dir = folder / "intro"
+    intro_shots = _shots(_media(intro_dir)[1]) if intro_dir.is_dir() else []
 
     # Video sets the frame like plotvid does; a photo-only folder gets a 9:16 phone frame.
     size = render.output_size([i.display_size for i in infos]) if infos else PHOTO_ONLY_SIZE
@@ -223,30 +256,21 @@ def process(folder: Path, cfg_path: Path, slide_s: float,
     if cfg.render.watermark is not None:
         wm_size = render.watermark_image(cfg.render.watermark,
                                          round(size[0] * cfg.render.watermark_width_frac), wm_png)
-    # The length window counts the slideshow too, since every clip ends with it.
-    ending_s = outro_part.duration_s + len(shots) * slide_s
+    # The length window counts the intro, slideshow and outro too, since every clip has them.
+    ending_s = (len(intro_shots) * INTRO_SLIDE_S + outro_part.duration_s
+                + len(shots) * slide_s)
     clips = _footage_clips(cfg, infos, ending_s, overrides) if infos else [[]]
-    slide_part = None
-    if shots:
-        slideshow = work / "slideshow.mp4"
-        stills = work / "stills"
-        stills.mkdir(exist_ok=True)
-        slides = [render.Part(kind="image", path=_still(p, size, stills / f"{i:03d}.jpg"),
-                              duration_s=slide_s, has_audio=False)
-                  for i, (_, _, p) in enumerate(shots)]
-        render.render(slides, size, fps, replace(cfg.render, transition="cut"), slideshow)
-        slide_part = render.asset_part(slideshow, None)
+    intro_part = _slideshow(intro_shots, size, fps, cfg, INTRO_SLIDE_S, work, "intro")
+    slide_part = _slideshow(shots, size, fps, cfg, slide_s, work, "slideshow")
 
-    # Every clip is footage, then the slideshow, then the outro.
+    # Every clip is the intro, then footage, then the slideshow, then the outro.
     # Earlier clips of this name are replaced, so a shorter run leaves no stale ones.
     for old in out_root.glob(f"{name}_[0-9][0-9].mp4"):
         old.unlink()
     (out_root / f"{name}.mp4").unlink(missing_ok=True)
     outs = []
     for i, footage in enumerate(clips):
-        parts = list(footage)
-        if slide_part is not None:
-            parts.append(slide_part)
+        parts = [part for part in (intro_part, *footage, slide_part) if part is not None]
         parts.append(outro_part)
         out = out_root / (f"{name}.mp4" if len(clips) == 1 else f"{name}_{i + 1:02d}.mp4")
         # The logo runs over the whole clip except the outro, which carries its own.
@@ -261,6 +285,7 @@ def process(folder: Path, cfg_path: Path, slide_s: float,
         "folder": str(folder),
         "videos": [str(i.path) for i in infos],
         "images": [{"file": str(p), "taken": t.isoformat()} for t, _, p in shots],
+        "intro": [{"file": str(p), "taken": t.isoformat()} for t, _, p in intro_shots],
         "size": list(size), "fps": fps, "slide_s": slide_s, "outputs": outs,
     }
     (work / "summary.json").write_text(json.dumps(summary, indent=2))

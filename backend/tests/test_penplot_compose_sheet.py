@@ -757,7 +757,7 @@ def _apply_fix(req: dict, fix: dict) -> dict:
     elif kind == "orientation":
         page["orientation"] = fix["orientation"]
     elif kind == "margins":
-        page["margin_mm"] = 0
+        page["margin_mm"] = 10
         page["padding_mm"] = 0
     elif kind == "labelOutside":
         label["placement"] = fix["placement"]

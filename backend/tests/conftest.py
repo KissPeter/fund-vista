@@ -70,10 +70,10 @@ def live_server(tmp_path_factory: pytest.TempPathFactory):
     # rate limiter onto its in-process fallback so windows can't leak between
     # test runs.
     env["REDIS_CLOUD_URL"] = "redis://127.0.0.1:1/0"
-    # The full suite makes well under 100k requests/min; force the limiter
-    # off so tests never trip 429 accidentally (see test_penplot_ratelimit.py
+    # Rate limiting genuinely off (affilio's DISABLE_RATELIMIT switch) so
+    # tests never trip 429 accidentally (see test_penplot_ratelimit.py
     # for a dedicated low-limit server exercising the 429 path).
-    env["PENPLOT_RATE_LIMIT"] = "100000"
+    env["DISABLE_RATELIMIT"] = "True"
     # Shop bridge signing key so token endpoints exercise the real HMAC path
     # (see backend/tests/helpers.py TEST_HMAC_SECRET).
     env["PENPIXEL_HMAC_SECRET"] = TEST_HMAC_SECRET

@@ -5,9 +5,9 @@ stretch runs from its first pen event to its last, except the last source,
 which runs on to the end of the recording so the pen's trip home can be
 shown. That gives one *global* plotting time.
 
-**Parts.** Each file is one part: a new section starts where a recording
-starts. A file is not cut further; its segments are stretches between pen
-events. A segment belongs to a part only if it lies entirely inside it.
+**Parts.** The global plotting time is cut into ``videos.parts`` equal ranges,
+whatever the files are: the number of input files does not matter. A segment
+belongs to a part only if it lies entirely inside it.
 
 **Clips.** Every clip takes segments from every part, in chronological
 order, so each clip shows the drawing grow from start to finish. Footage is
@@ -17,6 +17,10 @@ never reused: a segment goes to one clip or to none.
 the last segment from the last part (``story_ok``). The search only accepts
 clips with every part present, so this holds by construction, and it is
 checked explicitly before a plan is returned.
+
+**Opening.** The first cut of a clip must not come early: each clip opens with
+one take of ``first_min_s``..``first_max_s`` (``Segment.opening``), pinned to
+its clip, and with several parts it is the clip's only part-0 segment.
 
 **Length.** A clip's length is footage + final photo + outro minus the
 crossfade overlaps (each of the ``n + 1`` joins of ``n`` segments, photo and
@@ -151,6 +155,11 @@ def part_candidates(tls: list[SourceTimeline], index: int, part: tuple[float, fl
         hi_l = tl.to_local(hi) if hi < g1 - 1e-9 else float("inf")
         out += [replace(c, part=index) for c in candidates(
             tl.strokes, seg, tl.index, level, tl.duration_s, (lo_l, hi_l), tail=tl.tail)]
+        if index == 0 and seg.first_max_s > seg.max_s:
+            long_cfg = replace(seg, min_s=max(seg.min_s, seg.first_min_s), max_s=seg.first_max_s)
+            out += [replace(c, part=index, opening=True) for c in candidates(
+                tl.strokes, long_cfg, tl.index, level, tl.duration_s, (lo_l, hi_l))
+                if c.duration_s >= seg.first_min_s - _EPS]
     return out
 
 
@@ -198,12 +207,34 @@ def _deal(segs: list[Segment], count: int, pins: dict[int, int],
     return asg
 
 
-def story_ok(segments: list[Segment], n_parts: int) -> bool:
-    """First segment from the first part, last from the last, parts in order,
-    every part present."""
+def story_ok(segments: list[Segment], n_parts: int, first_min_s: float = 0.0) -> bool:
+    """First segment from the first part (and at least ``first_min_s`` long), last
+    from the last, parts in order, every part present."""
     parts = [s.part for s in segments]
     return (bool(parts) and parts[0] == 0 and parts[-1] == n_parts - 1
+            and segments[0].duration_s >= first_min_s - _EPS
             and parts == sorted(parts) and set(parts) == set(range(n_parts)))
+
+
+def _clip_sorted(segs: list[Segment], asg: list[int], c: int) -> list[Segment]:
+    return sorted((s for s, a in zip(segs, asg) if a == c),
+                  key=lambda s: (s.part, s.source, s.start_s))
+
+
+def _openers(cands: list[Segment], count: int, rng: np.random.Generator | None,
+             jitter_rng: np.random.Generator, earliest: bool = False) -> list[Segment]:
+    """``count`` non-overlapping opening takes: as many as fit first, then the most ink
+    (or, ``earliest``, the earliest ones)."""
+    big = 1e6
+    if earliest:
+        cands = [replace(c, weight=1.0 / (1.0 + c.start_s)) for c in cands]
+    ink = max((c.weight for c in cands), default=1.0) or 1.0
+    noisy = [replace(c, weight=big + c.weight / ink * (
+        float(np.exp(jitter_rng.normal(0.0, 0.35))) if rng is not None else 1.0)) for c in cands]
+    orig = {(c.source, c.start_s, c.end_s): c for c in cands}
+    picked = [orig[(c.source, c.start_s, c.end_s)] for c in choose(noisy)]
+    picked.sort(key=lambda c: -c.weight)
+    return sorted(picked[:count], key=lambda c: (c.source, c.start_s))
 
 
 def _clip_cost(foot: list[float], m: int, budget: Budget, vids: VideosConfig) -> float:
@@ -225,11 +256,13 @@ def _in_window(foot: list[float], m: int, budget: Budget, vids: VideosConfig) ->
 
 
 def _search(segs: list[Segment], count: int, n_parts: int, budget: Budget, vids: VideosConfig,
-            rng: np.random.Generator) -> tuple[list[int], float, bool]:
+            rng: np.random.Generator,
+            opener_pins: dict[int, int] | None = None) -> tuple[list[int], float, bool]:
     """Local search over segment -> clip (or -1 = unused). Returns the
     assignment, its cost and whether every clip is inside the length window."""
     n = len(segs)
     pins = {i: count - 1 for i, s in enumerate(segs) if s.final}
+    pins.update(opener_pins or {})
     wmax = max((s.weight for s in segs), default=1.0) or 1.0
     asg = _deal(segs, count, pins, rng)
     foot = [[0.0] * n_parts for _ in range(count)]
@@ -326,7 +359,7 @@ def _search(segs: list[Segment], count: int, n_parts: int, budget: Budget, vids:
 
 
 def _plan_for(cands_by_part: list[list[Segment]], count: int, level: int, budget: Budget,
-              vids: VideosConfig) -> tuple[list[ClipPlan], list[float]] | None:
+              vids: VideosConfig, seg: SegmentConfig) -> tuple[list[ClipPlan], list[float]] | None:
     """Best clips for ``count`` clips at one relaxation level, or None."""
     n_parts = len(cands_by_part)
     # Footage no pool can exceed: skip levels that cannot possibly be enough.
@@ -336,42 +369,49 @@ def _plan_for(cands_by_part: list[list[Segment]], count: int, level: int, budget
     best = None
     for attempt in range(vids.attempts):
         rng = np.random.default_rng([vids.seed, count, level, attempt])
-        pools = [_pool(c, rng if attempt else None, 0.35) for c in cands_by_part]
-        segs = [s for pool in pools for s in pool]
+        jit = rng if attempt else None
+        openers = [c for c in cands_by_part[0] if c.opening
+                   and c.duration_s >= seg.first_min_s + budget.join_s - _EPS]
+        picked = _openers(openers, count, jit, rng, earliest=n_parts == 1)
+        if len(picked) < count:
+            continue
+        # With one part it also holds the rest, which must follow the opening takes.
+        first = [c for c in cands_by_part[0] if not c.opening
+                 and all(c.source > o.source or c.start_s >= o.end_s - _EPS for o in picked)
+                 ] if n_parts == 1 else []
+        pools = [_pool(first, jit, 0.35) if n_parts == 1 else []]
+        pools += [_pool(c, jit, 0.35) for c in cands_by_part[1:]]
+        segs = [s for pool in pools for s in pool] + picked
+        order = rng.permutation(count)
+        opener_pins = {len(segs) - count + i: int(order[i]) for i in range(count)}
         if sum(s.duration_s for s in segs) < need - _EPS or len(segs) < count * n_parts:
             continue
-        asg, cost, ok = _search(segs, count, n_parts, budget, vids, rng)
-        if ok and all(story_ok([s for s, a in zip(segs, asg) if a == c], n_parts)
-                      for c in range(count)) and (best is None or cost < best[0]):
+        asg, cost, ok = _search(segs, count, n_parts, budget, vids, rng, opener_pins)
+        clips_ok = all(story_ok(_clip_sorted(segs, asg, c), n_parts, seg.first_min_s)
+                       for c in range(count))
+        if ok and clips_ok and (best is None or cost < best[0]):
             best = (cost, segs, asg, [sum(s.duration_s for s in p) for p in pools])
     if best is None:
         return None
     _, segs, asg, pool_s = best
     clips = []
     for c in range(count):
-        mine = sorted((s for s, a in zip(segs, asg) if a == c),
-                      key=lambda s: (s.part, s.source, s.start_s))
+        mine = _clip_sorted(segs, asg, c)
         footage = sum(s.duration_s for s in mine)
         clips.append(ClipPlan(c, mine, vids.seed, level, footage, budget.total(footage, len(mine))))
     return clips, pool_s
 
 
-def story_parts(tls: list[SourceTimeline]) -> list[tuple[float, float]]:
-    """One part per file: a new section starts where a recording starts. A file is
-    not cut further; its segments are the pen-up-to-pen-up stretches."""
-    return [(tl.offset_s, tl.offset_s + tl.span_s) for tl in tls]
-
-
 def assign(tls: list[SourceTimeline], seg: SegmentConfig, vids: VideosConfig,
            budget: Budget) -> Assignment:
-    parts = story_parts(tls)
+    parts = parts_for(tls, vids.parts)
     counts = [vids.count] if isinstance(vids.count, int) else list(range(vids.max_count, 0, -1))
     cands = {lv: [part_candidates(tls, i, p, seg, lv) for i, p in enumerate(parts)]
              for lv in range(seg.max_relax + 1)}
     tried: dict[int, int | None] = {}
     for count in counts:
         for level in range(seg.max_relax + 1):
-            found = _plan_for(cands[level], count, level, budget, vids)
+            found = _plan_for(cands[level], count, level, budget, vids, seg)
             if found:
                 tried[count] = level
                 return Assignment(found[0], count, level, parts, found[1], tried)

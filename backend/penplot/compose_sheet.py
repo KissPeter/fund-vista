@@ -483,6 +483,7 @@ def _plan_sheet(body: ComposeSheetRequest, art: _Artwork) -> _Plan:
             pad_top_mm=table.pads.top,
             pad_bottom_mm=table.pads.bottom,
             display_keys=False,
+            corner_radius_mm=page.frame_radius_mm,
         )
 
     # Artwork: centred in [margin+pad+top, band_top] x [margin+pad, w-margin-pad],
@@ -588,8 +589,8 @@ def suggest_table_fixes(body: ComposeSheetRequest, art: _Artwork) -> list[dict]:
     if clears(_with_page(body, orientation=flipped)):
         fixes.append({"kind": "orientation", "orientation": flipped})
 
-    # 5. Page margin and padding at their slider minimums (0 mm).
-    if clears(_with_page(body, margin_mm=0.0, padding_mm=0.0)):
+    # 5. Page margin and padding at their slider minimums (margin 10 mm, padding 0 mm).
+    if clears(_with_page(body, margin_mm=10.0, padding_mm=0.0)):
         fixes.append({"kind": "margins"})
 
     # 6. Title block outside the frame: only when it is inside now. The first

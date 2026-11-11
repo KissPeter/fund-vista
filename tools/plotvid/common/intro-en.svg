@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1920" width="1080" height="1920">
+  <title>Pen Pixel - intro overlay (EN)</title>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#ffffff" stroke-opacity=".1" stroke-width="1.5"/>
+    </pattern>
+    <style>
+      .h{font:700 46px "Inter Tight","Helvetica Neue",Arial,sans-serif;fill:#fff}
+      .d{font:700 72px "Inter Tight","Helvetica Neue",Arial,sans-serif;fill:#fff}
+      .s{font:600 32px "Inter Tight","Helvetica Neue",Arial,sans-serif;fill:#fff;fill-opacity:.85}
+      /* 2.2 s total: 0.3 s in, 1.6 s hold, 0.3 s out. Replace "both" with "infinite" to preview on a loop. */
+      #ov{animation:inout 2.2s ease-in-out both}
+      #ul{animation:draw 2.2s linear both}
+      @keyframes inout{0%{opacity:0;transform:translateY(40px)}14%{opacity:1;transform:translateY(0)}86%{opacity:1;transform:translateY(0)}100%{opacity:0;transform:translateY(-20px)}}
+      @keyframes draw{0%,14%{stroke-dasharray:1;stroke-dashoffset:1}45%,100%{stroke-dasharray:1;stroke-dashoffset:0}}
+    </style>
+  </defs>
+  <g id="ov">
+    <rect x="90" y="1220" width="900" height="260" rx="30" fill="#1e4a7a" fill-opacity=".88"/>
+    <rect x="90" y="1220" width="900" height="260" rx="30" fill="url(#grid)"/>
+    <rect x="90" y="1220" width="900" height="260" rx="30" fill="none" stroke="#fff" stroke-opacity=".35" stroke-width="2"/>
+    <g transform="translate(106 1290) scale(.17) translate(-215 -285)">
+      <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="375,640 905,640 1030,985 250,985" stroke-width="16"/>
+        <line x1="240" y1="400" x2="1040" y2="400" stroke-width="18"/>
+        <line x1="240" y1="465" x2="1040" y2="465" stroke-width="18"/>
+      </g>
+      <g fill="#1e4a7a" stroke="#fff">
+        <rect x="215" y="375" width="55" height="115" rx="12" stroke-width="26"/>
+        <rect x="1010" y="375" width="55" height="115" rx="12" stroke-width="26"/>
+        <rect x="600" y="360" width="110" height="110" rx="18" stroke-width="28"/>
+      </g>
+      <g fill="#fff">
+        <rect x="641" y="285" width="28" height="75"/>
+        <rect x="641" y="470" width="28" height="215"/>
+        <polygon points="641,685 669,685 655,712"/>
+      </g>
+      <path d="M655,707 C720,750 820,765 900,810 C950,840 975,865 990,888" fill="none" stroke="#fff" stroke-width="14" stroke-linecap="round"/>
+    </g>
+    <text x="282" y="1296" class="h">Christmas gift idea?</text>
+    <text x="282" y="1376" class="d">pen-pixel.hu</text>
+    <path id="ul" d="M282 1408H740" pathLength="1" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+    <text x="282" y="1450" class="s">Pen-plotted art &#183; ships across Europe</text>
+  </g>
+</svg>

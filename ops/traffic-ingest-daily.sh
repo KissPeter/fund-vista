@@ -17,7 +17,7 @@
 # window.
 #
 # Env overrides: REPO (default /opt/fund-vista), API (default
-# http://127.0.0.1:8100), TRAFFIC_ICAOS (space-separated, default "LHBP"),
+# http://127.0.0.1:8100), TRAFFIC_ICAOS (space-separated, default: the 57 HU airports below),
 # TRAFFIC_DAYS (default 3), CONTAINER (default fundvista).
 # Logs to stdout (the scheduler redirects to a log file).
 set -u
@@ -39,7 +39,8 @@ fi
 
 REPO="${REPO:-/opt/fund-vista}"
 API="${API:-http://127.0.0.1:8100}"
-ICAOS="${TRAFFIC_ICAOS:-LHBP}"
+# The 57 HU airports from pass/2026-10-17.json. Overridable via TRAFFIC_ICAOS.
+ICAOS="${TRAFFIC_ICAOS:-LH0 LHBC LHBF LHBI LHBO LHBP LHBS LHCL LHDC LHDK LHDV LHEM LHER LHFC LHFH LHFM LHFP LHGD LHGR LHGY LHHH LHHO LHJK LHKD LHKE LHKH LHKI LHKK LHKT LHKV LHLI LHMR LHNK LHNS LHNY LHOY LHPA LHPP LHPR LHSA LHSB LHSI LHSK LHSM LHSN LHSS LHSU LHSY LHSZ LHTA LHTL LHTM LHUD LHUH LHVE LHZA LHZK}"
 DAYS="${TRAFFIC_DAYS:-3}"
 CONTAINER="${CONTAINER:-fundvista}"
 SLICES="$REPO/backend/traffic/slices"

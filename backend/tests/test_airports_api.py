@@ -30,7 +30,7 @@ import time
 os.environ.setdefault(
     "PENPLOT_DATA_DIR", tempfile.mkdtemp(prefix="penplot-airports-api-")
 )
-os.environ["PENPLOT_RATE_LIMIT"] = "100000"
+os.environ["DISABLE_RATELIMIT"] = "True"
 
 import httpx
 import pytest
