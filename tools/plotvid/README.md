@@ -83,6 +83,7 @@ At 10 fps the dense 0.1–0.2 s detail strokes cannot be resolved, so their labe
 
 - **Long gaps:** a gap of more than `strokes.split_over_s` (20 s) between consecutive pen events, or between the start of the source and the first event, or between the last event and the end, is split into `ceil(gap / strokes.split_piece_s)` equal pieces (7 s by default), with synthetic events at the piece boundaries. This runs before the ink check, so each piece is measured on its own. A dense line with no pen-up move would otherwise make one stroke too long for any 3–8 s segment. Gaps at or under the threshold are untouched, and `null` turns the rule off. Synthetic events are flagged in the strokes CSV and manifests (`synthetic_start`).
 - **Opening take:** no cut in the first 10 s (YouTube retention for spiro-curve-3.mp4 dropped 100% → 77% at its first cut, ~5 s). Each clip opens with one uninterrupted `first_min_s`–`first_max_s` (10–14 s) segment from the first part, which is that clip's only first-part segment. If the first file cannot supply one per clip, fewer clips are planned.
+- **Intro overlay and logo:** `--intro LANG=SVG` (repeatable) puts an animated intro (`common/intro-hu.svg`, `intro-en.svg`: 0.4–4.0 s, fade in and slide up, fade out) on every clip and writes one clip per language, `<clip>-<LANG>.mp4`. The logo is left off while the intro shows, fades in as it leaves and is hidden for the outro. The SVG's CSS animation is replayed frame by frame in `plotvid/overlay.py`.
 - **Final segment:** the last source's stretch of the timeline runs to the end of the recording, so the pen's trip home is not cut off. The plot's final segment ends at the source end and may be up to `final_extra_s` (3 s) longer than `max_s`. It always goes to the last clip.
 - **Story parts:** the plotting timeline (files laid end to end, ordered by creation time) is split into `videos.parts` (3) equal time ranges, whatever the number of files. A segment belongs to a part only if it lies wholly inside it.
 - **Every clip covers every part**, in chronological order, so it shows the drawing grow. The first segment always comes from the first part and the last from the last part (checked by `story_ok`, recorded as `story` in each manifest). Footage is never reused.
@@ -104,14 +105,26 @@ At 10 fps the dense 0.1–0.2 s detail strokes cannot be resolved, so their labe
 Runs the same plan and render on one folder of videos and photos.
 
 ```bash
-uv run python -m plotvid.folder /path/raw/lhbp [--config YAML] [--slide-s 3]
+# plain clips: lhbp_01.mp4, lhbp_02.mp4, ...
+tools/plotvid/plotvid-folder /path/raw/lhbp [--config YAML] [--slide-s 3]
+
+# one set per language, with the animated intro and fading logo: lhbp_01-hu.mp4, lhbp_01-en.mp4, ...
+tools/plotvid/plotvid-folder /path/raw/lhbp \
+  --intro hu=tools/plotvid/common/intro-hu.svg --intro en=tools/plotvid/common/intro-en.svg
+
+# re-render exactly the same clips from a saved plan (no detection or planning)
+tools/plotvid/plotvid-folder /path/raw/lhbp --plan /path/processed/lhbp/lhbp.plan.json \
+  --intro hu=tools/plotvid/common/intro-hu.svg --intro en=tools/plotvid/common/intro-en.svg
 ```
 
+- **`--intro LANG=SVG`** (repeatable): every clip is written once per language as `<clip>-<LANG>.mp4` and the plain clip is not kept. The overlay and logo are described under *Intro overlay and logo* above. The SVGs live in `tools/plotvid/common/` (copies of `raw/common`: keep them in sync when you edit one).
+- **`--plan JSON`:** every run writes `<name>.plan.json` next to the clips (segments of each clip: file, start, end, part, relaxation level; image order; seed). Replaying it skips detection and planning and renders the same clips, for example to add a language later or to re-render after changing only the overlay. The videos named in it must still be in the folder.
+
 - **Config:** the bundled `folder.yaml` (outro `assets/outro.svg`) unless `--config` is given.
-- **Output:** the folder path with `raw` replaced by `processed`: `/path/raw/lhbp` gives `/path/processed/lhbp/lhbp_01.mp4`, `_02`, ... (`lhbp.mp4` for one clip). Earlier clips of that name are deleted first, so a rerun replaces them. Without a `raw` component the output is `processed/<name>` next to the folder.
+- **Output:** the folder path with `raw` replaced by `processed`: `/path/raw/lhbp` gives `/path/processed/lhbp/lhbp_01.mp4`, `_02`, ... (`lhbp.mp4` for one clip). Earlier clips of that name (plain and `-LANG`) are deleted first, so a rerun replaces them. Without a `raw` component the output is `processed/<name>` next to the folder.
 - **Temporary files:** `$TMPDIR/plotvid/<name>/` (generated config, analysis cache, stills, slideshow, `summary.json`). Delete the cache if you change the detection settings.
 - **Videos** (`.mov`, `.mp4`, `.m4v`) go through detect, ink check and segment, ordered by container creation time. Story parts are equal time ranges of the whole timeline, not files (see above).
-- **Photos** are picked up from the same folder automatically, ordered by EXIF capture time (mtime when missing). Each is cropped to the output frame and shown for `--slide-s` seconds. The slideshow closes every clip, before the outro.
+- **Photos** are picked up from the same folder automatically, ordered by EXIF capture time (mtime when missing). Each is turned to portrait when the frame is portrait (by its shape, not the camera's tag) and shown whole, on a blurred copy of itself, for `--slide-s` seconds. The slideshow closes every clip, before the outro.
 - **Intro:** images in `intro/` inside the folder (if it exists) are shown first, 2 s each, with the same settings. The clip starts with them.
 - **Outro:** `outro` from the YAML, relative to the YAML file. An SVG is converted with `rsvg-convert`. A video outro keeps its own audio.
 - **Skipped files:** names starting with `.`, including macOS `._*` companions, and any other extension.

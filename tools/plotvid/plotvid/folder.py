@@ -12,6 +12,12 @@
 - Outro: the YAML ``outro`` image or video, relative to the YAML file.
 - Config: the bundled ``folder.yaml`` unless ``--config`` is given.
 
+Every run writes ``<name>.plan.json`` next to the clips: the segments (file, start,
+end, part) of each clip. ``--plan JSON`` replays it, re-rendering the same clips.
+
+``--intro LANG=SVG`` (repeatable) adds the animated intro overlay and the fading
+logo: every clip is then written once per language as ``<clip>-<LANG>.mp4``.
+
 Order in the MP4: intro, footage, slideshow, outro. Output goes to the same path
 with the ``raw`` folder replaced by ``processed`` (``.../raw/lhbp`` ->
 ``.../processed/lhbp/lhbp_NN.mp4``); earlier clips of that name are replaced.
@@ -37,7 +43,7 @@ from pathlib import Path
 import yaml
 from PIL import Image, ImageFilter, ImageOps
 
-from plotvid import assign, cli, config, events, probe, render
+from plotvid import assign, cli, config, events, overlay, probe, render
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "folder.yaml"
 VIDEO_EXTS = {".mov", ".mp4", ".m4v"}
@@ -189,7 +195,8 @@ def _slideshow(shots: list[tuple[dt.datetime, tuple[int, int], Path]], size: tup
 
 
 def _footage_clips(cfg: config.Config, infos: list[probe.SourceInfo],
-                   outro_s: float, overrides: dict[str, float]) -> list[list[render.Part]]:
+                   outro_s: float, overrides: dict[str, float]
+                   ) -> tuple[list[list[render.Part]], list[dict]]:
     # One worker per source: the ink check is serial within a source, so
     # separate videos are the unit that runs in parallel.
     # A per-file --detect-prominence overrides the detector's threshold for that file.
@@ -215,21 +222,41 @@ def _footage_clips(cfg: config.Config, infos: list[probe.SourceInfo],
                            f"{cfg.videos.min_total_s} s (tried {result.tried}); adjust the YAML")
     print(f"{result.count} clips (relaxation level {result.level}); tried {result.tried}; "
           f"part pools {[round(x, 1) for x in result.pool_s]} s")
-    clips = []
+    clips, plan = [], []
     for clip in result.clips:
         print(f"clip {clip.clip + 1}: {clip.footage_s:.1f} s footage, "
               f"{len(clip.segments)} segments")
-        clips.append([render.Part(kind="segment", path=infos[s.source].path,
-                                  duration_s=s.duration_s, start_s=s.start_s,
-                                  display_size=infos[s.source].display_size,
-                                  rotate=infos[s.source].rotate_filter,
-                                  has_audio=infos[s.source].has_audio, fade_audio=True)
-                      for s in clip.segments])
+        plan.append({"clip": clip.clip + 1, "footage_s": round(clip.footage_s, 3),
+                     "segments": [{"file": infos[s.source].path.name, "start_s": round(s.start_s, 3),
+                                   "end_s": round(s.end_s, 3), "part": s.part, "level": s.level,
+                                   "final": s.final} for s in clip.segments]})
+        clips.append(_parts_of(infos, [(s.source, s.start_s, s.end_s) for s in clip.segments]))
+    return clips, plan
+
+
+def _parts_of(infos: list[probe.SourceInfo], segs: list[tuple[int, float, float]]
+              ) -> list[render.Part]:
+    return [render.Part(kind="segment", path=infos[i].path, duration_s=end - start, start_s=start,
+                        display_size=infos[i].display_size, rotate=infos[i].rotate_filter,
+                        has_audio=infos[i].has_audio, fade_audio=True) for i, start, end in segs]
+
+
+def _clips_from_plan(plan: dict, infos: list[probe.SourceInfo]) -> list[list[render.Part]]:
+    """The clips of a saved plan, with no detection or planning."""
+    index = {info.path.name: i for i, info in enumerate(infos)}
+    clips = []
+    for clip in plan["clips"]:
+        missing = {s["file"] for s in clip["segments"]} - set(index)
+        if missing:
+            raise RuntimeError(f"plan needs videos that are not in the folder: {sorted(missing)}")
+        clips.append(_parts_of(infos, [(index[s["file"]], s["start_s"], s["end_s"])
+                                       for s in clip["segments"]]))
     return clips
 
 
 def process(folder: Path, cfg_path: Path, slide_s: float,
-            overrides: dict[str, float]) -> Path:
+            overrides: dict[str, float], intros: dict[str, Path] | None = None,
+            plan_path: Path | None = None) -> Path:
     folder = folder.resolve()
     name = folder.name
     out_root = output_dir(folder)
@@ -241,6 +268,9 @@ def process(folder: Path, cfg_path: Path, slide_s: float,
     if not videos and not images:
         raise RuntimeError(f"{folder}: no videos or images")
     cfg = _load_config(cfg_path, videos, work)
+    logo = cfg.render.watermark
+    if intros:  # the logo comes with the intro overlay, once the intro has gone
+        cfg = replace(cfg, render=replace(cfg.render, watermark=None))
     infos = probe.order_sources(videos, cfg.render.rotate) if videos else []
     shots = _shots(images)
     intro_dir = folder / "intro"
@@ -259,14 +289,21 @@ def process(folder: Path, cfg_path: Path, slide_s: float,
     # The length window counts the intro, slideshow and outro too, since every clip has them.
     ending_s = (len(intro_shots) * INTRO_SLIDE_S + outro_part.duration_s
                 + len(shots) * slide_s)
-    clips = _footage_clips(cfg, infos, ending_s, overrides) if infos else [[]]
+    if plan_path is not None:  # replay a saved plan: same segments, no detection
+        saved = json.loads(plan_path.read_text())
+        clips, plan = _clips_from_plan(saved, infos), saved["clips"]
+    elif infos:
+        clips, plan = _footage_clips(cfg, infos, ending_s, overrides)
+    else:
+        clips, plan = [[]], []
     intro_part = _slideshow(intro_shots, size, fps, cfg, INTRO_SLIDE_S, work, "intro")
     slide_part = _slideshow(shots, size, fps, cfg, slide_s, work, "slideshow")
 
     # Every clip is the intro, then footage, then the slideshow, then the outro.
     # Earlier clips of this name are replaced, so a shorter run leaves no stale ones.
-    for old in out_root.glob(f"{name}_[0-9][0-9].mp4"):
-        old.unlink()
+    for pattern in (f"{name}_[0-9][0-9].mp4", f"{name}_[0-9][0-9]-*.mp4", f"{name}-*.mp4"):
+        for old in out_root.glob(pattern):
+            old.unlink()
     (out_root / f"{name}.mp4").unlink(missing_ok=True)
     outs = []
     for i, footage in enumerate(clips):
@@ -278,9 +315,23 @@ def process(folder: Path, cfg_path: Path, slide_s: float,
             wm_png, wm_size, render.expected_duration(parts, cfg.render) - outro_part.duration_s)
         render.render(parts, size, fps, cfg.render, out, watermark=wm)
         duration = round(render.expected_duration(parts, cfg.render), 2)
-        outs.append({"output": str(out), "duration_s": duration})
-        print(f"{out.name}: {duration} s")
+        if intros:  # one finished clip per language: <clip>-<lang>.mp4
+            for lang, svg in intros.items():
+                final = out.with_name(f"{out.stem}-{lang}.mp4")
+                overlay.add_intro(svg, logo, outro_part.duration_s, out, final)
+                outs.append({"output": str(final), "duration_s": duration})
+                print(f"{final.name}: {duration} s")
+            out.unlink()
+        else:
+            outs.append({"output": str(out), "duration_s": duration})
+            print(f"{out.name}: {duration} s")
 
+    plan_file = out_root / f"{name}.plan.json"
+    plan_file.write_text(json.dumps({
+        "folder": str(folder), "seed": cfg.videos.seed, "parts": cfg.videos.parts,
+        "images": [p.name for _, _, p in shots], "intro_images": [p.name for _, _, p in intro_shots],
+        "slide_s": slide_s, "clips": plan}, indent=2))
+    print(f"plan -> {plan_file}")
     summary = {
         "folder": str(folder),
         "videos": [str(i.path) for i in infos],
@@ -301,7 +352,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--slide-s", type=float, default=3.0, help="seconds per image")
     ap.add_argument("--detect-prominence", action="append", default=[], metavar="FILE=DB",
                     help="pen-event threshold for one video file, e.g. BDMV.mov=3")
+    ap.add_argument("--intro", action="append", default=[], metavar="LANG=SVG",
+                    help="animated intro overlay (see plotvid.overlay) and fading logo; "
+                         "repeat for more languages: one clip per language, named "
+                         "<clip>-<LANG>.mp4, e.g. --intro hu=common/intro-hu.svg")
+    ap.add_argument("--plan", type=Path, metavar="JSON",
+                    help="replay a saved <name>.plan.json: same segments, no detection or planning")
     args = ap.parse_args(argv)
+    if args.plan is not None and not args.plan.is_file():
+        ap.error(f"no such plan: {args.plan}")
+    intros = {}
+    for item in args.intro:
+        lang, _, svg = item.partition("=")
+        if not svg or not Path(svg).is_file():
+            ap.error(f"--intro needs LANG=SVG with an existing file, got {item!r}")
+        intros[lang] = Path(svg).resolve()
     overrides = {}
     for item in args.detect_prominence:
         name, _, db = item.partition("=")
@@ -314,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"plotvid.folder: {tool} not found on PATH", file=sys.stderr)
             return 2
     try:
-        out = process(args.folder, args.config, args.slide_s, overrides)
+        out = process(args.folder, args.config, args.slide_s, overrides, intros, args.plan)
     except (RuntimeError, config.ConfigError, OSError, ValueError) as exc:
         print(f"plotvid.folder: {exc}", file=sys.stderr)
         return 1
