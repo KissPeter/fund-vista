@@ -24,7 +24,7 @@ from backend.penplot.schemas import ConvertParams
 #: is a valid order, not a 422.
 InkName = Literal["black", "red", "blue", "green"]
 #: The Pen itself may be white (electric-blue paper's single ink).
-PenName = Literal["black", "red", "blue", "green", "white"]
+PenName = Literal["black", "red", "blue", "green", "white", "pink"]
 
 Kind = Literal["airport", "traffic"]
 
