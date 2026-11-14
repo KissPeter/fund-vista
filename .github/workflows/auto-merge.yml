@@ -49,7 +49,9 @@ concurrency:
 
 jobs:
   sweep:
-    runs-on: [self-hosted, linux, ARM64]
+    # GitHub-hosted: the sweep only calls the GitHub API, and on the
+    # self-hosted runner it queued behind the gates it had just triggered.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       # The self-hosted runner is a Linux container without gh: fetch the binary
@@ -89,6 +91,6 @@ jobs:
           AUTOMERGE_GATE_WORKFLOWS: "backend-tests=integration (pytest)+schemathesis,frontend-checks=checks"
           AUTOMERGE_ADVISORY_CHECKS: ""
           AUTOMERGE_BLOCK_LABELS: automerge:block,needs-human
-          AUTOMERGE_REQUIRE_MAIN_GREEN: ${{ vars.AUTOMERGE_REQUIRE_MAIN_GREEN || 'true' }}
+          AUTOMERGE_REQUIRE_MAIN_GREEN: ${{ vars.AUTOMERGE_REQUIRE_MAIN_GREEN || 'false' }}
           AUTOMERGE_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
         run: bash .github/scripts/auto-merge-sweep.sh

@@ -275,8 +275,10 @@ ci_run_jobs_state() {
 }
 
 # fresh_ci_run <workflow> <head_sha> <merge_sha> -> the id of the newest gate
-# run that tested the current head against the current main, empty when
-# there is none
+# run on the current head, empty when there is none. A GREEN run counts
+# whatever `main` it tested (owner decision 2026-11-14: merge when the PR's own
+# CI is green; a moved `main` must not invalidate a green PR). A red or running
+# run counts only against the current main.
 fresh_ci_run() {
   local workflow="$1" head_sha="$2" merge_sha="$3" runs merge_runs
   runs="$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=50" 2>/dev/null || echo '{"workflow_runs":[]}')"
@@ -291,7 +293,8 @@ fresh_ci_run() {
       | select(
           ( .event == "pull_request"
             and (.pull_requests[0].head.sha // "") == $head
-            and (.pull_requests[0].base.sha // "") == $main )
+            and ( (.pull_requests[0].base.sha // "") == $main
+                  or .conclusion == "success" ) )
           or ( .event == "workflow_dispatch" and $merge != "" and .head_sha == $merge )
         )
     ] | sort_by(.run_number) | last | .id // empty'
