@@ -29,7 +29,7 @@ Orientation = Literal["portrait", "landscape"]
 
 # Display-only pen color (physical pen). Allowlist enforced by
 # backgrounds.LINE_COLORS at render time; any value here must be a key there.
-LineColorName = Literal["black", "white", "red", "blue", "green"]
+LineColorName = Literal["black", "white", "red", "blue", "green", "pink"]
 # Display-only page background (paper texture preview). Vendored files in
 # backend/penplot/backgrounds/ (white e-commerce frames pre-trimmed);
 # "none" is plain paper. Independent of line_color - any combination works.
