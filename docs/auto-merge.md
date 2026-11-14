@@ -129,24 +129,19 @@ the PR only when all of the following hold:
 Right before the merge the sweep re-reads the PR: if the head commit or the
 merge ref moved while the sweep was running, the PR is skipped.
 
-## 5. Why "green against the current main" and not just "green"
+## 5. Green PR CI is enough (owner decision 2026-11-14)
 
-The `pull_request` run of a gate workflow tests the **merge result** (the
-merge ref), not the branch alone. When `main` moves, every open PR gets a
-new merge ref, and the old green result says nothing about the new one.
-The sweep therefore compares the base SHA of the run with the current
-`main` SHA and merges only a run that was tested against the current
-`main`.
+The sweep merges a PR whose own gate run is green on the current head,
+whatever `main` that run tested (a PR may even be the fix for a red
+`main`). A moved `main` does not invalidate a green PR. A red or running run
+still counts only against the current `main`; a red run on an older `main`
+falls through to the dispatched verdict.
 
-Consequence: **one PR is merged per CI cycle.** After a merge, `main`
-moved, so the other PRs need a new CI run against the new `main` before
-they can be merged. With a PAT, GitHub queues that run automatically; the
-sweep merges the next PR when it comes back green. This is the behaviour
-of a merge queue without the queue.
-
-The sweep also refuses to merge anything while the gate on the current
-`main` is not green (`AUTOMERGE_REQUIRE_MAIN_GREEN`, default `true`). A
-red `main` is never made worse by a new merge.
+The sweep does **not** check the gate of `main`
+(`AUTOMERGE_REQUIRE_MAIN_GREEN`, default `false`). Set the repository
+variable `AUTOMERGE_REQUIRE_MAIN_GREEN=true` to bring the guard back. The
+sweep job runs on a GitHub-hosted runner, so it never queues behind the
+gates.
 
 ## 6. The token: `GITHUB_TOKEN` vs a PAT
 
