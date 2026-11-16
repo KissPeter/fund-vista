@@ -12,7 +12,6 @@ import hashlib
 import json
 import math
 import re
-import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
