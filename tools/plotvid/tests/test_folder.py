@@ -34,3 +34,19 @@ def test_landscape_frame_keeps_landscape_photo(tmp_path):
     with Image.open(out) as img:
         assert img.size == (640, 360)
         assert img.getpixel((5, 5))[1] < 100  # not turned
+
+
+def test_pick_shots_keeps_all_when_within_limit():
+    import random
+    shots = list(range(3))
+    assert folder._pick_shots(shots, 3, random.Random(1)) == shots
+    assert folder._pick_shots(shots[:2], 3, random.Random(1)) == [0, 1]
+
+
+def test_pick_shots_samples_limit_in_order_and_varies():
+    import random
+    shots = list(range(10))
+    rng = random.Random(42)
+    picks = [folder._pick_shots(shots, 3, rng) for _ in range(20)]
+    assert all(len(p) == 3 and p == sorted(p) and len(set(p)) == 3 for p in picks)
+    assert len({tuple(p) for p in picks}) > 1

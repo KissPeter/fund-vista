@@ -41,7 +41,7 @@ Detection and the ink check are cached in `out_dir/cache/`, keyed by path, size,
 | `dropped.csv` | Same columns for events the width gate rejected (empty when the gate is off) |
 | `summary.json` | Probe data, the detector config and its statistics |
 
-Sources are ordered by container `creation_time`, falling back to file mtime.
+Sources are ordered by container `creation_time`, falling back to file mtime. A file without the tag therefore sorts as the newest, so `cut-clip` writes `creation_time` = the original's tag + the cut's start (a phone recording's tag is its end time, so set it by hand when that matters).
 
 ## Detection
 A pen lift or drop is a short burst of noise, about 40–150 ms long, that is strongest above 8 kHz. The stepper motors are tonal and mostly lower: a direction change only shifts tones below 8 kHz, so a band starting at 2.5 kHz fired on it.
@@ -118,6 +118,8 @@ tools/plotvid/plotvid-folder /path/raw/lhbp --plan /path/processed/lhbp/lhbp.pla
 ```
 
 - **`--intro LANG=SVG`** (repeatable): every clip is written once per language as `<clip>-<LANG>.mp4` and the plain clip is not kept. The overlay and logo are described under *Intro overlay and logo* above. The SVGs live in `tools/plotvid/common/` (copies of `raw/common`: keep them in sync when you edit one).
+- **`--max-slides N`** (default 3): a clip shows at most N photos at the end, before the outro. With more photos in the folder, every clip gets its own random pick (seeded by `videos.seed`), kept in capture order. The pick is saved per clip in the plan (`images`) and reused when the plan is replayed.
+- **`--jobs N`** (default 4): clips are rendered (and given their per-language intro) in N worker processes at once; the source analysis uses the same cap.
 - **`--plan JSON`:** every run writes `<name>.plan.json` next to the clips (segments of each clip: file, start, end, part, relaxation level; image order; seed). Replaying it skips detection and planning and renders the same clips, for example to add a language later or to re-render after changing only the overlay. The videos named in it must still be in the folder.
 
 - **Config:** the bundled `folder.yaml` (outro `assets/outro.svg`) unless `--config` is given.
