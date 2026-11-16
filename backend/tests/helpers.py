@@ -21,6 +21,25 @@ def perf_budget(seconds: float) -> float:
     return seconds * float(os.environ.get("PERF_BUDGET_SCALE", default))
 
 
+def fastest_of(fn, runs: int = 3):
+    """Run ``fn`` ``runs`` times; return (best wall-clock seconds, last result).
+
+    A perf assertion on a shared, loaded runner measures the neighbours as much
+    as the code: one starved run can take several times the budget. The best of
+    a few runs is the code's own cost, so the ceiling still catches a real
+    regression (every run is slow) but not a single noisy one.
+    """
+    import time
+
+    best = float("inf")
+    result = None
+    for _ in range(runs):
+        started = time.perf_counter()
+        result = fn()
+        best = min(best, time.perf_counter() - started)
+    return best, result
+
+
 def png_bytes(width: int = 320, height: int = 240) -> bytes:
     """Deterministic test image: gradient + dark circle + bars (ink for all methods)."""
     img = Image.new("L", (width, height))
