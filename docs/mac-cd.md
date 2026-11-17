@@ -47,7 +47,7 @@ back out before it commits (see `docs/CR-005-mac-only-deployment.md`).
    `"status":"ok"`. On failure the live container is untouched.
 6. Swap: stop/rm `fundvista`, start the new image with the production flags
    (`--network fundvista-net --restart unless-stopped
-   -p 127.0.0.1:8100:8100 --cpus=5.0 --memory=4g
+   -p 127.0.0.1:8100:8100 --cpus=5.0 --memory=4g -e WORKERS=2
    -v /Users/kissp/srv/fund-vista-data:/data
    --env-file /opt/fund-vista/.env`), then smoke the live container.
 7. Rollback: if the live smoke fails, the previous image is started again

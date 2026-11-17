@@ -51,6 +51,11 @@ PORT="8100"
 SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-150}"
 FV_CPUS="${FV_CPUS:-5.0}"
 FV_MEMGB="${FV_MEMGB:-4}"
+# uvicorn workers in prod. A dense all-layer citymap render peaks near 1 GB
+# and each worker may run one (CITYMAP_RENDER_MAX_CONCURRENT), so 4 workers
+# got SIGKILLed inside the 4 GB container once the local OSM extract made
+# dense renders succeed. 2 workers keep the worst case under the limit.
+FV_WORKERS="${FV_WORKERS:-2}"
 
 log() { echo "$(date -u +%FT%TZ) $*"; }
 fail() { echo "DEPLOY FAILED: $1" >&2; exit 1; }
@@ -232,7 +237,7 @@ prod_run() {
   # shellcheck disable=SC2086
   docker run -d --name "$1" --network "$NET" --restart unless-stopped \
     -p 127.0.0.1:${PORT}:${PORT} --cpus="$FV_CPUS" --memory="${FV_MEMGB}g" \
-    -v "$DATA_DIR:/data" -e "CITYMAP_LOCAL_OSM_DB=$OSM_DB" $3 --label "fundvista.commit=$4" $5 "$2" >/dev/null
+    -v "$DATA_DIR:/data" -e "CITYMAP_LOCAL_OSM_DB=$OSM_DB" -e "WORKERS=$FV_WORKERS" $3 --label "fundvista.commit=$4" $5 "$2" >/dev/null
 }
 
 do_prune() {
