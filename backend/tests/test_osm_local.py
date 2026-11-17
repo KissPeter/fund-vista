@@ -195,11 +195,17 @@ def test_fetch_overpass_falls_through_outside_the_extract(local, monkeypatch):
                 seen["urls"] = cfg.urls
 
             async def fetch(self, query, budget_s=None):
-                return [{"type": "node", "id": 1, "lat": 0, "lon": 0}]
+                return [
+                {"type": "way", "id": 7, "nodes": [1, 2], "tags": {"highway": "primary"}},
+                {"type": "node", "id": 1, "lat": 4.5, "lon": 5.0},
+                {"type": "node", "id": 2, "lat": 4.6, "lon": 5.0},
+            ]
 
         monkeypatch.setattr(op, "OverpassClient", Fake)
         els = await op.fetch_overpass(build_overpass_query((4.5, 5.0, 5.5, 8.0), ["highways"]))
-        assert els and seen["urls"] == tuple(op.settings.overpass_urls)
+        assert seen["urls"] == tuple(op.settings.overpass_urls)
+        # public answers are converted to compact ways: inline geometry, no node dicts
+        assert els == [{"type": "way", "id": 7, "tags": {"highway": "primary"}, "g": [5.0, 4.5, 5.0, 4.6]}]
     asyncio.run(_t())
 
 
@@ -210,7 +216,7 @@ def test_local_queries_are_capped_per_worker(local, monkeypatch):
     live = {"now": 0, "max": 0}
     guard = threading.Lock()
 
-    def slow(_q, _min=0.0):
+    def slow(_q, _min=0.0, _compact=False):
         with guard:
             live["now"] += 1
             live["max"] = max(live["max"], live["now"])
@@ -357,3 +363,41 @@ def test_tile_and_split_keys_carry_the_bucket():
     bb = (47.0, 19.0, 47.1, 19.1)
     assert _tile_key((1, 2), 0.02, "roads", "m10") != _tile_key((1, 2), 0.02, "roads", "m25")
     assert _split_key(bb, ["roads"], "m10") != _split_key(bb, ["roads"], "m0")
+
+
+# ---- compact elements -----------------------------------------------------------
+
+def test_compact_pipeline_is_equivalent_to_the_node_pipeline(db):
+    """Node-form and compact elements must tile, clip and split identically."""
+    from backend.citymap.shortways import compact_elements
+    from backend.citymap.tiles import assign_to_tiles, clip_elements
+
+    store = Store(db)
+    layers = ["highways", "buildings", "paths", "water"]
+    q = ql.parse(build_overpass_query((0.5, 0.5, 4.0, 3.0), layers))
+    node_form = store.run(q)["elements"]
+    compact = store.run(q, compact=True)["elements"]
+    assert not [e for e in compact if e["type"] == "node"]  # node dicts never built
+    assert compact_elements(node_form) and {
+        (e["type"], e["id"]) for e in compact_elements(node_form)
+    } == {(e["type"], e["id"]) for e in compact}
+    box = (0.9, 0.9, 2.5, 2.2)
+    for els in (node_form, compact):
+        by_tile = assign_to_tiles(els, 1.0)
+        merged = [e for tile in sorted(by_tile) for e in by_tile[tile]]
+        clipped = clip_elements(merged, box)
+        geoms, _ = split_elements(clipped, layers)
+        key = {k: sorted(tuple(map(tuple, p)) for p in v) for k, v in geoms.items()}
+        if els is node_form:
+            want = key
+    assert key == want and any(want.values())
+
+
+def test_compact_elements_is_idempotent_and_filters_by_length():
+    from backend.citymap.shortways import compact_elements
+
+    els = _way(1, [(47.0, 19.0), (47.00005, 19.0)]) + _way(2, [(47.0, 19.0), (47.001, 19.0)])
+    once = compact_elements(els, 25.0)
+    assert [w["id"] for w in once] == [2] and once[0]["g"] == [19.0, 47.0, 19.0, 47.001]
+    assert compact_elements(once, 25.0) == once
+    assert [w["id"] for w in compact_elements(els)] == [1, 2]

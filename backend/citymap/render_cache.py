@@ -26,7 +26,7 @@ from backend.citymap.tiles import tile_ref
 # Bump when raw tile payloads may be wrong: v2 retires tiles cached from
 # Overpass answers that carried a ``remark`` (timeout/out-of-memory) and so
 # were truncated or empty.
-TILE_VERSION = "tile-v3"  # v3: payloads are early-filtered per detail bucket
+TILE_VERSION = "tile-v4"  # v4: compact ways (inline geometry), early-filtered per detail bucket
 
 
 def _tile_key(

@@ -178,12 +178,18 @@ class Store:
     def supports(self, member: Member) -> bool:
         return (member.kind, member.filter) in self._bit
 
-    def run(self, members: list[Member], min_len_m: float = 0.0) -> dict:
+    def run(
+        self, members: list[Member], min_len_m: float = 0.0, compact: bool = False,
+    ) -> dict:
         """Overpass JSON for the union of ``members`` (``out body; >; out skel``).
 
         ``min_len_m`` > 0 leaves out ways shorter than that (in SQL when the
         database stores lengths, else after the query), so they are never
         read, encoded or held. Relations are still returned.
+
+        ``compact=True`` returns citymap's compact elements (ways carry their
+        geometry as ``g = [lon, lat, ...]``, no node elements) instead of the
+        Overpass node/way/relation shape: no node dicts are ever built.
         """
         db = self._conn()
         sql_len = min_len_m > 0 and self.has_len
@@ -239,20 +245,28 @@ class Store:
                     for ref, role in json.loads(mj)
                 ],
             })
-        nodes_out: dict[int, tuple[int, int]] = {}
-        for wid, (tags, nodes_blob, coords_blob) in ways.items():
-            ids = _unpack("q", nodes_blob)
-            flat = _unpack("i", coords_blob)
-            for k, nid in enumerate(ids):
-                if nid not in nodes_out:
-                    nodes_out[nid] = (flat[2 * k], flat[2 * k + 1])
-            elements.append({
-                "type": "way", "id": wid, "nodes": list(ids), "tags": json.loads(tags),
-            })
-        for nid, (lat, lon) in nodes_out.items():
-            elements.append({"type": "node", "id": nid, "lat": lat / _E7, "lon": lon / _E7})
+        if compact:
+            for wid, (tags, _nodes_blob, coords_blob) in ways.items():
+                flat = _unpack("i", coords_blob)
+                g = [0.0] * len(flat)
+                g[0::2] = [v / _E7 for v in flat[1::2]]  # lon
+                g[1::2] = [v / _E7 for v in flat[0::2]]  # lat
+                elements.append({"type": "way", "id": wid, "tags": json.loads(tags), "g": g})
+        else:
+            nodes_out: dict[int, tuple[int, int]] = {}
+            for wid, (tags, nodes_blob, coords_blob) in ways.items():
+                ids = _unpack("q", nodes_blob)
+                flat = _unpack("i", coords_blob)
+                for k, nid in enumerate(ids):
+                    if nid not in nodes_out:
+                        nodes_out[nid] = (flat[2 * k], flat[2 * k + 1])
+                elements.append({
+                    "type": "way", "id": wid, "nodes": list(ids), "tags": json.loads(tags),
+                })
+            for nid, (lat, lon) in nodes_out.items():
+                elements.append({"type": "node", "id": nid, "lat": lat / _E7, "lon": lon / _E7})
         if min_len_m > 0 and not self.has_len:
-            elements = drop_short_ways(elements, min_len_m)
+            elements = drop_short_ways(elements, min_len_m)  # schema 1 file
         return {
             "version": 0.6,
             "generator": "fund-vista-osm-local",

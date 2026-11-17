@@ -29,7 +29,7 @@ from backend.citymap.overpass import (
     wrap_query,
 )
 from backend.citymap.render_cache import _tile_key
-from backend.citymap.shortways import bucket_key, detail_bucket, drop_short_ways, threshold_m
+from backend.citymap.shortways import bucket_key, compact_elements, detail_bucket, threshold_m
 from backend.citymap.tiles import (
     assign_to_tiles,
     clip_elements,
@@ -134,7 +134,7 @@ async def _fetch_missing(
                         )
                         cells.extend(getattr(got, "failed_cells", ()))
                         chunks.append(got)
-                    osm_all = (drop_short_ways(merge_elements(chunks), min_len), cells)
+                    osm_all = (compact_elements(merge_elements(chunks), min_len), cells)
                 except OsmApiError as exc2:
                     osm_all = exc2
             if isinstance(osm_all, OsmApiError):

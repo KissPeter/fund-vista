@@ -57,12 +57,64 @@ def polyline_length_m(latlon: list[tuple[float, float]]) -> float:
     return total
 
 
-def drop_short_ways(elements: list[dict], min_m: float) -> list[dict]:
-    """Elements without ways shorter than ``min_m`` and without their orphaned nodes.
+def g_length_m(g: list[float]) -> float:
+    """Length of a compact way geometry ``[lon0, lat0, lon1, lat1, ...]``."""
+    total = 0.0
+    for i in range(2, len(g), 2):
+        lo0, la0, lo1, la1 = g[i - 2], g[i - 1], g[i], g[i + 1]
+        cos_lat = math.cos(math.radians((la0 + la1) / 2.0))
+        dx = (lo1 - lo0) * _M_PER_DEG_LON_EQUATOR * cos_lat
+        dy = (la1 - la0) * _M_PER_DEG_LAT
+        total += math.hypot(dx, dy)
+    return total
 
-    Relations are kept (their member ways may now be absent, which the
-    splitter already tolerates). A way whose node coordinates are not all
-    available is kept: when in doubt, keep.
+
+def compact_elements(elements: list[dict], min_m: float = 0.0) -> list[dict]:
+    """Overpass node/way/relation elements -> compact elements (+ length filter).
+
+    A compact way carries its geometry inline, ``g = [lon0, lat0, lon1,
+    lat1, ...]``, and no ``nodes``: the node dicts (the bulk of an Overpass
+    answer, ~300 B each in Python) disappear and a node is ~64 B in ``g``.
+    Relations are kept as they are. Ways already compact pass through, so a
+    mixed or repeated call is harmless. Ways shorter than ``min_m`` are
+    dropped; a way with an unresolved node is kept whole-as-resolved (the
+    splitter has always skipped missing coordinates) and never dropped on
+    length alone.
+    """
+    coords: dict[int, tuple[float, float]] = {}
+    for el in elements:
+        if el.get("type") == "node" and "lat" in el and "lon" in el:
+            coords[el["id"]] = (el["lon"], el["lat"])
+    out: list[dict] = []
+    for el in elements:
+        kind = el.get("type")
+        if kind == "way":
+            if "g" in el:
+                if min_m > 0 and g_length_m(el["g"]) < min_m and len(el["g"]) >= 4:
+                    continue
+                out.append(el)
+                continue
+            refs = el.get("nodes", [])
+            g: list[float] = []
+            for r in refs:
+                c = coords.get(r)
+                if c is not None:
+                    g.append(c[0])
+                    g.append(c[1])
+            if min_m > 0 and len(g) == 2 * len(refs) and len(g) >= 4 and g_length_m(g) < min_m:
+                continue
+            out.append({"type": "way", "id": el["id"], "tags": el.get("tags") or {}, "g": g})
+        elif kind == "relation":
+            out.append(el)
+    return out
+
+
+def drop_short_ways(elements: list[dict], min_m: float) -> list[dict]:
+    """Elements without ways shorter than ``min_m`` (node form: orphaned nodes go too).
+
+    Compact ways are filtered by their inline geometry. Node-form input keeps
+    the legacy shape: ways dropped, nodes no kept way references dropped,
+    relations kept, and a way with unresolved nodes kept.
     """
     if min_m <= 0:
         return elements
@@ -75,6 +127,11 @@ def drop_short_ways(elements: list[dict], min_m: float) -> list[dict]:
     for el in elements:
         kind = el.get("type")
         if kind == "way":
+            if "g" in el:
+                if len(el["g"]) >= 4 and g_length_m(el["g"]) < min_m:
+                    continue
+                kept.append(el)
+                continue
             refs = el.get("nodes", [])
             pts = [coords[r] for r in refs if r in coords]
             if len(pts) == len(refs) and len(pts) >= 2 and polyline_length_m(pts) < min_m:

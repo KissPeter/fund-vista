@@ -60,6 +60,24 @@ ways 92k / 85k / 72k / 49k at 0 / 10 / 25 / 50 m, peak RSS 981 / 1025 / 886 /
 there; most of the ~900 MB is the Overpass-shaped element dicts themselves
 (~1.6 KB per element), not the short ways.
 
+## Compact elements (memory)
+
+A dense all-layer render held ~560k Overpass-shaped dicts (~1.6 KB each,
+~900 MB) and got workers OOM-killed in the 4 GB container (kernel log:
+`Memory cgroup out of memory: Killed process (uvicorn) anon-rss:3.3GB`).
+Elements are now *compact* from the fetch boundary on
+(`shortways.compact_elements`): a way carries its geometry inline,
+`g = [lon, lat, lon, lat, ...]`, and node dicts do not exist. The extract
+builds them directly (`Store.run(..., compact=True)`, no node dicts at all);
+public Overpass / OSM API answers are converted right after parsing. Tile
+payloads in Redis are compact too (`tile-v4`: no per-tile node duplication).
+Node-form elements still work everywhere (`split_elements`, tiles, clip), so
+mixed input is safe.
+
+Measured on Budapest 0.1x0.11 deg, all layers, same SVG byte for byte
+(sha256 identical, 10 m and 50 m): elements 560k -> 86k, peak RSS 884 -> 424
+MB at the default 10 m (733 -> 356 MB at 50 m), load 6.2 -> 4.6 s.
+
 ## Runbook (Mac mini)
 
 No new volume: the container's `/data` is already bind-mounted from

@@ -71,7 +71,7 @@ def get_store() -> Store | None:
         return _store
 
 
-def answer(query: str, min_len_m: float = 0.0) -> dict | None:
+def answer(query: str, min_len_m: float = 0.0, compact: bool = False) -> dict | None:
     store = get_store()
     if store is None or not store.fresh:
         return None
@@ -81,16 +81,16 @@ def answer(query: str, min_len_m: float = 0.0) -> dict | None:
         return None
     if not all(store.supports(m) and store.covers(m.bbox) for m in members):
         return None
-    return store.run(members, min_len_m)
+    return store.run(members, min_len_m, compact)
 
 
 async def fetch_local(query: str, min_len_m: float = 0.0) -> list[dict] | None:
-    """Elements for ``query`` from the local extract, or ``None`` to fall through."""
+    """Compact elements for ``query`` from the local extract, or ``None`` to fall through."""
     if not _db_path():
         return None
     try:
         async with _semaphore():
-            result = await asyncio.to_thread(answer, query, min_len_m)
+            result = await asyncio.to_thread(answer, query, min_len_m, True)
         return None if result is None else result["elements"]
     except Exception:  # never let the local path break a render
         log.exception("osm_local: query failed, falling back to mirrors")
