@@ -18,11 +18,13 @@ from array import array
 from pathlib import Path
 from typing import Iterable
 
+from backend.citymap.shortways import drop_short_ways, polyline_length_m
 from backend.osm_local import coverage as cov
 from backend.osm_local.ql import BBox, Member
 from backend.osm_local.selectors import Selector, registry
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
+_READABLE_SCHEMAS = ("1", "2")  # 1 has no ways.len_m: filtered after the query
 _E7 = 10_000_000
 _CHUNK = 500
 
@@ -30,7 +32,7 @@ _DDL = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE ways (
     id INTEGER PRIMARY KEY, sel INTEGER NOT NULL, tags TEXT NOT NULL,
-    nodes BLOB NOT NULL, coords BLOB NOT NULL);
+    nodes BLOB NOT NULL, coords BLOB NOT NULL, len_m REAL NOT NULL);
 CREATE VIRTUAL TABLE way_idx USING rtree(id, min_lat, max_lat, min_lon, max_lon);
 CREATE TABLE relations (
     id INTEGER PRIMARY KEY, sel INTEGER NOT NULL, tags TEXT NOT NULL,
@@ -84,7 +86,7 @@ class Writer:
         flat = [round(v * _E7) for p in latlon for v in p]
         self._ways.append((
             wid, sel, json.dumps(tags, separators=(",", ":"), ensure_ascii=False),
-            _pack("q", node_ids), _pack("i", flat),
+            _pack("q", node_ids), _pack("i", flat), polyline_length_m(latlon),
         ))
         self._way_idx.append((wid, box[0], box[2], box[1], box[3]))
         if keep_bounds:
@@ -94,7 +96,7 @@ class Writer:
             self._flush()
 
     def _flush(self) -> None:
-        self._db.executemany("INSERT INTO ways VALUES (?,?,?,?,?)", self._ways)
+        self._db.executemany("INSERT INTO ways VALUES (?,?,?,?,?,?)", self._ways)
         self._db.executemany("INSERT INTO way_idx VALUES (?,?,?,?,?)", self._way_idx)
         self._ways.clear()
         self._way_idx.clear()
@@ -146,11 +148,12 @@ class Store:
             raise StoreError(f"no database at {self.path}")
         self._local = threading.local()
         meta = dict(self._conn().execute("SELECT key, value FROM meta"))
-        if meta.get("schema") != SCHEMA_VERSION:
+        if meta.get("schema") not in _READABLE_SCHEMAS:
             raise StoreError(f"unsupported schema {meta.get('schema')!r}")
         if meta.get("byteorder") != sys.byteorder:
             raise StoreError("database was built on a machine with another byte order")
         self.meta = meta
+        self.has_len = meta.get("schema") == "2"
         self.rings: list[dict] = json.loads(meta["coverage"])
         self.sels: list[Selector] = [tuple(s) for s in json.loads(meta["selectors"])]  # type: ignore[misc]
         self._bit = {s: i for i, s in enumerate(self.sels)}
@@ -175,9 +178,16 @@ class Store:
     def supports(self, member: Member) -> bool:
         return (member.kind, member.filter) in self._bit
 
-    def run(self, members: list[Member]) -> dict:
-        """Overpass JSON for the union of ``members`` (``out body; >; out skel``)."""
+    def run(self, members: list[Member], min_len_m: float = 0.0) -> dict:
+        """Overpass JSON for the union of ``members`` (``out body; >; out skel``).
+
+        ``min_len_m`` > 0 leaves out ways shorter than that (in SQL when the
+        database stores lengths, else after the query), so they are never
+        read, encoded or held. Relations are still returned.
+        """
         db = self._conn()
+        sql_len = min_len_m > 0 and self.has_len
+        len_clause = " AND w.len_m >= ?" if sql_len else ""
         ways: dict[int, tuple[str, bytes, bytes]] = {}
         rels: dict[int, tuple[str, str]] = {}
         for m in members:
@@ -189,8 +199,9 @@ class Store:
                     "SELECT w.id, w.tags, w.nodes, w.coords FROM way_idx i "
                     "JOIN ways w ON w.id = i.id "
                     "WHERE i.min_lat <= ? AND i.max_lat >= ? "
-                    "AND i.min_lon <= ? AND i.max_lon >= ? AND (w.sel & ?) != 0",
-                    args,
+                    "AND i.min_lon <= ? AND i.max_lon >= ? AND (w.sel & ?) != 0"
+                    + len_clause,
+                    args + ((min_len_m,) if sql_len else ()),
                 ):
                     ways[wid] = (tags, nodes, coords)
             else:
@@ -213,7 +224,9 @@ class Store:
             part = needed[i : i + _CHUNK]
             marks = ",".join("?" * len(part))
             for wid, tags, nodes, coords in db.execute(
-                f"SELECT id, tags, nodes, coords FROM ways WHERE id IN ({marks})", part
+                f"SELECT id, tags, nodes, coords FROM ways w WHERE id IN ({marks})"
+                + len_clause,
+                part + ([min_len_m] if sql_len else []),
             ):
                 ways[wid] = (tags, nodes, coords)
 
@@ -238,6 +251,8 @@ class Store:
             })
         for nid, (lat, lon) in nodes_out.items():
             elements.append({"type": "node", "id": nid, "lat": lat / _E7, "lon": lon / _E7})
+        if min_len_m > 0 and not self.has_len:
+            elements = drop_short_ways(elements, min_len_m)
         return {
             "version": 0.6,
             "generator": "fund-vista-osm-local",

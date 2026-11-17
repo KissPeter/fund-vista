@@ -210,7 +210,7 @@ def test_local_queries_are_capped_per_worker(local, monkeypatch):
     live = {"now": 0, "max": 0}
     guard = threading.Lock()
 
-    def slow(_q):
+    def slow(_q, _min=0.0):
         with guard:
             live["now"] += 1
             live["max"] = max(live["max"], live["now"])
@@ -287,3 +287,73 @@ def test_uncached_renders_are_capped_per_worker(monkeypatch):
     monkeypatch.setattr(cr.settings, "render_max_concurrent", 2)
     sem = cr._render_slot()
     assert sem._value == 2 and cr._render_slot() is sem
+
+
+# ---- early length filter -------------------------------------------------------
+
+def test_buckets_floor_and_never_overshoot():
+    from backend.citymap.shortways import detail_bucket, threshold_m
+
+    assert [detail_bucket(v) for v in (0, 4.9, 5, 10, 24.9, 25, 99, 100)] == [0, 0, 5, 10, 10, 25, 50, 100]
+    assert detail_bucket(30) <= 30 and threshold_m(30) < 30  # never drops what the render keeps
+    assert threshold_m(0) == 0
+
+
+def _way(wid, pts, tags=None):
+    return [{"type": "way", "id": wid, "nodes": [wid * 10 + i for i in range(len(pts))], "tags": tags or {}}] + [
+        {"type": "node", "id": wid * 10 + i, "lat": la, "lon": lo} for i, (la, lo) in enumerate(pts)
+    ]
+
+
+def test_drop_short_ways_prunes_orphan_nodes_and_keeps_relations():
+    from backend.citymap.shortways import drop_short_ways
+
+    short = _way(1, [(47.0, 19.0), (47.00005, 19.0)])  # ~5.5 m
+    long_ = _way(2, [(47.0, 19.0), (47.001, 19.0)])  # ~110 m
+    unknown = [{"type": "way", "id": 3, "nodes": [999, 998], "tags": {}}]  # no coordinates: keep
+    rel = [{"type": "relation", "id": 9, "members": [{"type": "way", "ref": 1, "role": ""}], "tags": {}}]
+    out = drop_short_ways(short + long_ + unknown + rel, 25.0)
+    ids = {(e["type"], e["id"]) for e in out}
+    assert ("way", 1) not in ids and ("way", 2) in ids and ("way", 3) in ids and ("relation", 9) in ids
+    assert {n for t, n in ids if t == "node"} == {20, 21}  # only the kept way's nodes
+    assert drop_short_ways(short, 0) == short
+
+
+def test_store_filters_short_ways_in_sql_and_matches_the_post_filter(db):
+    from backend.citymap.shortways import drop_short_ways
+
+    store = Store(db)
+    assert store.has_len
+    q = ql.parse(build_overpass_query((0.5, 0.5, 4.0, 3.0), ["highways", "buildings", "paths", "water"]))
+    full = store.run(q)["elements"]
+    ways_full = {e["id"] for e in full if e["type"] == "way"}
+    sql = store.run(q, 150_000.0)["elements"]  # 150 km: everything in the fixture is shorter
+    assert not [e for e in sql if e["type"] == "way"]
+    mid = store.run(q, 100_000.0)["elements"]  # keeps only the 111 km road
+    assert {e["id"] for e in mid if e["type"] == "way"} == {1}
+    assert {e["id"] for e in drop_short_ways(full, 100_000.0) if e["type"] == "way"} == {1}
+    assert ways_full >= {1, 2, 3, 5}
+
+
+def test_schema_v1_database_still_works_with_a_post_filter(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "v1.sqlite"
+    _seed(path)
+    con = sqlite3.connect(path)
+    con.execute("UPDATE meta SET value='1' WHERE key='schema'")
+    con.commit()
+    con.close()
+    store = Store(path)
+    assert not store.has_len
+    q = ql.parse(build_overpass_query((0.5, 0.5, 4.0, 3.0), ["highways", "buildings"]))
+    out = store.run(q, 100_000.0)["elements"]
+    assert {e["id"] for e in out if e["type"] == "way"} == {1}
+
+
+def test_tile_and_split_keys_carry_the_bucket():
+    from backend.citymap.render_cache import _split_key, _tile_key
+
+    bb = (47.0, 19.0, 47.1, 19.1)
+    assert _tile_key((1, 2), 0.02, "roads", "m10") != _tile_key((1, 2), 0.02, "roads", "m25")
+    assert _split_key(bb, ["roads"], "m10") != _split_key(bb, ["roads"], "m0")

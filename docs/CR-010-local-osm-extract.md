@@ -38,6 +38,28 @@ queries 504. Local answers take milliseconds and have no rate limit.
   after `layers.py` selector changes (`/health` reports `stale`; it is
   then declined until rebuilt).
 
+## Early length filter ("Detail" / `min_path_len_m`)
+
+`render_svg` drops polylines shorter than `min_path_len_m` last, after
+everything was fetched and split. `citymap/shortways.py` drops them where
+elements enter our code instead:
+
+- the value is floored to a bucket (0, 5, 10, 25, 50, 100 m; threshold =
+  bucket × 0.95) so the early filter never removes a way the renderer keeps;
+  the exact filter in `render_svg` still runs last;
+- the bucket is part of the tile and split cache keys (`tile-v3`,
+  `split-v2`), so a filtered payload only serves requests in its bucket;
+- local extract: `ways.len_m` (schema 2) filtered in SQL, so short ways are
+  never read; a schema 1 file keeps working and is post-filtered;
+- public Overpass / OSM API: filtered right after parsing (a server-side
+  `if: length()` was slower on the public mirror, measured 2026-11-17).
+
+Measured on Budapest 0.1x0.11 deg, all layers (laptop, local extract): raw
+ways 92k / 85k / 72k / 49k at 0 / 10 / 25 / 50 m, peak RSS 981 / 1025 / 886 /
+820 MB. The default 10 m removes only ~8% of ways, so the memory win is small
+there; most of the ~900 MB is the Overpass-shaped element dicts themselves
+(~1.6 KB per element), not the short ways.
+
 ## Runbook (Mac mini)
 
 No new volume: the container's `/data` is already bind-mounted from

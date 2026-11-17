@@ -29,6 +29,7 @@ from backend.citymap.overpass import (
     wrap_query,
 )
 from backend.citymap.render_cache import _tile_key
+from backend.citymap.shortways import bucket_key, detail_bucket, drop_short_ways, threshold_m
 from backend.citymap.tiles import (
     assign_to_tiles,
     clip_elements,
@@ -60,6 +61,7 @@ async def _fetch_missing(
     request: Request | None = None,
     endpoint: str = "/v1/citymap/render",
     started_mono: float = 0.0,
+    min_path_len_m: float = 0.0,
 ) -> tuple[
     dict[tuple[str, tuple[int, int]], list[dict]], list[str], JSONResponse | None
 ]:
@@ -88,6 +90,12 @@ async def _fetch_missing(
     # tile and let each layer filter, instead of N reads of the same cells.
     osm_all: tuple[list[dict], list[BBox]] | OsmApiError | None = None
 
+    # Early length filter (see shortways): the extract filters in SQL, the
+    # public mirrors / OSM API are filtered right after parsing. Tiles are
+    # cached under the matching bucket key.
+    min_len = threshold_m(min_path_len_m)
+    bkey = bucket_key(detail_bucket(min_path_len_m))
+
     for layer in (name for name in _FETCH_ORDER if name in missing):
         rects = covering_rects(missing[layer])
         covered: set[tuple[int, int]] = {
@@ -104,7 +112,7 @@ async def _fetch_missing(
             # Checkpoint 2/3 boundary: race the Overpass fetch so abort stops
             # the httpx wait instead of running to completion (P2.3).
             elements = await race_cancel(
-                request, fetch_overpass(wrap_query(members)),
+                request, fetch_overpass(wrap_query(members), min_len_m=min_len),
                 endpoint=endpoint, stage="overpass", started_mono=started_mono,
             )
         except OverpassError as exc:
@@ -126,7 +134,7 @@ async def _fetch_missing(
                         )
                         cells.extend(getattr(got, "failed_cells", ()))
                         chunks.append(got)
-                    osm_all = (merge_elements(chunks), cells)
+                    osm_all = (drop_short_ways(merge_elements(chunks), min_len), cells)
                 except OsmApiError as exc2:
                     osm_all = exc2
             if isinstance(osm_all, OsmApiError):
@@ -160,7 +168,7 @@ async def _fetch_missing(
         # what the next pan will ask for. A covered tile with no features of
         # this layer is a real answer, not a miss.
         writes = {
-            _tile_key(tile, deg, layer): json.dumps(by_tile.get(tile, []))
+            _tile_key(tile, deg, layer, bkey): json.dumps(by_tile.get(tile, []))
             for tile in covered
         }
         await cache_set_many(writes, settings.tile_cache_ttl_hours * 3600)
@@ -219,6 +227,7 @@ async def _load_raw(
     request: Request | None = None,
     endpoint: str = "/v1/citymap/render",
     started_mono: float = 0.0,
+    min_path_len_m: float = 0.0,
 ) -> tuple[list[dict] | None, JSONResponse | None]:
     """Tile-cached fetch with OSM Main API fallback.
 
@@ -235,9 +244,10 @@ async def _load_raw(
     """
     deg = tile_deg_for_bbox(bbox, settings.tile_max_tiles)
     tiles = tiles_for_bbox(bbox, deg)
+    bkey = bucket_key(detail_bucket(min_path_len_m))
 
     keys = {
-        (layer, tile): _tile_key(tile, deg, layer)
+        (layer, tile): _tile_key(tile, deg, layer, bkey)
         for layer in layers
         for tile in tiles
     }
@@ -263,6 +273,7 @@ async def _load_raw(
         fetched, incomplete, err = await _fetch_missing(
             missing, deg, warnings,
             request=request, endpoint=endpoint, started_mono=started_mono,
+            min_path_len_m=min_path_len_m,
         )
         if err is not None:
             return None, err

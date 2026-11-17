@@ -56,7 +56,7 @@ def _tile_keys(bbox, layer) -> list[str]:
 def test_failed_heavy_layer_keeps_other_layers(monkeypatch):
     queries: list[str] = []
 
-    async def overpass(query, _client=None):
+    async def overpass(query, _client=None, **_kw):
         queries.append(query)
         if "building" in query:
             raise OverpassError("buildings timed out")
@@ -86,7 +86,7 @@ def test_failed_heavy_layer_keeps_other_layers(monkeypatch):
 def test_osm_api_lost_cells_are_not_cached_as_empty(monkeypatch):
     south, west, north, east = _BBOX_B
 
-    async def boom(_query, _client=None):
+    async def boom(_query, _client=None, **_kw):
         raise OverpassError("all mirrors 504")
 
     async def partial(_bbox, _client=None):
@@ -112,7 +112,7 @@ def test_osm_api_lost_cells_are_not_cached_as_empty(monkeypatch):
 
 
 def test_complete_fetch_is_not_flagged_partial(monkeypatch):
-    async def overpass(_query, _client=None):
+    async def overpass(_query, _client=None, **_kw):
         return list(_HIGHWAY_ELEMENTS)
 
     _patch(monkeypatch, overpass)

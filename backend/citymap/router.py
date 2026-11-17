@@ -29,6 +29,7 @@ from backend.cancel import (
 from backend.citymap.cache import KEY_PREFIX, cache_get
 from backend.citymap.config import settings
 from backend.citymap.fetching import _load_raw
+from backend.citymap.shortways import bucket_key, detail_bucket
 from backend.citymap.geocode import (
     BBoxTooLargeError,
     CityNotFoundError,
@@ -241,7 +242,8 @@ async def _render_heavy(
     await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started_mono)
     # P5: same area+layers with different width/minlen reuses the split
     # and skips the Overpass/tile fetch entirely.
-    split_cache = await _load_cached_split(bbox, layers, warnings)
+    bucket = bucket_key(detail_bucket(body.min_path_len_m))
+    split_cache = await _load_cached_split(bbox, layers, warnings, bucket)
     raw_elements = None
     geoms_pre: dict | None = None
     raw_counts_pre: dict | None = None
@@ -251,6 +253,7 @@ async def _render_heavy(
         raw_elements, err = await _load_raw(
             bbox, layers, warnings,
             request=request, endpoint=endpoint, started_mono=started_mono,
+            min_path_len_m=body.min_path_len_m,
         )
         if err is not None:
             return err
@@ -299,7 +302,7 @@ async def _render_heavy(
         # as the final render — the next request must refetch the gaps.
         return svg_text, path_counts, raw_counts, False
     if store_me is not None:
-        await _store_split(bbox, layers, store_me[0], store_me[1])
+        await _store_split(bbox, layers, store_me[0], store_me[1], bucket)
     await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
     return svg_text, path_counts, raw_counts, False
 

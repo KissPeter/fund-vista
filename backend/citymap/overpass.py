@@ -18,6 +18,7 @@ import httpx
 
 from backend.citymap.config import settings
 from backend.citymap.layers import selectors_for
+from backend.citymap.shortways import drop_short_ways
 from backend.http.overpass_client import OverpassClient, OverpassConfig, OverpassError
 
 log = logging.getLogger(__name__)
@@ -207,6 +208,7 @@ async def fetch_overpass(
     query: str,
     client: httpx.AsyncClient | None = None,
     budget_s: float | None = None,
+    min_len_m: float = 0.0,
 ) -> list[dict]:
     """Answer the query from the local extract, else the first healthy mirror.
 
@@ -225,9 +227,9 @@ async def fetch_overpass(
     """
     from backend.osm_local.service import fetch_local
 
-    local = await fetch_local(query)
+    local = await fetch_local(query, min_len_m)
     if local is not None:
-        return local
+        return local  # already filtered at the source
     cfg = OverpassConfig(
         urls=tuple(settings.overpass_urls),
         user_agent=settings.user_agent,
@@ -241,9 +243,12 @@ async def fetch_overpass(
         fail_park_s=settings.overpass_fail_park_s,
         name="overpass",
     )
-    return await OverpassClient(
+    elements = await OverpassClient(
         cfg, semaphore=_overpass_semaphore, error_cls=OverpassError, http=client
     ).fetch(query, budget_s)
+    # Public mirrors cannot filter by length cheaply (measured: slower), so
+    # drop short ways as soon as the payload is parsed.
+    return drop_short_ways(elements, min_len_m)
 
 
 __all__ = [
