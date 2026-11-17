@@ -45,6 +45,11 @@ class CitymapSettings(BaseSettings):
     # everything, so without a cap 6 parallel renders OOM-killed uvicorn
     # workers in the 4 GB container (observed 2026-11-17).
     local_osm_max_concurrent: int = 1
+    # Uncached renders per worker. A dense all-layer bbox peaks near 1 GB
+    # (measured: 956 MB, then 66k-path SVGs for minutes); 4 workers x several
+    # parallel renders got uvicorn workers SIGKILLed in the 4 GB container.
+    # Cache hits are not counted. 1 per worker = at most WORKERS dense renders.
+    render_max_concurrent: int = 1
     # Live-query timeout: public mirrors 504 on heavy queries (e.g.
     # buildings over a large bbox). Keep this short so we fail over to the
     # OSM Main API quickly instead of holding a worker for 2 minutes.

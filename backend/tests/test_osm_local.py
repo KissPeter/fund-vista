@@ -278,3 +278,12 @@ def test_importer_round_trip(tmp_path):
     assert {e["id"] for e in res["elements"] if e["type"] == "way"} == {10, 11}
     n1 = next(e for e in res["elements"] if e["type"] == "node" and e["id"] == 1)
     assert (n1["lat"], n1["lon"]) == (1.0, 1.0)
+
+
+def test_uncached_renders_are_capped_per_worker(monkeypatch):
+    from backend.citymap import router as cr
+
+    monkeypatch.setattr(cr, "_render_sem", None)
+    monkeypatch.setattr(cr.settings, "render_max_concurrent", 2)
+    sem = cr._render_slot()
+    assert sem._value == 2 and cr._render_slot() is sem

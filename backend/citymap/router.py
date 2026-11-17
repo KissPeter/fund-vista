@@ -189,6 +189,19 @@ async def geocode(city: str = Query(min_length=1, max_length=120)) -> GeocodeRes
     )
 
 
+_render_sem: asyncio.Semaphore | None = None
+_render_sem_cap = 0
+
+
+def _render_slot() -> asyncio.Semaphore:
+    """Per-worker cap on concurrent uncached renders (memory, see config)."""
+    global _render_sem, _render_sem_cap
+    want = max(1, int(settings.render_max_concurrent))
+    if _render_sem is None or _render_sem_cap != want:
+        _render_sem, _render_sem_cap = asyncio.Semaphore(want), want
+    return _render_sem
+
+
 async def _render_uncached(
     bbox: BBox, layers: list[str], body: RenderRequest,
     svg_key: str, counts_key: str, warnings: list[str],
@@ -207,6 +220,23 @@ async def _render_uncached(
     if cached is not None:
         svg_text, path_counts, raw_counts = cached
         return svg_text, path_counts, raw_counts, True
+    # Dense renders hold ~1 GB (raw elements + split + SVG) for a minute or
+    # more; cache hits above never queue behind them. See render_max_concurrent.
+    async with _render_slot():
+        return await _render_heavy(
+            bbox, layers, body, svg_key, counts_key, warnings,
+            request=request, endpoint=endpoint, started_mono=started_mono,
+        )
+
+
+async def _render_heavy(
+    bbox: BBox, layers: list[str], body: RenderRequest,
+    svg_key: str, counts_key: str, warnings: list[str],
+    request: Request | None = None,
+    endpoint: str = "/v1/citymap/render",
+    started_mono: float = 0.0,
+) -> tuple[str, dict[str, int], dict[str, int], bool] | JSONResponse:
+    """Uncached part of :func:`_render_uncached` (runs inside the render slot)."""
     # 1 — before any network/CPU work.
     await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started_mono)
     # P5: same area+layers with different width/minlen reuses the split
