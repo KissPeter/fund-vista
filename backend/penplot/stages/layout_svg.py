@@ -77,10 +77,13 @@ def layout_scale(
 def to_svg(
     lines_mm: list[Polyline], page_w: float, page_h: float, stroke_mm: float = 0.2,
     stroke_color: str = "black", background_data_uri: str | None = None,
-    a4_bounds: bool = False,
+    a4_bounds: bool = False, tagged_lines_mm: list[Polyline] | None = None,
+    tagged_id: str = "runway-ink",
 ) -> str:
     """Render plot geometry plus an optional display-only background layer.
 
+    ``tagged_lines_mm`` are drawn in a second ``<g id=tagged_id>`` (same
+    attributes) after the main group, so a client can recolour them.
     ``stroke_color`` is a pen name (black/white/red/blue/green) resolved through
     the ``LINE_COLORS`` allowlist - unknown values fall back to black so a
     display param can never inject markup. ``background_data_uri`` (a
@@ -111,17 +114,26 @@ def to_svg(
         parts.append(
             f'<rect x="0" y="0" width="{page_w:.3f}" height="{page_h:.3f}" fill="#222222"/>',
         )
-    parts.append(
+    group_open = (
         f'<g fill="none" stroke="{stroke}" stroke-width="{stroke_mm}" '
-        'stroke-linecap="round" stroke-linejoin="round">',
+        'stroke-linecap="round" stroke-linejoin="round"'
     )
-    for pl in lines_mm:
-        if len(pl) < 2:
-            continue
-        d = f"M {pl[0][0]:.3f} {pl[0][1]:.3f} " + " ".join(
-            f"L {x:.3f} {y:.3f}" for x, y in pl[1:]
-        )
-        parts.append(f'<path d="{d}"/>')
+
+    def _group(lines: list[Polyline], gid: str | None) -> None:
+        parts.append(group_open + (f' id="{gid}">' if gid else ">"))
+        for pl in lines:
+            if len(pl) < 2:
+                continue
+            d = f"M {pl[0][0]:.3f} {pl[0][1]:.3f} " + " ".join(
+                f"L {x:.3f} {y:.3f}" for x, y in pl[1:]
+            )
+            parts.append(f'<path d="{d}"/>')
+
+    _group(lines_mm, None)
+    if tagged_lines_mm:
+        # Byte layout of the single-group output stays untouched below.
+        parts.append("</g>")
+        _group(tagged_lines_mm, tagged_id)
     parts.append("</g></svg>")
     return "\n".join(parts) + "\n"
 

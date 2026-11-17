@@ -357,7 +357,11 @@ def _walk_children(
     out: list[list[tuple[float, float]]],
     id_map: dict[str, ET.Element], use_stack: tuple[str, ...],
     warnings: list[str],
+    tag_ids: frozenset[str] | None = None,
+    tagged: list[list[tuple[float, float]]] | None = None,
 ) -> None:
+    """Walk ``parent``; a ``<g>`` whose id is in ``tag_ids`` is drawn into
+    ``tagged`` instead of ``out`` (its descendants are all tagged)."""
     for el in parent:
         if not isinstance(el.tag, str):
             continue
@@ -375,7 +379,11 @@ def _walk_children(
             continue
         local = _mmul(ctm, _parse_transform(el.attrib.get("transform")))
         if t in ("g", "a", "switch", "symbol"):
-            _walk_children(el, local, out, id_map, use_stack, warnings)
+            if tag_ids and tagged is not None and el.attrib.get("id") in tag_ids:
+                _walk_children(el, local, tagged, id_map, use_stack, warnings)
+            else:
+                _walk_children(el, local, out, id_map, use_stack, warnings,
+                               tag_ids, tagged)
         elif t == "svg":  # nested svg: x/y shift + optional own viewport
             nx = _parse_length(el.attrib.get("x"), 0.0)
             ny = _parse_length(el.attrib.get("y"), 0.0)
@@ -388,7 +396,8 @@ def _walk_children(
                     sub,
                     _viewbox_ctm(*nvb, nw, nh, el.attrib.get("preserveAspectRatio")),
                 )
-            _walk_children(el, sub, out, id_map, use_stack, warnings)
+            _walk_children(el, sub, out, id_map, use_stack, warnings,
+                           tag_ids, tagged)
         elif t == "use":
             ref = el.attrib.get("href") or el.attrib.get(_XLINK_HREF) or ""
             m = re.match(r"\s*#(.+?)\s*$", ref)
@@ -414,8 +423,33 @@ def _walk_children(
             _render_shape(el, t, local, out)
 
 
+#: Airport draft groups that make up the runway layer - the same set the
+#: fulfilment ink split (``AIRPORT_RUNWAY_GROUPS``) and the shop tint use.
+#: ``runway-marks`` is lettering, not the runway layer.
+RUNWAY_INK_GROUPS: tuple[str, ...] = ("runways", "osm-runways", "runway")
+
+
 def parse_svg_vectors(data: bytes) -> tuple[list[list[tuple[float, float]]], float, float, list[str]]:
     """Extract plottable polylines from an SVG (viewport-px space).
+
+    See :func:`parse_svg_vectors_tagged` for the variant that also splits out
+    the polylines of selected ``<g id>`` groups.
+    """
+    polylines, _tagged, vp_w, vp_h, warnings = parse_svg_vectors_tagged(data, ())
+    return polylines, vp_w, vp_h, warnings
+
+
+def parse_svg_vectors_tagged(
+    data: bytes, tag_ids: "tuple[str, ...] | frozenset[str]",
+) -> tuple[
+    list[list[tuple[float, float]]], list[list[tuple[float, float]]],
+    float, float, list[str],
+]:
+    """Like :func:`parse_svg_vectors`, but polylines under a ``<g>`` whose id
+    is in ``tag_ids`` come back separately.
+
+    Returns ``(polylines, tagged_polylines, width_px, height_px, warnings)``;
+    ``polylines`` excludes the tagged ones. Both share one coordinate space.
 
     Returns ``(polylines, width_px, height_px, warnings)``. Raises
     PenPlotError(400) when the XML is malformed, contains forbidden entity /
@@ -467,15 +501,18 @@ def parse_svg_vectors(data: bytes) -> tuple[list[list[tuple[float, float]]], flo
                             root.attrib.get("preserveAspectRatio")) if vb else _IDENTITY
 
     polylines: list[list[tuple[float, float]]] = []
+    tagged: list[list[tuple[float, float]]] = []
     warnings: list[str] = []
-    _walk_children(root, base_ctm, polylines, id_map, (), warnings)
+    ids = frozenset(tag_ids)
+    _walk_children(root, base_ctm, polylines, id_map, (), warnings,
+                   ids or None, tagged if ids else None)
 
-    if not polylines:
+    if not polylines and not tagged:
         raise PenPlotError(
             status=400, code=ErrorCode.BAD_IMAGE,
             message="SVG contains no convertible paths/shapes/text.",
         )
-    return polylines, vp_w, vp_h, list(dict.fromkeys(warnings))
+    return polylines, tagged, vp_w, vp_h, list(dict.fromkeys(warnings))
 
 
 # -- path data: full command set -----------------------------------------------
@@ -950,5 +987,7 @@ __all__ = [
     "WARNING_EMBEDDED_RASTERS_IGNORED",
     "Matrix",
     "dist2",
+    "RUNWAY_INK_GROUPS",
     "parse_svg_vectors",
+    "parse_svg_vectors_tagged",
 ]

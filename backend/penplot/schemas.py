@@ -392,6 +392,17 @@ class ConvertParams(BaseModel):
             "supersampled long side stays within the server's pixel cap."
         ),
     )
+    runway_ink_group: bool = Field(
+        default=False,
+        description=(
+            "Vector SVG inputs only (plain contour): keep the artwork of the "
+            "airport draft's runway layer groups (runways, osm-runways, runway) "
+            "in a second <g id=\"runway-ink\"> of the result, so a client can "
+            "recolour the runway without guessing it back from geometry. The "
+            "other ink stays in the first group; geometry and layout are "
+            "unchanged. Ignored for other inputs and methods."
+        ),
+    )
     strip_frame: bool = Field(
         default=False,
         description=(
