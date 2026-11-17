@@ -203,6 +203,13 @@ def split_elements(
     return geoms, counts
 
 
+def mirror_urls() -> tuple[str, ...]:
+    """Local extract first (when configured), then the public mirrors."""
+    local = settings.local_osm_url.strip()
+    urls = list(settings.overpass_urls)
+    return tuple([local] + [u for u in urls if u != local] if local else urls)
+
+
 async def fetch_overpass(
     query: str,
     client: httpx.AsyncClient | None = None,
@@ -220,7 +227,7 @@ async def fetch_overpass(
     answers with non-JSON so the router can map it to a 502 envelope.
     """
     cfg = OverpassConfig(
-        urls=tuple(settings.overpass_urls),
+        urls=mirror_urls(),
         user_agent=settings.user_agent,
         timeout_s=settings.overpass_timeout_s,
         connect_timeout_s=settings.overpass_connect_timeout_s,

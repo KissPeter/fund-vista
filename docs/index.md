@@ -25,6 +25,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 | CR-009 | change request | Mac disk-space guard + read-only-docker recovery runbook (issue #111) | done | 2026-10-26 |
 | F-006 | feature | Traffic map: country border on the Map layer, paper-fill viewport aspect, Detail (min. path length) | done | 2026-10-27 |
 | F-007 | feature | Gallery sheet compose on the backend (`POST /v1/compose-sheet`) | in progress | 2026-10-30 |
+| CR-010 | change request | Local OSM extract (Hungary, SQLite on the Mac) as first Overpass mirror for citymap | done | 2026-11-17 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
