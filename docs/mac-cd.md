@@ -29,6 +29,12 @@ There is no laminar on the Mac: the test gate is GitHub Actions
 the deployed sha (detached HEAD) — the daily traffic ingest checks `main`
 back out before it commits (see `docs/CR-005-mac-only-deployment.md`).
 
+> Gotcha (seen 2026-11-17): the hook refreshes `~/srv/ci/cd/deploy-mac.sh.run`
+> from the pushed sha *while* that deploy starts, so a change to
+> `ops/deploy-mac.sh` itself (e.g. a new `-e` flag) takes effect one deploy
+> late. Push a second commit, or check `docker inspect fundvista` env after
+> changing the script.
+
 ## What a deploy does (`ops/deploy-mac.sh`)
 
 1. Disk gate (≥2G free on the VM disk), fetch + checkout the exact `<sha>`
