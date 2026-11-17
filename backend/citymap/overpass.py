@@ -203,19 +203,16 @@ def split_elements(
     return geoms, counts
 
 
-def mirror_urls() -> tuple[str, ...]:
-    """Local extract first (when configured), then the public mirrors."""
-    local = settings.local_osm_url.strip()
-    urls = list(settings.overpass_urls)
-    return tuple([local] + [u for u in urls if u != local] if local else urls)
-
-
 async def fetch_overpass(
     query: str,
     client: httpx.AsyncClient | None = None,
     budget_s: float | None = None,
 ) -> list[dict]:
-    """POST the query to the first healthy Overpass mirror.
+    """Answer the query from the local extract, else the first healthy mirror.
+
+    The local Hungary extract (``CITYMAP_LOCAL_OSM_DB``, in-process) goes
+    first; it declines anything outside its polygon, so those requests POST
+    to the public mirrors exactly as before.
 
     Thin binding of citymap settings to the shared
     :class:`backend.http.overpass_client.OverpassClient`: mirror failover,
@@ -226,8 +223,13 @@ async def fetch_overpass(
     Raises :class:`OverpassError` when every mirror fails, is parked, or
     answers with non-JSON so the router can map it to a 502 envelope.
     """
+    from backend.osm_local.service import fetch_local
+
+    local = await fetch_local(query)
+    if local is not None:
+        return local
     cfg = OverpassConfig(
-        urls=mirror_urls(),
+        urls=tuple(settings.overpass_urls),
         user_agent=settings.user_agent,
         timeout_s=settings.overpass_timeout_s,
         connect_timeout_s=settings.overpass_connect_timeout_s,

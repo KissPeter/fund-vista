@@ -17,22 +17,26 @@ queries 504. Local answers take milliseconds and have no rate limit.
 
 ## Design
 
-- `backend/osm_local/` answers **only** the query shape citymap sends
-  (`overpass.wrap_query`) at `POST /api/interpreter`, plus `GET /health`.
-  It needs no change to the citymap pipeline: the URL is simply the first
-  mirror (`CITYMAP_LOCAL_OSM_URL`, `overpass.mirror_urls()`).
-- Anything it cannot answer faithfully — another query shape, a filter not
+- Part of fund-vista, not a second app. `backend/osm_local/` is mounted in
+  `main.py` and exposes the **same API as a public Overpass mirror**:
+  `POST /v1/osm-local/api/interpreter` (form field `data`, Overpass JSON),
+  plus `GET /v1/osm-local/health`.
+- Citymap prefers it: `fetch_overpass` asks the same code in-process
+  (`service.fetch_local`, no HTTP hop) before the public mirrors. Config is
+  one path, `CITYMAP_LOCAL_OSM_DB` (empty = off).
+- It answers **only** the query shape citymap sends (`overpass.wrap_query`).
+  Anything it cannot answer faithfully — another query shape, a filter not
   derived from `layers.py`, a stale database, or a bbox not **entirely**
-  inside the extract polygon — is a `400`. The shared client fails over on
-  400 without parking the mirror, so those requests reach the public
-  mirrors exactly as before. A dead/unreachable service is parked for 30 s
-  by the same client.
+  inside the extract polygon — is declined (`None` in-process, `400` over
+  HTTP, like a mirror refusing a query) and the request goes to the public
+  mirrors exactly as before.
+- The file is re-opened when replaced, so a rebuild needs no restart.
 - Coverage is the Geofabrik `.poly`, not a rectangle: a rectangle around
   Hungary contains Bratislava and Vienna, which the extract does not hold.
 - Storage: ways keep node ids + 1e-7° coordinates inline (no node table),
   an R*Tree for space and a selector bitmask per way/relation. Rebuild
-  after `layers.py` selector changes (`/health` reports `stale`; the
-  service then answers 400 until rebuilt).
+  after `layers.py` selector changes (`/health` reports `stale`; it is
+  then declined until rebuilt).
 
 ## Runbook (Mac mini)
 
@@ -53,14 +57,10 @@ so `uv.lock` and the licence inventory (CR-008) are untouched. The build
 writes `*.tmp` and renames it, so a running service never sees a half file;
 restart the service to pick up the new file.
 
-Service: install `ops/osm-local.plist` (header has the commands), then set
-on the backend `CITYMAP_LOCAL_OSM_URL=http://host.docker.internal:8200/api/interpreter`
-(Rancher Desktop; the service binds `127.0.0.1` by default — use
-`OSM_LOCAL_HOST=0.0.0.0` only if the container cannot reach it, and then
-firewall port 8200). Check: `curl localhost:8200/health`.
-
-Refresh monthly (or weekly) by repeating the download + build, then
-`launchctl kickstart -k gui/$(id -u)/hu.linuxadm.osm-local`.
+Put the file on the Mac's data volume (the container sees `/data`) and set
+`CITYMAP_LOCAL_OSM_DB=/data/osm-local/osm-hu.sqlite` on the backend. Check
+`GET /v1/osm-local/health`. Refresh monthly by repeating download + build;
+the new file is picked up without a restart.
 
 ## Licence
 

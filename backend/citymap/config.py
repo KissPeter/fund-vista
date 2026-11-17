@@ -34,11 +34,11 @@ class CitymapSettings(BaseSettings):
         "https://overpass.openstreetmap.fr/api/interpreter",
         "https://overpass.nchc.org.tw/api/interpreter",
     ]
-    # Optional local Overpass-compatible service (backend/osm_local, a
-    # Hungary extract on the Mac). Tried before the public mirrors; it
-    # answers 400 for anything outside the extract, so the walk falls
-    # through. Empty = off. Env: CITYMAP_LOCAL_OSM_URL.
-    local_osm_url: str = ""
+    # Optional local OSM extract (backend/osm_local, Hungary on the Mac):
+    # path of the SQLite file built by ``python -m backend.osm_local.build``.
+    # Asked in-process before the public mirrors; anything it cannot answer
+    # falls through. Empty = off. Env: CITYMAP_LOCAL_OSM_DB.
+    local_osm_db: str = ""
     # Live-query timeout: public mirrors 504 on heavy queries (e.g.
     # buildings over a large bbox). Keep this short so we fail over to the
     # OSM Main API quickly instead of holding a worker for 2 minutes.

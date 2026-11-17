@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -11,7 +13,6 @@ from backend.citymap.overpass import build_overpass_query, split_elements
 from backend.osm_local import coverage as cov
 from backend.osm_local import ql
 from backend.osm_local.selectors import registry, selector_mask
-from backend.osm_local.server import create_app
 from backend.osm_local.store import Store, Writer
 
 # Square "country" 0..10 lon, 0..10 lat with a notch cut out of the east side.
@@ -131,38 +132,99 @@ def test_store_only_returns_what_the_filter_selects(db):
     assert {e["id"] for e in out["elements"] if e["type"] == "way"} == {1, 4}
 
 
-# ---- server ------------------------------------------------------------------
+# ---- in-process service + citymap wiring ---------------------------------------
 
-def test_server_serves_inside_and_declines_outside(db):
-    client = TestClient(create_app(db))
-    ok = client.post("/api/interpreter",
-                     data={"data": build_overpass_query((0.5, 0.5, 4.0, 3.0), ["highways"])})
-    assert ok.status_code == 200 and ok.json()["elements"]
-    outside = client.post("/api/interpreter",
-                          data={"data": build_overpass_query((4.5, 5.0, 5.5, 8.0), ["highways"])})
-    assert outside.status_code == 400  # in the notch: let a public mirror answer
-    junk = client.post("/api/interpreter", data={"data": "[out:json];node(1);out;"})
-    assert junk.status_code == 400
-    assert client.get("/health").json()["status"] == "ok"
+@pytest.fixture
+def local(db, monkeypatch):
+    from backend.osm_local import service
+
+    monkeypatch.setattr(op.settings, "local_osm_db", str(db))
+    service.reset()
+    yield service
+    service.reset()
 
 
-def test_server_refuses_a_stale_database(db, monkeypatch):
-    monkeypatch.setattr("backend.osm_local.store.registry", lambda: [("way", '["nothing"]')])
-    client = TestClient(create_app(db))
-    assert client.get("/health").json()["status"] == "stale"
-    r = client.post("/api/interpreter",
-                    data={"data": build_overpass_query((1, 1, 2, 2), ["highways"])})
-    assert r.status_code == 400
+def test_local_answers_inside_and_declines_outside(local):
+    async def _t():
+        inside = build_overpass_query((0.5, 0.5, 4.0, 3.0), ["highways"])
+        assert (await local.fetch_local(inside))
+        notch = build_overpass_query((4.5, 5.0, 5.5, 8.0), ["highways"])
+        assert await local.fetch_local(notch) is None  # a public mirror must answer
+        assert await local.fetch_local("[out:json];node(1);out;") is None
+    asyncio.run(_t())
 
 
-# ---- citymap wiring ----------------------------------------------------------
+def test_local_is_off_without_a_database(monkeypatch):
+    async def _t():
+        from backend.osm_local import service
 
-def test_local_mirror_is_walked_first_and_only_when_configured(monkeypatch):
-    public = tuple(op.settings.overpass_urls)
-    monkeypatch.setattr(op.settings, "local_osm_url", "")
-    assert op.mirror_urls() == public
-    monkeypatch.setattr(op.settings, "local_osm_url", "http://localhost:8200/api/interpreter")
-    assert op.mirror_urls() == ("http://localhost:8200/api/interpreter", *public)
+        monkeypatch.setattr(op.settings, "local_osm_db", "")
+        assert await service.fetch_local(build_overpass_query((1, 1, 2, 2), ["highways"])) is None
+        monkeypatch.setattr(op.settings, "local_osm_db", "/nonexistent/osm.sqlite")
+        service.reset()
+        assert await service.fetch_local(build_overpass_query((1, 1, 2, 2), ["highways"])) is None
+    asyncio.run(_t())
+
+
+def test_stale_database_falls_through(local, monkeypatch):
+    async def _t():
+        monkeypatch.setattr("backend.osm_local.store.registry", lambda: [("way", '["nothing"]')])
+        local.reset()
+        assert await local.fetch_local(build_overpass_query((1, 1, 2, 2), ["highways"])) is None
+    asyncio.run(_t())
+
+
+def test_fetch_overpass_uses_local_before_the_mirrors(local, monkeypatch):
+    async def _t():
+        class Boom:
+            def __init__(self, *a, **k):
+                raise AssertionError("public mirror must not be asked")
+
+        monkeypatch.setattr(op, "OverpassClient", Boom)
+        els = await op.fetch_overpass(build_overpass_query((0.5, 0.5, 4.0, 3.0), ["highways"]))
+        assert {e["id"] for e in els if e["type"] == "way"} == {1}
+    asyncio.run(_t())
+
+
+def test_fetch_overpass_falls_through_outside_the_extract(local, monkeypatch):
+    async def _t():
+        seen = {}
+
+        class Fake:
+            def __init__(self, cfg, **k):
+                seen["urls"] = cfg.urls
+
+            async def fetch(self, query, budget_s=None):
+                return [{"type": "node", "id": 1, "lat": 0, "lon": 0}]
+
+        monkeypatch.setattr(op, "OverpassClient", Fake)
+        els = await op.fetch_overpass(build_overpass_query((4.5, 5.0, 5.5, 8.0), ["highways"]))
+        assert els and seen["urls"] == tuple(op.settings.overpass_urls)
+    asyncio.run(_t())
+
+
+def test_interpreter_route_has_the_public_overpass_contract(local):
+    from backend.osm_local.router import router
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    url = "/v1/osm-local/api/interpreter"
+    ok = client.post(url, data={"data": build_overpass_query((0.5, 0.5, 4.0, 3.0), ["highways"])})
+    assert ok.status_code == 200 and {"version", "elements", "osm3s"} <= set(ok.json())
+    out = client.post(url, data={"data": build_overpass_query((4.5, 5.0, 5.5, 8.0), ["highways"])})
+    assert out.status_code == 400  # same as a mirror refusing: caller tries the next
+
+
+def test_health_route_reports_state(local):
+    from backend.osm_local.router import router
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(router)
+    body = TestClient(app).get("/v1/osm-local/health").json()
+    assert body["status"] == "ok" and body["ways"] == 5
 
 
 # ---- importer (needs the optional osmium dependency) -------------------------

@@ -22,6 +22,7 @@ from backend.http.mirror_health import configure_mirror_health_redis
 from backend.logging_config import configure_logging
 from backend.citymap.router import router as citymap_router
 from backend.citymap.ui import ui_router as citymap_ui_router
+from backend.osm_local.router import router as osm_local_router
 from backend.airports.cache import configure_airports_redis
 from backend.fulfillment.router import router as fulfillment_router
 from backend.pcb.router import router as pcb_router
@@ -162,6 +163,7 @@ app.include_router(jobs_router)
 # City maps next: versioned routes must win over the catch-all proxy below.
 app.include_router(citymap_router)
 app.include_router(citymap_ui_router)
+app.include_router(osm_local_router)
 # Airport diagrams last: same versioned-before-catch-all rule.
 app.include_router(airports_router)
 app.include_router(airports_ui_router)
