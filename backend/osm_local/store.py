@@ -11,6 +11,7 @@ an R*Tree. The blobs use native byte order - build and serve on one machine
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import sys
 import threading
@@ -20,13 +21,47 @@ from typing import Iterable
 
 from backend.citymap.shortways import drop_short_ways, polyline_length_m
 from backend.osm_local import coverage as cov
-from backend.osm_local.ql import BBox, Member
-from backend.osm_local.selectors import Selector, registry
+from backend.osm_local.ql import AroundMember, BBox, Member
+from backend.osm_local.selectors import AROUND_FILTERS, Selector, registry, tags_match
 
 SCHEMA_VERSION = "2"
 _READABLE_SCHEMAS = ("1", "2")  # 1 has no ways.len_m: filtered after the query
 _E7 = 10_000_000
 _CHUNK = 500
+_M_PER_DEG_LAT = 110_540.0  # the constants backend.airports uses for its own metres
+_M_PER_DEG_LON = 111_320.0
+
+
+def around_box(lat: float, lon: float, radius_m: float) -> BBox:
+    """South, west, north, east of the square around a circle (a hair generous)."""
+    dlat = radius_m / _M_PER_DEG_LAT * 1.01
+    dlon = radius_m / (_M_PER_DEG_LON * max(0.01, math.cos(math.radians(lat)))) * 1.01
+    return (lat - dlat, lon - dlon, lat + dlat, lon + dlon)
+
+
+def _within(flat, lat0: float, lon0: float, radius_m: float) -> bool:
+    """Does the polyline ``flat`` (lat, lon pairs in 1e-7 degrees) come within ``radius_m`` of the point?"""
+    kx = _M_PER_DEG_LON * math.cos(math.radians(lat0)) / _E7
+    ky = _M_PER_DEG_LAT / _E7
+    cx, cy = lon0 * _E7, lat0 * _E7
+    r2 = radius_m * radius_m
+    px = (flat[1] - cx) * kx
+    py = (flat[0] - cy) * ky
+    for i in range(2, len(flat), 2):
+        qx = (flat[i + 1] - cx) * kx
+        qy = (flat[i] - cy) * ky
+        dx, dy = qx - px, qy - py
+        seg = dx * dx + dy * dy
+        t = 0.0 if seg == 0 else max(0.0, min(1.0, -(px * dx + py * dy) / seg))
+        ex, ey = px + t * dx, py + t * dy
+        if ex * ex + ey * ey <= r2:
+            return True
+        px, py = qx, qy
+    return len(flat) == 2 and px * px + py * py <= r2
+
+
+def _geometry(flat) -> list[dict]:
+    return [{"lat": flat[i] / _E7, "lon": flat[i + 1] / _E7} for i in range(0, len(flat), 2)]
 
 _DDL = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -157,8 +192,10 @@ class Store:
         self.rings: list[dict] = json.loads(meta["coverage"])
         self.sels: list[Selector] = [tuple(s) for s in json.loads(meta["selectors"])]  # type: ignore[misc]
         self._bit = {s: i for i, s in enumerate(self.sels)}
-        #: False when ``layers.py`` moved on since the build: rebuild needed.
-        self.fresh = self.sels == registry()
+        #: False when ``layers.py`` changed an existing selector: rebuild needed.
+        #: Selectors appended since the build only make the new ones unsupported.
+        want = registry()
+        self.fresh = want[: len(self.sels)] == self.sels
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -177,6 +214,70 @@ class Store:
 
     def supports(self, member: Member) -> bool:
         return (member.kind, member.filter) in self._bit
+
+    def supports_around(self, member: AroundMember) -> bool:
+        srcs = AROUND_FILTERS.get((member.kind, member.filter))
+        return bool(srcs) and all(src in self._bit for src in srcs)
+
+    def run_around(self, members: list[AroundMember]) -> dict:
+        """Overpass ``out geom`` JSON for the union of ``around`` members."""
+        db = self._conn()
+        ways: dict[int, tuple[dict, array]] = {}
+        rels: dict[int, tuple[dict, list]] = {}
+        for m in members:
+            mask = 0
+            for src in AROUND_FILTERS[(m.kind, m.filter)]:
+                mask |= 1 << self._bit[src]
+            south, west, north, east = around_box(m.lat, m.lon, m.radius_m)
+            args = (north, south, east, west, mask)
+            if m.kind == "way":
+                for wid, tags_json, coords in db.execute(
+                    "SELECT w.id, w.tags, w.coords FROM way_idx i JOIN ways w ON w.id = i.id "
+                    "WHERE i.min_lat <= ? AND i.max_lat >= ? AND i.min_lon <= ? "
+                    "AND i.max_lon >= ? AND (w.sel & ?) != 0", args,
+                ):
+                    if wid in ways:
+                        continue
+                    tags = json.loads(tags_json)
+                    flat = _unpack("i", coords)
+                    if tags_match(m.filter, tags) and _within(flat, m.lat, m.lon, m.radius_m):
+                        ways[wid] = (tags, flat)
+            else:
+                for rid, tags_json, members_json in db.execute(
+                    "SELECT r.id, r.tags, r.members FROM rel_idx i JOIN relations r ON r.id = i.id "
+                    "WHERE i.min_lat <= ? AND i.max_lat >= ? AND i.min_lon <= ? "
+                    "AND i.max_lon >= ? AND (r.sel & ?) != 0", args,
+                ):
+                    tags = json.loads(tags_json)
+                    if rid not in rels and tags_match(m.filter, tags):
+                        # keep the circle with the relation: checked once members are loaded
+                        rels[rid] = (tags, [m.lat, m.lon, m.radius_m, json.loads(members_json)])
+        need = sorted({ref for _, (_c1, _c2, _c3, mem) in rels.values() for ref, _ in mem})
+        geoms: dict[int, array] = {}
+        for i in range(0, len(need), _CHUNK):
+            part = need[i : i + _CHUNK]
+            marks = ",".join("?" * len(part))
+            for wid, coords in db.execute(f"SELECT id, coords FROM ways WHERE id IN ({marks})", part):
+                geoms[wid] = _unpack("i", coords)
+        elements: list[dict] = []
+        for wid, (tags, flat) in ways.items():
+            elements.append({"type": "way", "id": wid, "tags": tags, "geometry": _geometry(flat)})
+        for rid, (tags, (lat, lon, radius, mem)) in rels.items():
+            if not any(ref in geoms and _within(geoms[ref], lat, lon, radius) for ref, _ in mem):
+                continue
+            elements.append({
+                "type": "relation", "id": rid, "tags": tags,
+                "members": [
+                    {"type": "way", "ref": ref, "role": role, "geometry": _geometry(geoms[ref])}
+                    for ref, role in mem if ref in geoms
+                ],
+            })
+        return {
+            "version": 0.6,
+            "generator": "fund-vista-osm-local",
+            "osm3s": {"timestamp_osm_base": self.meta.get("osm_timestamp", "")},
+            "elements": elements,
+        }
 
     def run(
         self, members: list[Member], min_len_m: float = 0.0, compact: bool = False,

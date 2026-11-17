@@ -18,7 +18,7 @@ import threading
 from pathlib import Path
 
 from backend.osm_local import ql
-from backend.osm_local.store import Store
+from backend.osm_local.store import Store, around_box
 
 log = logging.getLogger("backend.osm_local")
 
@@ -78,10 +78,21 @@ def answer(query: str, min_len_m: float = 0.0, compact: bool = False) -> dict | 
     try:
         members = ql.parse(query)
     except ql.QueryError:
+        members = None
+    if members is not None:
+        if not all(store.supports(m) and store.covers(m.bbox) for m in members):
+            return None
+        return store.run(members, min_len_m, compact)
+    try:  # the airport shape: around + out geom
+        around = ql.parse_around(query)
+    except ql.QueryError:
         return None
-    if not all(store.supports(m) and store.covers(m.bbox) for m in members):
+    if not all(
+        store.supports_around(m) and store.covers(around_box(m.lat, m.lon, m.radius_m))
+        for m in around
+    ):
         return None
-    return store.run(members, min_len_m, compact)
+    return store.run_around(around)
 
 
 async def fetch_local(query: str, min_len_m: float = 0.0) -> list[dict] | None:
@@ -91,6 +102,23 @@ async def fetch_local(query: str, min_len_m: float = 0.0) -> list[dict] | None:
     try:
         async with _semaphore():
             result = await asyncio.to_thread(answer, query, min_len_m, True)
+        return None if result is None else result["elements"]
+    except Exception:  # never let the local path break a render
+        log.exception("osm_local: query failed, falling back to mirrors")
+        return None
+
+
+async def fetch_local_geom(query: str) -> list[dict] | None:
+    """``out geom`` elements for an airport-style ``around`` query, or ``None`` to fall through.
+
+    Same extract, same per-worker cap and same fall-through rules as
+    :func:`fetch_local`; this is the entry airports and airport traffic use.
+    """
+    if not _db_path():
+        return None
+    try:
+        async with _semaphore():
+            result = await asyncio.to_thread(answer, query)
         return None if result is None else result["elements"]
     except Exception:  # never let the local path break a render
         log.exception("osm_local: query failed, falling back to mirrors")

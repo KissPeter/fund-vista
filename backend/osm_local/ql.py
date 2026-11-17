@@ -55,3 +55,42 @@ def parse(query: str) -> list[Member]:
     if not members:
         raise QueryError("empty union")
     return members
+
+
+# --- the airport shape: ``(way|relation)[filter](around:r,lat,lon);`` + ``out geom;``
+
+_AROUND_MEMBER = (
+    r"(?P<kind>way|relation)(?P<filter>(?:\[[^\]\n]*\])*)"
+    rf"\(around:(?P<r>\d+),(?P<lat>{_NUM}),(?P<lon>{_NUM})\);"
+)
+_AROUND_ENVELOPE = re.compile(
+    r"\[out:json\]\[timeout:\d+\];\s*\(\s*(?P<body>.*?)\s*\);\s*out geom;\s*", re.S,
+)
+_AROUND_RE = re.compile(_AROUND_MEMBER)
+_AROUND_ONLY = re.compile(rf"(?:\s*{_AROUND_MEMBER})+\s*")
+
+
+@dataclass(frozen=True)
+class AroundMember:
+    kind: str
+    filter: str
+    lat: float
+    lon: float
+    radius_m: int
+
+
+def parse_around(query: str) -> list[AroundMember]:
+    """Airport-style union of ``around`` members answered with ``out geom``."""
+    env = _AROUND_ENVELOPE.fullmatch(query.strip())
+    if not env:
+        raise QueryError("unsupported query envelope")
+    body = env.group("body")
+    if not _AROUND_ONLY.fullmatch(body):
+        raise QueryError("unsupported union member")
+    members = [
+        AroundMember(m["kind"], m["filter"], float(m["lat"]), float(m["lon"]), int(m["r"]))
+        for m in _AROUND_RE.finditer(body)
+    ]
+    if not members:
+        raise QueryError("empty union")
+    return members

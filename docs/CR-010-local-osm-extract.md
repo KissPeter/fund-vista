@@ -78,6 +78,33 @@ Measured on Budapest 0.1x0.11 deg, all layers, same SVG byte for byte
 (sha256 identical, 10 m and 50 m): elements 560k -> 86k, peak RSS 884 -> 424
 MB at the default 10 m (733 -> 356 MB at 50 m), load 6.2 -> 4.6 s.
 
+## Airports and airport traffic (same extract, same code)
+
+Airports (`backend/airports`) and airport traffic (`backend/traffic`, whose
+airfield layer calls the same function) ask Overpass for `around` queries
+answered with `out geom`. They go through `fetch_airport_polygons`, which now
+asks `osm_local.service.fetch_local_geom` first - the same store, per-worker
+cap, coverage check and fall-through rules as citymap. One implementation:
+`ql.parse_around` (parser), `Store.run_around` (R-tree box, then exact
+distance to the way, `out geom` JSON), `selectors.AROUND_FILTERS` (which
+stored selectors stand in for each filter text). The HTTP interpreter answers
+the same shape. The country-scale basemap queries of airport traffic (motorway,
+river, water, country border) are not in `AROUND_FILTERS`, so they still use
+the mirrors. The 3D city view is not part of this repo and never calls Overpass.
+
+- `["highway"]`-style filters are wider than the registry: ways the registry
+  never stores (`highway=construction`) are omitted. The airport splitters drop
+  them anyway; `test_every_class_the_airport_splitters_draw_is_stored_locally`
+  pins that.
+- `relation["aeroway"]` is an *extra* selector appended after the citymap ones.
+  A database built before it existed stays valid (`Store.fresh` accepts a
+  stored registry that is a prefix) and keeps serving citymap, but airport
+  queries fall through to the mirrors until the next rebuild
+  (`launchctl kickstart gui/$(id -u)/hu.linuxadm.osm-local-refresh`, about 2 h).
+- Checked against `overpass-api.de` for Budapest (LHBP, 3 km): the aeroway ways
+  are identical (285 ids, 0.16 s vs 37 s); the context layers differ by about
+  1 percent in count (the extract is newer than the mirror's snapshot).
+
 ## Runbook (Mac mini)
 
 No new volume: the container's `/data` is already bind-mounted from

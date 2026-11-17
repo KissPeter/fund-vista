@@ -84,8 +84,10 @@ def test_parser_rejects_everything_else(bad):
 
 def test_every_citymap_selector_is_in_the_registry():
     q = build_overpass_query((0, 0, 1, 1), list(LAYER_ORDER))
+    from backend.osm_local.selectors import EXTRA_SELECTORS
+
     reg = set(registry())
-    assert {(m.kind, m.filter) for m in ql.parse(q)} == reg
+    assert {(m.kind, m.filter) for m in ql.parse(q)} == reg - set(EXTRA_SELECTORS)
 
 
 # ---- coverage ---------------------------------------------------------------
