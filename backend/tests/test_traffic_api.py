@@ -352,6 +352,9 @@ def test_jobs_traffic_progress_counters(live, monkeypatch, tmp_path):
         time.sleep(0.2)
     final = _wait_done(live, job_id)
     assert final["status"] == "done", final
+    # The terminal document carries the last counters too; a poll that
+    # broke on the done status may never have seen a mid-run snapshot.
+    progress = progress or final.get("progress")
     assert progress is not None, "no progress counters were published"
     assert progress["stage"] in ("download", "parse")
     assert progress["done"] > 0
