@@ -161,6 +161,10 @@ class Store:
         conn = getattr(self._local, "conn", None)
         if conn is None:
             conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
+            # Warm reads through the container bind mount were ~35% faster
+            # with a big page cache + mmap (measured on the Mac, Budapest).
+            conn.execute("PRAGMA cache_size=-131072")  # 128 MB per thread
+            conn.execute("PRAGMA mmap_size=2147483648")
             self._local.conn = conn
         return conn
 
