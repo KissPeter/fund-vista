@@ -55,10 +55,15 @@ in ~3 min, ~1.3 GB, then swaps the file atomically):
 ops/osm-local-refresh.sh
 ```
 
-The running backend picks the new file up without a restart. Check
+The script builds from a clean export of `origin/main`, so the Mac checkout's branch does not matter. The running backend picks the new file up without a restart. Check
 `GET /v1/osm-local/health` (`ok` / `stale` / `off`). `osmium` is a
 build-machine tool only (`uv run --with osmium`), not a project
 dependency, so `uv.lock` and the licence inventory (CR-008) are untouched.
+
+Scheduled refresh: `ops/osm-local-refresh.plist` (launchd agent
+`hu.linuxadm.osm-local-refresh`, 1st of the month 03:00; install steps in its
+header; log `~/Library/Logs/osm-local-refresh.log`). A failed run keeps the
+previous file. Rebuild by hand after changing selectors in `layers.py`.
 
 Measured 2026-11-17 on real data: 5.16 M ways, 1.28 GB, 173 s, 1.1 GB RAM;
 Budapest all-layer query 469 ms (public Overpass timed out at 30 s).
