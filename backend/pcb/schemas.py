@@ -14,9 +14,17 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from backend.pcb.layers import SUBLAYER_IDS
+from backend.penplot.schemas import LabelParams, PageParams
 
 Paper = Literal["white", "electric-blue"]
 PenName = Literal["black", "blue", "red", "white"]
@@ -39,6 +47,35 @@ class LayerSpec(BaseModel):
     ink: LayerInk = "auto"
 
 
+#: Title lines: at most two (title, subtitle), each at most this long; the
+#: rule of ``POST /v1/compose-sheet``.
+MAX_LINES = 2
+MAX_LINE_CHARS = 41
+_CONTROL = frozenset(chr(c) for c in [*range(0x20), 0x7F])
+
+
+class PcbLayout(BaseModel):
+    """The page furniture of a pcb sheet: the shop's Page tool, one to one.
+
+    ``page`` and ``label`` are the penplot ``PageParams`` and ``LabelParams``
+    models (same names, ranges and defaults). Only A4 is plotted. The label's
+    ``enabled``, ``text`` and ``lines`` fields are not used here: the title
+    travels in ``PcbRenderParams.lines``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    page: PageParams = Field(default_factory=PageParams)
+    label: LabelParams = Field(default_factory=LabelParams)
+
+    @field_validator("page")
+    @classmethod
+    def _a4_only(cls, page: PageParams) -> PageParams:
+        if page.size.upper() != "A4":
+            raise ValueError("only the A4 sheet is plotted for a pcb")
+        return page
+
+
 class PcbRenderParams(BaseModel):
     """The render request's ``params`` form field (JSON text).
 
@@ -52,9 +89,49 @@ class PcbRenderParams(BaseModel):
     pen: PenName = "black"
     layers: dict[SubLayerId, LayerSpec] = Field(default_factory=dict)
     mirror: bool = False
+    #: Page furniture (orientation, frame, title label). None = today's sheet.
+    layout: PcbLayout | None = None
+    #: Title then subtitle. Blank entries are dropped; empty = no title.
+    lines: list[str] = Field(default_factory=list)
+
+    @field_validator("lines")
+    @classmethod
+    def _lines_ok(cls, lines: list[str]) -> list[str]:
+        if len(lines) > MAX_LINES:
+            raise ValueError("at most two lines (title, subtitle)")
+        for line in lines:
+            if len(line) > MAX_LINE_CHARS:
+                raise ValueError(f"a line is at most {MAX_LINE_CHARS} characters")
+            if any(ch in _CONTROL for ch in line):
+                raise ValueError("control characters are not allowed in lines")
+        return [line for line in lines if line.strip()]
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_page(self, handler):
+        """Leave an absent ``layout`` and empty ``lines`` out of the dump.
+
+        The dump is the canonical params text (cache key, stored params, the
+        ink-split match). A render without the page rail keeps the exact text
+        it had before the fields existed, so a design cached before the
+        change still matches its own params.
+        """
+        data = handler(self)
+        if data.get("layout") is None:
+            data.pop("layout", None)
+        if not data.get("lines"):
+            data.pop("lines", None)
+        return data
+
+    def has_page(self) -> bool:
+        """True when the sheet carries page furniture or a title."""
+        return self.layout is not None or bool(self.lines)
 
     @model_validator(mode="after")
     def _paper_and_inks(self) -> PcbRenderParams:
+        if not self.lines and self.layout == PcbLayout():
+            # A default layout without a title is today's sheet: store it as
+            # absent, so both spellings share one canonical text.
+            self.layout = None
         allowed = PAPER_PENS[self.paper]
         if self.pen not in allowed:
             raise ValueError(

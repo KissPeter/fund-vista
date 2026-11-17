@@ -14,7 +14,22 @@ Request (multipart/form-data)::
                         "tracks": {"enabled": true, "ink": "blue"},
                         "pours": {"enabled": false, "ink": "auto"},
                         "drills": {"enabled": false, "ink": "auto"}},
-             "mirror": false}
+             "mirror": false,
+             "layout": {"page": {"orientation": "landscape", "frame": true},
+                        "label": {"placement": "below"}},
+             "lines": ["Main board", "rev 2"]}
+
+``layout`` and ``lines`` are optional (the page rail). Both absent (or a
+default ``layout`` with no ``lines``) is the A4 portrait sheet, byte for byte.
+``layout.page`` and ``layout.label`` are the penplot ``PageParams`` and
+``LabelParams`` models; only ``size`` "A4" is plotted. ``orientation``
+"landscape" makes the sheet 297 x 210 mm. ``lines`` is the title then the
+subtitle (at most 2 entries of 41 characters, blanks dropped); non-empty
+``lines`` draw the title. The board is fitted inside the area the margin,
+frame inset and title strip leave, and the frame and lettering are composed by
+the ``/v1/compose-sheet`` composer (``artwork: "inline"``) as pen strokes, so
+``stats`` cover them and the sheet has no ``<text>`` and no ``<image>``. A bad
+``layout`` or ``lines`` is 422 ``invalid_params``.
 
 Response 200 (application/json, abridged; svg shortened)::
 
@@ -32,7 +47,7 @@ Response 200 (application/json, abridged; svg shortened)::
     }
 
 ``GET /v1/pcb/results/{design_id}/meta`` returns the stats and the validated
-render params that produced the cached sheet, so the shop resolves price,
+render params (``layout`` and ``lines`` included) that produced the cached sheet, so the shop resolves price,
 paper, pen and inks server-side::
 
     GET /v1/pcb/results/<design_id>/meta
@@ -56,7 +71,8 @@ are kept for 7 days (``PCB_CACHE_TTL_HOURS``, default 168) from the render. A
 cache hit needs all four keys; a partly expired entry is a miss and the file
 is rendered again. The token ``exp`` is capped at the window end.
 
-Ink-split fallback: ``POST /v1/fulfill/ink-split`` (kind ``pcb``) reads the
+Ink-split fallback: ``POST /v1/fulfill/ink-split`` (kind ``pcb``; the page
+furniture rides the Pen pass, the sub-layer groups their inks) reads the
 cached sheet first. When the sheet is gone but the source is kept, it
 re-plots the source with the request params through the same composition
 as ``/render`` (``backend.pcb.sheet.sheet_from_source``). The result is
