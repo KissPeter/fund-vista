@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # cut-clip VIDEO START END [--crf N]      (START, END as mm:ss)
 # Frame-accurate cut -> <name>_<start>-<end>.mp4 next to the original (e.g. clip_2m16-2m28.mp4).
-# Re-encodes video (libx264), copies audio; the original is untouched.
+# Re-encodes video (libx264), copies audio; the original is untouched. creation_time = original's + START.
 set -euo pipefail
 
 crf=16
@@ -26,6 +26,14 @@ tag() { echo "${1%:*}m${1#*:}"; }
 out="$(dirname "$src")/$(basename "${src%.*}")_$(tag "$start")-$(tag "$end").mp4"
 [ -e "$out" ] && { echo "exists: $out" >&2; exit 1; }
 
+# Keep the recording order: creation_time = original's tag + START (plotvid sorts sources by it).
+meta=()
+orig="$(ffprobe -v error -show_entries format_tags=creation_time -of csv=p=0 "$src" || true)"
+if [ -n "$orig" ]; then
+  base="$(date -u -j -f '%Y-%m-%dT%H:%M:%S' "${orig%%.*}" +%s)"
+  meta=(-metadata "creation_time=$(date -u -r $(( base + $(secs "$start") )) +%Y-%m-%dT%H:%M:%SZ)")
+fi
+
 echo "$src $start-$end -> $out"
 ffmpeg -v error -nostdin -stats -ss "0:$start" -to "0:$end" -i "$src" \
-  -c:v libx264 -crf "$crf" -preset slow -pix_fmt yuv420p -c:a copy -movflags +faststart "$out"
+  -c:v libx264 -crf "$crf" -preset slow -pix_fmt yuv420p -c:a copy ${meta[@]+"${meta[@]}"} -movflags +faststart "$out"
