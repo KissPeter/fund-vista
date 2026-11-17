@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 from backend.fulfillment.ink_split import INK_HEX
 from backend.pcb.layers import SUBLAYER_IDS, Point, Shape, sublayer_groups
+from backend.pcb.pad_edge import trim_tracks_at_pads
 from backend.pcb.render import run_isolated
 from backend.pcb.schemas import LayerOut, PcbRenderParams, SheetStats
 from backend.penplot.errors import ErrorCode, PenPlotError
@@ -105,11 +106,13 @@ def compose_sheet(shapes: list[Shape], params: PcbRenderParams) -> SheetResult:
             out_x = A4_W_MM - out_x
         return (out_x, A4_H_MM - (offset_v + v))
 
+    # Tracks stop at the pad outline, but only when the pads are plotted too.
+    plotted = trim_tracks_at_pads(shapes) if {"pads", "tracks"} <= enabled.keys() else shapes
     strokes: list[list[Point]] = []
     for layer in SUBLAYER_IDS:
         if layer not in enabled:
             continue
-        for shape in shapes:
+        for shape in plotted:
             if shape.layer != layer:
                 continue
             points = [place(point) for point in shape.points]
@@ -132,7 +135,7 @@ def compose_sheet(shapes: list[Shape], params: PcbRenderParams) -> SheetResult:
         )
 
     groups = sublayer_groups(
-        [shape for shape in shapes if shape.layer in enabled],
+        [shape for shape in plotted if shape.layer in enabled],
         place=place,
         inks={layer: INK_HEX[ink] for layer, ink in enabled.items()},
         outline=True,
@@ -146,7 +149,7 @@ def compose_sheet(shapes: list[Shape], params: PcbRenderParams) -> SheetResult:
     layers = [
         LayerOut(
             id=layer, ink=enabled[layer],
-            paths=sum(1 for shape in shapes if shape.layer == layer),
+            paths=sum(1 for shape in plotted if shape.layer == layer),
         )
         for layer in groups
     ]
