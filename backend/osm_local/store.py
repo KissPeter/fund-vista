@@ -161,10 +161,11 @@ class Store:
         conn = getattr(self._local, "conn", None)
         if conn is None:
             conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
-            # Warm reads through the container bind mount were ~35% faster
-            # with a big page cache + mmap (measured on the Mac, Budapest).
+            # Bigger page cache helps warm reads through the container bind
+            # mount. NO mmap_size: mmap over the Colima/virtiofs bind mount
+            # killed an uvicorn worker silently (no traceback, no OOM).
             conn.execute("PRAGMA cache_size=-131072")  # 128 MB per thread
-            conn.execute("PRAGMA mmap_size=2147483648")
+            conn.execute("PRAGMA mmap_size=0")
             self._local.conn = conn
         return conn
 
