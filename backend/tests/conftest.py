@@ -113,3 +113,22 @@ def _reset_overpass_mirror_parks():
     overpass_mirrors.reset()
     yield
     overpass_mirrors.reset()
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-perf", action="store_true", default=False,
+        help="Run performance-budget tests (skipped by default on the shared CI runner).",
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "perf: performance-budget tests (run with --run-perf)")
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-perf"):
+        return
+    skip_perf = pytest.mark.skip(reason="performance-budget test; run with --run-perf")
+    for item in items:
+        if "perf" in item.keywords:
+            item.add_marker(skip_perf)
