@@ -350,6 +350,7 @@ def test_direct_svg_without_drawable_content_is_422():
     assert exc.value.status == 422 and exc.value.code == "bad_image"
 
 
+@pytest.mark.perf
 def test_direct_performance_five_mb_artwork_under_two_seconds():
     # One dense path: a 5 MB artwork with a realistic element count.
     segments = "".join(f"L {i % 200} {(i * 7) % 297} " for i in range(5 * 1024 * 1024 // 14))
@@ -855,6 +856,7 @@ def _five_mb_overlapping_art() -> str:
     return head + "".join(parts) + '" fill="none" stroke="#123456"/></svg>'
 
 
+@pytest.mark.perf
 def test_direct_performance_overlap_with_fixes_under_two_seconds():
     req = ComposeSheetRequest.model_validate({
         "svg": _five_mb_overlapping_art(), "lines": ["Title"],
@@ -1081,6 +1083,7 @@ def test_artwork_field_defaults_to_image_and_rejects_unknown_values():
         ComposeSheetRequest.model_validate({"svg": ART_SVG, "artwork": "raw"})
 
 
+@pytest.mark.perf
 def test_direct_performance_five_mb_inline_artwork_under_two_seconds():
     svg = _five_mb_overlapping_art()  # exactly 5 MiB of one dense path
     assert len(svg.encode()) >= 5 * 1024 * 1024 - 64
@@ -1090,6 +1093,7 @@ def test_direct_performance_five_mb_inline_artwork_under_two_seconds():
     assert best < perf_budget(2.0)
 
 
+@pytest.mark.perf
 def test_direct_performance_five_mb_inline_with_table_under_two_seconds():
     req = ComposeSheetRequest.model_validate({
         "svg": _five_mb_overlapping_art(), "lines": ["Title"], "artwork": INLINE_OK,
