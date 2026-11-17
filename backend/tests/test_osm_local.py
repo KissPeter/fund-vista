@@ -203,6 +203,32 @@ def test_fetch_overpass_falls_through_outside_the_extract(local, monkeypatch):
     asyncio.run(_t())
 
 
+def test_local_queries_are_capped_per_worker(local, monkeypatch):
+    import threading
+    import time
+
+    live = {"now": 0, "max": 0}
+    guard = threading.Lock()
+
+    def slow(_q):
+        with guard:
+            live["now"] += 1
+            live["max"] = max(live["max"], live["now"])
+        time.sleep(0.05)
+        with guard:
+            live["now"] -= 1
+        return {"elements": []}
+
+    monkeypatch.setattr(local, "answer", slow)
+    monkeypatch.setattr(op.settings, "local_osm_max_concurrent", 1)
+    q = build_overpass_query((1, 1, 2, 2), ["highways"])
+
+    async def _t():
+        await asyncio.gather(*[local.fetch_local(q) for _ in range(5)])
+    asyncio.run(_t())
+    assert live["max"] == 1
+
+
 def test_interpreter_route_has_the_public_overpass_contract(local):
     from backend.osm_local.router import router
     from fastapi import FastAPI

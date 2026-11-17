@@ -39,6 +39,12 @@ class CitymapSettings(BaseSettings):
     # Asked in-process before the public mirrors; anything it cannot answer
     # falls through. Empty = off. Env: CITYMAP_LOCAL_OSM_DB.
     local_osm_db: str = ""
+    # Concurrent local-extract queries per worker. A dense all-layer render
+    # holds ~1 GB of elements; the public mirrors were throttled by
+    # ``overpass_max_concurrent`` and timeouts, the local extract answers
+    # everything, so without a cap 6 parallel renders OOM-killed uvicorn
+    # workers in the 4 GB container (observed 2026-11-17).
+    local_osm_max_concurrent: int = 1
     # Live-query timeout: public mirrors 504 on heavy queries (e.g.
     # buildings over a large bbox). Keep this short so we fail over to the
     # OSM Main API quickly instead of holding a worker for 2 minutes.

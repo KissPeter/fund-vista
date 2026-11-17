@@ -27,6 +27,21 @@ _store: Store | None = None
 _stamp: tuple[str, int, int] | None = None  # (path, mtime_ns, size)
 
 
+_sem: asyncio.Semaphore | None = None
+_sem_cap = 0
+
+
+def _semaphore() -> asyncio.Semaphore:
+    """Per-worker cap on concurrent queries (see ``local_osm_max_concurrent``)."""
+    global _sem, _sem_cap
+    from backend.citymap.config import settings
+
+    want = max(1, int(settings.local_osm_max_concurrent))
+    if _sem is None or _sem_cap != want:
+        _sem, _sem_cap = asyncio.Semaphore(want), want
+    return _sem
+
+
 def _db_path() -> str:
     from backend.citymap.config import settings
 
@@ -74,7 +89,8 @@ async def fetch_local(query: str) -> list[dict] | None:
     if not _db_path():
         return None
     try:
-        result = await asyncio.to_thread(answer, query)
+        async with _semaphore():
+            result = await asyncio.to_thread(answer, query)
         return None if result is None else result["elements"]
     except Exception:  # never let the local path break a render
         log.exception("osm_local: query failed, falling back to mirrors")
@@ -83,6 +99,7 @@ async def fetch_local(query: str) -> list[dict] | None:
 
 def reset() -> None:
     """Forget the open store (tests)."""
-    global _store, _stamp
+    global _store, _stamp, _sem, _sem_cap
     with _lock:
         _store, _stamp = None, None
+    _sem, _sem_cap = None, 0
