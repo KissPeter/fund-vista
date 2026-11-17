@@ -40,27 +40,28 @@ queries 504. Local answers take milliseconds and have no rate limit.
 
 ## Runbook (Mac mini)
 
-Downloads are manual and untrusted data; keep them in their own directory.
+No new volume: the container's `/data` is already bind-mounted from
+`FV_DATA_DIR` on the Mac's disk, so the database lives at
+`$FV_DATA_DIR/osm-local/osm-hu.sqlite` = `/data/osm-local/osm-hu.sqlite`.
+`ops/deploy-mac.sh` sets `CITYMAP_LOCAL_OSM_DB` to that path on every
+deploy (override with `FV_OSM_DB`). A missing file is harmless: citymap
+simply keeps using the public mirrors.
+
+First run, and the monthly refresh, on the Mac host (downloads Geofabrik
+`hungary-latest.osm.pbf` ≈ 330 MB + `hungary.poly` into a temp dir, builds
+in ~3 min, ~1.3 GB, then swaps the file atomically):
 
 ```bash
-mkdir -p ~/srv/osm-local/dl && cd ~/srv/osm-local/dl
-curl -LO https://download.geofabrik.de/europe/hungary-latest.osm.pbf
-curl -LO https://download.geofabrik.de/europe/hungary.poly
-cd <repo>
-uv run --project backend --with osmium python -m backend.osm_local.build \
-  ~/srv/osm-local/dl/hungary-latest.osm.pbf ~/srv/osm-local/osm-hu.sqlite \
-  --poly ~/srv/osm-local/dl/hungary.poly
+ops/osm-local-refresh.sh
 ```
 
-`osmium` is a build-machine tool only (`--with`), not a project dependency,
-so `uv.lock` and the licence inventory (CR-008) are untouched. The build
-writes `*.tmp` and renames it, so a running service never sees a half file;
-restart the service to pick up the new file.
+The running backend picks the new file up without a restart. Check
+`GET /v1/osm-local/health` (`ok` / `stale` / `off`). `osmium` is a
+build-machine tool only (`uv run --with osmium`), not a project
+dependency, so `uv.lock` and the licence inventory (CR-008) are untouched.
 
-Put the file on the Mac's data volume (the container sees `/data`) and set
-`CITYMAP_LOCAL_OSM_DB=/data/osm-local/osm-hu.sqlite` on the backend. Check
-`GET /v1/osm-local/health`. Refresh monthly by repeating download + build;
-the new file is picked up without a restart.
+Measured 2026-11-17 on real data: 5.16 M ways, 1.28 GB, 173 s, 1.1 GB RAM;
+Budapest all-layer query 469 ms (public Overpass timed out at 30 s).
 
 ## Licence
 
