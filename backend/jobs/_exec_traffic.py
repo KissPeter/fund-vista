@@ -246,6 +246,16 @@ async def _exec_traffic_ingest(
         except httpx.HTTPError as exc:
             raise _JobError(502, "traffic_source_unavailable", f"Archive download failed: {exc}")
         finally:
+            # A loaded loop can starve the 1 s poller past the download's
+            # end: the tick never lands, the job goes terminal and the
+            # document never carries counters (observed as the flaky
+            # "no progress counters were published" gate red on the
+            # shared CI runner). Publish the last snapshot here, while
+            # the executor has not returned yet: the document is still
+            # non-terminal, so the write cannot be skipped.
+            event = bridge.snapshot()
+            if event is not None:
+                await _store.set_progress(job_id, event["stage"], event["done"], event["total"])
             poller.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await poller
