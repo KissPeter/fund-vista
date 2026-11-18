@@ -29,7 +29,7 @@ Orientation = Literal["portrait", "landscape"]
 
 # Display-only pen color (physical pen). Allowlist enforced by
 # backgrounds.LINE_COLORS at render time; any value here must be a key there.
-LineColorName = Literal["black", "white", "red", "blue", "green"]
+LineColorName = Literal["black", "white", "red", "blue", "green", "pink"]
 # Display-only page background (paper texture preview). Vendored files in
 # backend/penplot/backgrounds/ (white e-commerce frames pre-trimmed);
 # "none" is plain paper. Independent of line_color - any combination works.
@@ -41,7 +41,7 @@ class PageParams(BaseModel):
 
     size: PageSizeName = "A4"
     orientation: Orientation = "portrait"
-    margin_mm: float = Field(default=10.0, ge=0.0, le=50.0)
+    margin_mm: float = Field(default=10.0, ge=10.0, le=30.0)
     padding_mm: float = Field(
         default=5.0, ge=0.0, le=20.0,
         description="Internal padding inside the margin/frame; artwork never touches the border.",
@@ -392,6 +392,31 @@ class ConvertParams(BaseModel):
             "supersampled long side stays within the server's pixel cap."
         ),
     )
+    runway_ink_group: bool = Field(
+        default=False,
+        description=(
+            "Vector SVG inputs only (plain contour): keep the artwork of the "
+            "airport draft's runway layer groups (runways, osm-runways, runway) "
+            "in a second <g id=\"runway-ink\"> of the result, so a client can "
+            "recolour the runway without guessing it back from geometry. The "
+            "other ink stays in the first group; geometry and layout are "
+            "unchanged. Ignored for other inputs and methods."
+        ),
+    )
+    layer_groups: bool = Field(
+        default=False,
+        description=(
+            "Vector SVG inputs only (plain contour): keep each of the "
+            "artwork's renderer layer groups (``<g id=\"traffic-...\">``: "
+            "arrivals, departures, holding, go_around, map layers) as its own "
+            "``<g id=\"traffic-...\" inkscape:groupmode=\"layer\">`` of the "
+            "result instead of merging everything into one group. Geometry "
+            "and layout are unchanged; page furniture stays in the first "
+            "group. The shop's 3D city view groups ``buildings`` and ``map`` are "
+            "kept the same way. Ignored for other inputs and methods, and when "
+            "runway_ink_group is set."
+        ),
+    )
     strip_frame: bool = Field(
         default=False,
         description=(
@@ -501,6 +526,15 @@ class SegmentsStats(BaseModel):
     after: int
 
 
+class LayerStats(BaseModel):
+    """One kept layer group of a convert (``layer_groups``): its own strokes
+    and pen-down length, so a client can price or report each layer."""
+
+    id: str
+    strokes: int
+    pen_down_mm: float
+
+
 class ConvertStats(BaseModel):
     points: PointsStats
     segments: SegmentsStats
@@ -508,6 +542,9 @@ class ConvertStats(BaseModel):
     pen_down_mm: float
     pen_up_mm: float
     estimated_time_s: float
+    #: Per kept layer group, in document order; ``None`` unless ``layer_groups``
+    #: split the result (the totals above always cover every layer).
+    layers: list[LayerStats] | None = None
 
 
 class ConvertResponse(BaseModel):

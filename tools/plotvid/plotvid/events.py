@@ -55,25 +55,37 @@ class StrokeLabels:
     drawn_share_long: float  # share of long strokes read as drawing
 
 
-def split_long_gaps(event_times: list[float], cfg: StrokesConfig) -> tuple[list[float], list[bool]]:
+def split_long_gaps(event_times: list[float], cfg: StrokesConfig,
+                    duration_s: float | None = None) -> tuple[list[float], list[bool]]:
     """Insert evenly spaced synthetic events into every gap over ``split_over_s``.
 
     A gap of ``g`` seconds becomes ``ceil(g / split_piece_s)`` equal pieces.
+    With ``duration_s``, the lead-in (0 to the first event) and the tail (last
+    event to the end) count too, and a source with no events is one gap from
+    0 to the end; their edge points are synthetic as well. Without it, only
+    gaps between events are split.
     Returns the sorted event times and, per event, True when it was inserted."""
-    times = sorted(float(t) for t in event_times)
-    if cfg.split_over_s is None or len(times) < 2:
-        return times, [False] * len(times)
-    out, flags = [times[0]], [False]
-    for a, b in itertools.pairwise(times):
+    pts = [(float(t), False) for t in sorted(event_times)]
+    if cfg.split_over_s is None:
+        return [t for t, _ in pts], [s for _, s in pts]
+    if duration_s is not None:
+        end = float(duration_s)
+        first = pts[0][0] if pts else end
+        if first > cfg.split_over_s:
+            pts.insert(0, (0.0, True))
+        if pts and end - pts[-1][0] > cfg.split_over_s:
+            pts.append((end, True))
+    if len(pts) < 2:
+        return [t for t, _ in pts], [s for _, s in pts]
+    out = [pts[0]]
+    for (a, _), (b, b_synthetic) in itertools.pairwise(pts):
         gap = b - a
         if gap > cfg.split_over_s:
             pieces = math.ceil(gap / cfg.split_piece_s)
             step = gap / pieces
-            out.extend(a + k * step for k in range(1, pieces))
-            flags.extend([True] * (pieces - 1))
-        out.append(b)
-        flags.append(False)
-    return out, flags
+            out.extend((a + k * step, True) for k in range(1, pieces))
+        out.append((b, b_synthetic))
+    return [t for t, _ in out], [s for _, s in out]
 
 
 def build_strokes(event_times: list[float] | np.ndarray, new_ink: list[float] | None,

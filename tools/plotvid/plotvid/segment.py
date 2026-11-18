@@ -56,6 +56,7 @@ class Segment:
     weight: float
     part: int = 0  # story part (set by the assignment)
     final: bool = False  # runs to the end of the last source (the pen's trip home)
+    opening: bool = False  # long enough to open a clip (first cut after first_min_s)
 
     @property
     def duration_s(self) -> float:

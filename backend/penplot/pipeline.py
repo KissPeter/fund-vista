@@ -43,11 +43,15 @@ from backend.penplot.optimize import (
     reloop,
     to_svg,
 )
+from backend.penplot.svg_vector import (
+    LAYER_GROUP_PREFIX, RUNWAY_INK_GROUPS, parse_svg_vectors_layers, parse_svg_vectors_tagged,
+)
 from backend.penplot.schemas import (
     ConvertParams,
     ConvertStats,
     DRAW_SPEED_MM_MIN,
     LabelParams,
+    LayerStats,
     PointsStats,
     SegmentsStats,
     TRAVEL_SPEED_MM_MIN,
@@ -151,6 +155,8 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
         data.pop("context_table", None)
     for field, default in (("thin_lines", False), ("circles", False), ("solids", False),
                            ("trace_upscale", 1), ("strip_frame", False),
+                           ("runway_ink_group", False),
+                           ("layer_groups", False),
                            ("cross_hatch", True)):
         # cross_hatch=true is the pre-existing behaviour (the +90° pass was
         # unconditional), so the default keeps its key out: the cache entries
@@ -158,6 +164,9 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
         # valid. Only the opt-out (false) gets its own entry.
         if data.get(field) == default:
             data.pop(field, None)
+    if not is_vector:
+        data.pop("runway_ink_group", None)
+        data.pop("layer_groups", None)
     if is_vector:
         for field in _VECTOR_IGNORED_PARAMS:
             data.pop(field, None)
@@ -167,6 +176,11 @@ def effective_params_dump(params: ConvertParams, is_vector: bool) -> dict:
             # fragmenting the result cache.
             for field in _VECTOR_TONE_PARAMS:
                 data.pop(field, None)
+        if _vector_needs_raster(data.get("methods")):
+            data.pop("runway_ink_group", None)  # contour-only feature
+            data.pop("layer_groups", None)
+        if data.get("runway_ink_group"):
+            data.pop("layer_groups", None)  # the runway split wins
         if not params.full_quality:
             for field in _SKIPPABLE_TRAVEL_STAGES:
                 data.pop(field, None)
@@ -385,6 +399,20 @@ def run_convert(
             if reserve_bottom_mm > 0.0:
                 # +1 mm so image strokes can't linemerge into the band/frame.
                 reserve_bottom_mm += labels.LABEL_ARTWORK_GAP_MM
+    # Airport draft runway layer kept apart (plain-contour vectors only): its
+    # strokes share the layout but are cleaned up as their own domain and
+    # land in a second <g id="runway-ink"> of the result.
+    split_runway = bool(
+        is_vector and params.runway_ink_group and not _vector_needs_raster(methods)
+    )
+    split_layers = bool(
+        is_vector and params.layer_groups and not split_runway
+        and not _vector_needs_raster(methods)
+    )
+    #: Tagged geometry kept out of the main group: group id -> polylines.
+    #: Runway split: one ``runway-ink`` group; layer split: one per renderer
+    #: layer group (``traffic-*``), in document order.
+    grp_px: dict[str, list] = {}
     extra_px: list = []   # OCR text + detected circles (drawing mode), working px
     drawing_mode = (not is_vector) and drawing.is_drawing_mode(params)
     stack = contextlib.ExitStack()   # holds the heavy-trace slot in drawing mode
@@ -392,10 +420,20 @@ def run_convert(
     try:
         if is_vector:
             _poll("vpype:decode")
-            parsed = load_parsed_svg(
+            parsed = None if (split_runway or split_layers) else load_parsed_svg(
                 image_id, settings.parsed_dir, settings.parsed_svg_ttl_hours
             )
-            if parsed is None:
+            if split_runway:
+                # Not cached: the parse cache holds one flat polyline list.
+                raw_px, rw_px, vw, vh, svg_warnings = parse_svg_vectors_tagged(
+                    image_bytes, RUNWAY_INK_GROUPS
+                )
+                grp_px = {"runway-ink": rw_px}
+            elif split_layers:
+                raw_px, grp_px, vw, vh, svg_warnings = parse_svg_vectors_layers(
+                    image_bytes, LAYER_GROUP_PREFIX
+                )
+            elif parsed is None:
                 raw_px, vw, vh, svg_warnings = imaging.parse_svg_vectors(image_bytes)
                 store_parsed_svg(
                     image_id, settings.parsed_dir, settings.parsed_svg_ttl_hours,
@@ -507,14 +545,15 @@ def run_convert(
             del mask, gray
             stack.close()  # arrays freed; let the next heavy trace in
 
-        points_before = count_points(raw_px) + count_points(extra_px)
-        segments_before = len(raw_px) + len(extra_px)
+        grp_flat = [pl for g in grp_px.values() for pl in g]
+        points_before = count_points(raw_px) + count_points(grp_flat) + count_points(extra_px)
+        segments_before = len(raw_px) + len(grp_flat) + len(extra_px)
 
         t0 = time.perf_counter()
         # Layout FIRST (px -> mm) so tolerances behave exactly like vpype's
         # post-layout units; then merge/simplify/sort/reloop in mm.
         laid, page_w, page_h = layout(
-            raw_px, src_w, src_h,
+            raw_px + grp_flat, src_w, src_h,
             size=params.page.size,
             orientation=params.page.orientation,
             margin_mm=params.page.margin_mm,
@@ -522,6 +561,14 @@ def run_convert(
             padding_mm=params.page.padding_mm,
             reserve_top_mm=reserve_top_mm,
         )
+        # One layout call keeps both domains on the same transform.
+        grp_laid_flat = laid[len(raw_px):]
+        laid = laid[: len(raw_px)]
+        grp_laid: dict[str, list] = {}
+        _at = 0
+        for gid, g in grp_px.items():
+            grp_laid[gid] = grp_laid_flat[_at:_at + len(g)]
+            _at += len(g)
         extra_laid: list = []
         if extra_px:
             # Same px -> mm transform as the artwork, so text/circles register.
@@ -587,12 +634,14 @@ def run_convert(
                 pad_right_mm=params.stats_table.pad_right_mm,
                 pad_top_mm=params.stats_table.pad_top_mm,
                 pad_bottom_mm=params.stats_table.pad_bottom_mm,
+                corner_radius_mm=params.page.frame_radius_mm,
             )
             warnings.extend(table_warnings)
             if table_keepout is not None:
                 # The table is a cartouche: the map must not show through
                 # its text, borders or the inset strip around it.
                 laid = knock_out(laid, table_keepout)
+                grp_laid = {k: knock_out(v, table_keepout) for k, v in grp_laid.items()}
         # Gallery context table (spec rows, string cells, verbatim keys).
         # Same cartouche rules as the stats table; drawn after it so both
         # can coexist in different corners.
@@ -609,11 +658,13 @@ def run_convert(
                 pad_top_mm=params.context_table.pad_top_mm,
                 pad_bottom_mm=params.context_table.pad_bottom_mm,
                 display_keys=False,
+                corner_radius_mm=params.page.frame_radius_mm,
             )
             table_lines = table_lines + ctx_lines
             warnings.extend(ctx_warnings)
             if ctx_keepout is not None:
                 laid = knock_out(laid, ctx_keepout)
+                grp_laid = {k: knock_out(v, ctx_keepout) for k, v in grp_laid.items()}
         t0 = time.perf_counter()
         # Merge domains separately: a joint linemerge would fuse image strokes
         # into the band/frame across the strip gap at high tolerances, dragging
@@ -666,6 +717,33 @@ def run_convert(
         final = reloop(ordered, params.reloop_tolerance_mm) if not fast else ordered
         _timed("reloop", image_id, method_label, t0)
 
+        grp_final: dict[str, list] = {}
+        for gid, g_laid in grp_laid.items():
+            if not g_laid:
+                continue
+            # Same cleanup chain as the artwork, run on its own so no stroke
+            # fuses across groups.
+            rw = linemerge(quantize(g_laid, q), tol)
+            if params.curve_smooth > 0:
+                rw = curvesmooth(
+                    densify(rw, drawing.SMOOTH_SEG_MM) if drawing_mode else rw,
+                    params.curve_smooth)
+            rw = linesimplify(rw, params.linesimplify_tolerance_mm)
+            rw = linesort(rw) if (params.linesort and not fast) else rw
+            grp_final[gid] = reloop(rw, params.reloop_tolerance_mm) if not fast else rw
+        n_main = len(final)
+        for g_lines in grp_final.values():
+            final = final + g_lines
+
+        layer_stats = (
+            [
+                LayerStats(
+                    id=gid, strokes=len(lines),
+                    pen_down_mm=round(sum(polyline_length(pl) for pl in lines), 2),
+                )
+                for gid, lines in grp_final.items()
+            ] if split_layers else None
+        )
         pen_down = sum(polyline_length(pl) for pl in final)
         pen_up = sum(
             dist(final[i][-1], final[i + 1][0]) for i in range(len(final) - 1)
@@ -688,9 +766,12 @@ def run_convert(
             pen_down_mm=round(pen_down, 2),
             pen_up_mm=round(pen_up, 2),
             estimated_time_s=estimated,
+            layers=layer_stats,
         )
         svg_text = to_svg(
-            final, page_w, page_h,
+            final[:n_main], page_w, page_h,
+            tagged_lines_mm=grp_final.get("runway-ink") if not split_layers else None,
+            layer_lines_mm=grp_final if split_layers else None,
             stroke_color=params.line_color,
             background_data_uri=get_background_data_uri(params.background),
             a4_bounds=outside,

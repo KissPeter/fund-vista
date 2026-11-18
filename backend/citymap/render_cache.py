@@ -26,11 +26,17 @@ from backend.citymap.tiles import tile_ref
 # Bump when raw tile payloads may be wrong: v2 retires tiles cached from
 # Overpass answers that carried a ``remark`` (timeout/out-of-memory) and so
 # were truncated or empty.
-TILE_VERSION = "tile-v2"
+TILE_VERSION = "tile-v4"  # v4: compact ways (inline geometry), early-filtered per detail bucket
 
 
-def _tile_key(tile: tuple[int, int], deg: float, layer: str) -> str:
-    return citymap_cache_key("tile", TILE_VERSION, tile_ref(tile, deg), layer)
+def _tile_key(
+    tile: tuple[int, int], deg: float, layer: str, bucket: str = "m0",
+) -> str:
+    """Raw tile key. ``bucket`` (shortways.bucket_key) is the early length
+    filter the payload was stored under: an entry is only reused by requests
+    in the same bucket, so a filtered payload can never serve a request that
+    wants the short ways it dropped."""
+    return citymap_cache_key("tile", TILE_VERSION, tile_ref(tile, deg), layer, bucket)
 
 
 # P5: split_elements output is cached separately from the rendered SVG. The
@@ -41,19 +47,19 @@ def _tile_key(tile: tuple[int, int], deg: float, layer: str) -> str:
 # reassign a way to a different layer via the ordering in match_way_layer, so
 # per-layer keys would be unsound. Bump the version when split semantics or
 # render geometry change.
-SPLIT_VERSION = "split-v1"
+SPLIT_VERSION = "split-v2"  # v2: geometry depends on the detail bucket
 
 
-def _split_key(bbox: BBox, layers: list[str]) -> str:
+def _split_key(bbox: BBox, layers: list[str], bucket: str = "m0") -> str:
     return citymap_cache_key(
-        "split", bbox_str(bbox), ",".join(sorted(layers)), SPLIT_VERSION
+        "split", bbox_str(bbox), ",".join(sorted(layers)), SPLIT_VERSION, bucket
     )
 
 
 async def _load_cached_split(
-    bbox: BBox, layers: list[str], warnings: list[str],
+    bbox: BBox, layers: list[str], warnings: list[str], bucket: str = "m0",
 ) -> tuple[dict[str, list[list[tuple[float, float]]]], dict[str, int]] | None:
-    key = _split_key(bbox, layers)
+    key = _split_key(bbox, layers, bucket)
     raw = await cache_get(key)
     if raw is None:
         return None
@@ -77,9 +83,10 @@ async def _store_split(
     bbox: BBox, layers: list[str],
     geoms: dict[str, list[list[tuple[float, float]]]],
     raw_counts: dict[str, int],
+    bucket: str = "m0",
 ) -> None:
     await cache_set(
-        _split_key(bbox, layers),
+        _split_key(bbox, layers, bucket),
         json.dumps({"geoms": geoms, "raw_counts": raw_counts}, separators=(",", ":")),
     )
 

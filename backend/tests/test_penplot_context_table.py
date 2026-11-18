@@ -50,3 +50,21 @@ def test_schema_caps_rows_and_cell_length():
         ContextTableRow(label="", value="b")
     with pytest.raises(ValidationError):
         ContextTableParams(pad_left_mm=21)
+
+
+def test_cell_pad_defaults_and_env_override(monkeypatch):
+    def keepout_w():
+        _, _, k = _layout(position="top-left")
+        return k[2] - k[0]
+
+    monkeypatch.delenv("PENPLOT_TABLE_CELL_PAD_X_MM", raising=False)
+    base = keepout_w()
+    monkeypatch.setenv("PENPLOT_TABLE_CELL_PAD_X_MM", "6.0")
+    # Two columns, two pads each: 4 * (6.0 - 4.0) mm wider.
+    assert keepout_w() == pytest.approx(base + 8.0)
+
+
+def test_cell_pad_env_out_of_range_fails_fast(monkeypatch):
+    monkeypatch.setenv("PENPLOT_TABLE_CELL_PAD_Y_MM", "-1")
+    with pytest.raises(ValidationError):
+        _layout()

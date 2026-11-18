@@ -14,7 +14,9 @@
 # FV_CPUS/FV_MEMGB (prod container quota, defaults 5.0/4 — the VM has 6 CPUs
 # and the airport traffic ingest saturates a smaller quota),
 # FV_DATA_DIR (default /Users/kissp/srv/fund-vista-data — the host directory
-# the container's /data is bind-mounted from; permanent across a VM rebuild).
+# the container's /data is bind-mounted from; permanent across a VM rebuild),
+# FV_OSM_DB (default /data/osm-local/osm-hu.sqlite, the in-container path of
+# the local OSM extract).
 # Requires: live env from $FV_REPO/.env (never in git); falls back to the
 # live container's inspected env when the file is unreadable (the CD path
 # uses the same /opt mount, so this is only a safety net).
@@ -40,11 +42,20 @@ NET="fundvista-net"
 # not survive one). The path is resolved by the daemon inside the VM; the
 # Mac home is shared there over virtiofs at the same absolute path.
 DATA_DIR="${FV_DATA_DIR:-/Users/kissp/srv/fund-vista-data}"
+# Local OSM extract (CR-010): lives under the same bind mount, so it is
+# permanent and needs no extra volume. Built by ops/osm-local-refresh.sh.
+# A missing file is fine: citymap then uses the public Overpass mirrors.
+OSM_DB="${FV_OSM_DB:-/data/osm-local/osm-hu.sqlite}"
 ENV_FILE="$REPO/.env"
 PORT="8100"
 SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-150}"
 FV_CPUS="${FV_CPUS:-5.0}"
 FV_MEMGB="${FV_MEMGB:-4}"
+# uvicorn workers in prod. A dense all-layer citymap render peaks near 1 GB
+# and each worker may run one (CITYMAP_RENDER_MAX_CONCURRENT), so 4 workers
+# got SIGKILLed inside the 4 GB container once the local OSM extract made
+# dense renders succeed. 2 workers keep the worst case under the limit.
+FV_WORKERS="${FV_WORKERS:-2}"
 
 log() { echo "$(date -u +%FT%TZ) $*"; }
 fail() { echo "DEPLOY FAILED: $1" >&2; exit 1; }
@@ -226,7 +237,7 @@ prod_run() {
   # shellcheck disable=SC2086
   docker run -d --name "$1" --network "$NET" --restart unless-stopped \
     -p 127.0.0.1:${PORT}:${PORT} --cpus="$FV_CPUS" --memory="${FV_MEMGB}g" \
-    -v "$DATA_DIR:/data" $3 --label "fundvista.commit=$4" $5 "$2" >/dev/null
+    -v "$DATA_DIR:/data" -e "CITYMAP_LOCAL_OSM_DB=$OSM_DB" -e "WORKERS=$FV_WORKERS" $3 --label "fundvista.commit=$4" $5 "$2" >/dev/null
 }
 
 do_prune() {

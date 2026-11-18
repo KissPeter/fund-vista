@@ -34,6 +34,22 @@ class CitymapSettings(BaseSettings):
         "https://overpass.openstreetmap.fr/api/interpreter",
         "https://overpass.nchc.org.tw/api/interpreter",
     ]
+    # Optional local OSM extract (backend/osm_local, Hungary on the Mac):
+    # path of the SQLite file built by ``python -m backend.osm_local.build``.
+    # Asked in-process before the public mirrors; anything it cannot answer
+    # falls through. Empty = off. Env: CITYMAP_LOCAL_OSM_DB.
+    local_osm_db: str = ""
+    # Concurrent local-extract queries per worker. A dense all-layer render
+    # holds ~1 GB of elements; the public mirrors were throttled by
+    # ``overpass_max_concurrent`` and timeouts, the local extract answers
+    # everything, so without a cap 6 parallel renders OOM-killed uvicorn
+    # workers in the 4 GB container (observed 2026-11-17).
+    local_osm_max_concurrent: int = 1
+    # Uncached renders per worker. A dense all-layer bbox peaks near 1 GB
+    # (measured: 956 MB, then 66k-path SVGs for minutes); 4 workers x several
+    # parallel renders got uvicorn workers SIGKILLed in the 4 GB container.
+    # Cache hits are not counted. 1 per worker = at most WORKERS dense renders.
+    render_max_concurrent: int = 1
     # Live-query timeout: public mirrors 504 on heavy queries (e.g.
     # buildings over a large bbox). Keep this short so we fail over to the
     # OSM Main API quickly instead of holding a worker for 2 minutes.

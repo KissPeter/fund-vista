@@ -47,7 +47,7 @@ class _CountingUpstream:
         self.elements = elements
         self.queries: list[str] = []
 
-    async def __call__(self, query, client=None):
+    async def __call__(self, query, client=None, **_kw):
         self.queries.append(query)
         return list(self.elements)
 

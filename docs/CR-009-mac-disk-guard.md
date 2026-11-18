@@ -42,7 +42,7 @@ checkouts — the VM disk (100 GiB) was never the constraint.
   store and git state are never touched. `DRY_RUN=1` only prints.
   Exit 0 healthy, 1 floor breached, 2 cannot stat.
 - `ops/mac-disk-guard.plist` — the launchd agent template
-  (`hu.linuxadm.disk-guard`, 06:00 and 18:00; install steps in the file
+  (`hu.linuxadm.disk-guard`, hourly 06:00-22:00; install steps in the file
   header comment).
 - Runbook: the next section, also linked from `docs/mac-fundvista.md`.
 

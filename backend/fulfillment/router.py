@@ -1,23 +1,27 @@
 """Fulfillment endpoints (fund-vista #147, shop #1079).
 
-``POST /v1/fulfill/ink-split`` — one SVG per distinct ink from the purchased
+``POST /v1/fulfill/ink-split`` - one SVG per distinct ink from the purchased
 design's layer-grouped draft. The request carries the design's HMAC token,
 the render params persisted on the WordPress order (the shop half of #1079)
 and the order's ink assignments.
 
 The purchased design is read from the penplot image store first: the bytes
 the buyer's import persisted (the order's ``POST /v1/images/{id}/retain``
-keeps them for the retained TTL). The draft is re-rendered through the
+keeps them for the retained TTL; the weather import retains at import).
+For the airport and traffic kinds the draft is re-rendered through the
 cache-aware render path only as a fallback, when no intact stored copy
-exists (missing, expired, not an SVG, not UTF-8, or hash drift). A
-re-render never runs when the stored design is intact, so a renderer or
-data-source change after purchase cannot break a paid order.
+exists (missing, expired, not an SVG, not UTF-8, or hash drift). The
+weather kind NEVER re-renders: its ERA5T values are revised after purchase,
+so a re-render would hash differently. A missing or non-intact weather copy
+answers ``410 weather_design_unavailable``. A re-render never runs when the
+stored design is intact, so a renderer or data-source change after purchase
+cannot break a paid order.
 
 Guard rails:
 
 - the token triple is verified with the shared shop secret (same HMAC as
-  ``/v1/tokens``) — an unauthenticated fulfillment call never reads or renders;
-- the draft used for the split — stored or re-rendered — must hash back to
+  ``/v1/tokens``) - an unauthenticated fulfillment call never reads or renders;
+- the draft used for the split - stored or re-rendered - must hash back to
   the ``design_id`` (sha256 of the exact bytes); the stored file name is
   never trusted. With no intact stored copy and a re-render that does not
   match, the call fails loudly with ``409 design_mismatch`` instead of
@@ -29,6 +33,7 @@ Guard rails:
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import logging
 import os
@@ -48,6 +53,9 @@ from backend.fulfillment.schemas import (
     InkSplitRequest,
     InkSplitResponse,
 )
+from backend.pcb import cache as pcb_cache
+from backend.pcb.schemas import PcbRenderParams
+from backend.pcb.sheet import sheet_from_source
 from backend.http import error_response
 from backend.penplot import imaging
 from backend.penplot.errors import PenPlotError
@@ -61,6 +69,7 @@ from backend.penplot.svgmeta import stamp as svgmeta_stamp
 from backend.traffic import router as traffic_router
 from backend.traffic.schemas import ATTRIBUTION as TRAFFIC_ATTRIBUTION
 from backend.traffic.schemas import RenderRequest as TrafficRenderRequest
+from backend.weather.config import ATTRIBUTION as WEATHER_ATTRIBUTION
 
 log = logging.getLogger(__name__)
 
@@ -96,7 +105,8 @@ def _parse_params(kind: str, params: dict[str, object]) -> object | JSONResponse
     agree with the top-level ``kind``.
     """
     cleaned = {k: v for k, v in params.items() if k != "kind"}
-    model = TrafficRenderRequest if kind == "traffic" else AirportRenderRequest
+    model = {"traffic": TrafficRenderRequest, "pcb": PcbRenderParams}.get(
+        kind, AirportRenderRequest)
     try:
         return model(**cleaned)  # type: ignore[call-arg]
     except ValidationError as exc:
@@ -172,40 +182,60 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
 
     endpoint = "/v1/fulfill/ink-split"
     design_id = body.design.design_id.lower()
-    if body.kind == "traffic":
-        attribution = TRAFFIC_ATTRIBUTION
-        group_ink = _traffic_mapper(body.inks)
+    if body.kind == "pcb":
+        # A PCB sheet is not in the image store: the draft is the sheet the
+        # render cached, or, when that is gone, the stored source re-plotted.
+        drafted = await _pcb_draft(body)
+        if isinstance(drafted, JSONResponse):
+            return drafted
+        svg_text, warnings, cache_hit, place, group_ink, attribution, pen_ink = drafted
     else:
-        attribution = AIRPORT_ATTRIBUTION
-        group_ink = _airport_mapper(body.inks)
-
-    # The stored design goes first and needs no schema check: an intact paid
-    # design must not 422 because the persisted params drifted from the schema.
-    stored = _stored_design_svg(design_id)
-    if stored is not None:
-        # The purchased bytes themselves: no renderer, no upstream calls.
-        svg_text = stored
-        place = _place_from_params(body.params)
-        warnings, cache_hit = ["fulfilled_from_stored_design"], True
-    else:
-        parsed = _parse_params(body.kind, body.params)
-        if isinstance(parsed, JSONResponse):
-            return parsed
         if body.kind == "traffic":
-            info = await traffic_router.render_document(parsed, request, endpoint, started)
-            if isinstance(info, JSONResponse):
-                return info
-            svg_text, warnings, cache_hit = info["svg_text"], info["warnings"], info["cache_hit"]
-            place = info["icao"]
+            attribution = TRAFFIC_ATTRIBUTION
+            group_ink = _traffic_mapper(body.inks)
+        elif body.kind == "weather":
+            attribution = WEATHER_ATTRIBUTION
+            group_ink = _weather_mapper(body.inks)
         else:
-            info = await airports_router.render_document(
-                parsed, request, endpoint=endpoint, started_mono=started)
-            if isinstance(info, JSONResponse):
-                return info
-            # design_id is the hash of the imported (content-cropped) image.
-            svg_text = airports_router.crop_svg_to_content(info["svg_text"])
-            warnings, cache_hit = info["warnings"], info["cache_hit"]
-            place = info["icao"]
+            attribution = AIRPORT_ATTRIBUTION
+            group_ink = _airport_mapper(body.inks)
+
+        pen_ink = body.inks.pen
+
+        # The stored design goes first and needs no schema check: an intact paid
+        # design must not 422 because the persisted params drifted from the schema.
+        stored = _stored_design_svg(design_id)
+        if stored is not None:
+            # The purchased bytes themselves: no renderer, no upstream calls.
+            svg_text = stored
+            place = _place_from_params(body.params)
+            warnings, cache_hit = ["fulfilled_from_stored_design"], True
+        else:
+            if body.kind == "weather":
+                return error_response(
+                    410, "weather_design_unavailable",
+                    "The retained weather design is gone and weather is never re-rendered "
+                    "(ERA5T values change after purchase). Re-import the design to order again.",
+                )
+            parsed = _parse_params(body.kind, body.params)
+            if isinstance(parsed, JSONResponse):
+                return parsed
+            if body.kind == "traffic":
+                info = await traffic_router.render_document(parsed, request, endpoint, started)
+                if isinstance(info, JSONResponse):
+                    return info
+                svg_text, warnings, cache_hit = info["svg_text"], info["warnings"], info["cache_hit"]
+                place = info["icao"]
+            else:
+                info = await airports_router.render_document(
+                    parsed, request, endpoint=endpoint, started_mono=started)
+                if isinstance(info, JSONResponse):
+                    return info
+                # design_id is the hash of the imported (content-cropped) image.
+                svg_text = airports_router.crop_svg_to_content(info["svg_text"])
+                warnings, cache_hit = info["warnings"], info["cache_hit"]
+                place = info["icao"]
+
 
     # Whichever draft was used must be the purchased design: sha256 == design_id.
     digest = splitter.design_id_for(svg_text)
@@ -215,7 +245,7 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
         return error_response(
             409, "design_mismatch",
             "No intact stored copy of the purchased design exists and the re-rendered "
-            "draft does not match it — the renderer or its data changed since purchase.",
+            "draft does not match it - the renderer or its data changed since purchase.",
         )
 
     files: list[InkFileOut] = []
@@ -223,7 +253,7 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
     # The page furniture (frame, title band, tables) is drawn once: on the Pen
     # pass, or on the first pass when the Pen has no layer of its own.
     furniture_ink = (
-        body.inks.pen if any(p.ink == body.inks.pen for p in passes)
+        pen_ink if any(p.ink == pen_ink for p in passes)
         else (passes[0].ink if passes else "")
     )
     for pass_file in passes:
@@ -238,7 +268,7 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
                 log.warning("fulfill.ink-split design=%s pass=%s compose failed: %s",
                             body.design.design_id[:12], pass_file.ink, exc.code)
                 return error_response(exc.status, exc.code, exc.message)
-        stamped = svgmeta_stamp(pass_svg, _settings, title=f"{place} — {pass_file.ink} pass")
+        stamped = svgmeta_stamp(pass_svg, _settings, title=f"{place} - {pass_file.ink} pass")
         try:
             imaging.parse_svg_vectors(stamped.encode("utf-8"))
         except Exception as exc:  # unplottable pass: refuse the whole split
@@ -265,6 +295,59 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
     )
 
 
+async def _pcb_draft(body: InkSplitRequest):
+    """The stored sheet of a PCB design, with the inks its render params gave.
+
+    The sheet SVG and the canonical params it was made with come from the render
+    cache by design id; the params must match the stored ones, so the split
+    cannot ink a different design. When the sheet is missing but the uploaded
+    source is cached, the sheet is re-plotted from it with the request params
+    and must hash to the design id. Returns the draft tuple or a refusal.
+    """
+    parsed = _parse_params(body.kind, body.params)
+    if isinstance(parsed, JSONResponse):
+        return parsed
+    design_id = body.design.design_id.lower()
+    found = await pcb_cache.cache_get_many([
+        pcb_cache.svg_cache_key(design_id), pcb_cache.params_cache_key(design_id),
+        pcb_cache.source_cache_key(design_id),
+    ])
+    svg_text = found.get(pcb_cache.svg_cache_key(design_id))
+    stored = found.get(pcb_cache.params_cache_key(design_id))
+    if stored is not None and stored != parsed.model_dump_json():
+        return error_response(
+            409, "design_mismatch",
+            "The render params do not match the purchased design.",
+        )
+    warnings, cache_hit = [], True
+    if svg_text is None:
+        # The sheet is gone: re-plot the stored source with the request's params
+        # (the same composition as /render) and accept it only if it hashes to
+        # the purchased design id.
+        source = found.get(pcb_cache.source_cache_key(design_id))
+        if source is None:
+            return error_response(
+                409, "draft_expired",
+                "The PCB sheet is no longer cached - re-run POST /v1/pcb/render, then order again.",
+            )
+        result = await sheet_from_source(base64.b64decode(source), parsed)
+        if splitter.design_id_for(result.svg) != design_id:
+            return error_response(
+                409, "design_mismatch",
+                "The stored Gerber does not re-render to the purchased design.",
+            )
+        svg_text, warnings, cache_hit = result.svg, ["rendered_from_stored_source"], False
+    elif stored is None:
+        return error_response(
+            409, "draft_expired",
+            "The PCB sheet is no longer cached - re-run POST /v1/pcb/render, then order again.",
+        )
+    return (
+        svg_text, warnings, cache_hit, "PCB", _pcb_mapper(parsed),
+        "PCB layout from the buyer's own Gerber or Excellon file.", parsed.pen,
+    )
+
+
 def _compose_pass(
     pass_file: splitter.InkFile,
     convert: ConvertParams,
@@ -274,8 +357,8 @@ def _compose_pass(
 ) -> str:
     """Lay one ink pass out on the buyer's sheet (page, margins, title strip).
 
-    The pass keeps the draft's root tag, so its source size — and with it the
-    placement — is identical for every pass and for the preview convert. Only
+    The pass keeps the draft's root tag, so its source size - and with it the
+    placement - is identical for every pass and for the preview convert. Only
     the Pen pass draws the furniture; the others reserve the same title strip
     so the artwork registers across pens. Every stroke is black on a plain page
     (the ink is carried by the file name, shop D0): the display colour and
@@ -296,11 +379,29 @@ def _compose_pass(
     return result.svg_text
 
 
+def _weather_mapper(inks):
+    """Group-id → ink mapping for the weather kind (data layers → their buyer
+    ink, basemap and city labels → the Pen)."""
+    def group_ink(group_id: str) -> str:
+        return splitter.weather_group_ink(group_id, inks.pen, inks.weather_layer_colors)
+    return group_ink
+
+
 def _airport_mapper(inks):
     """Group-id → ink mapping for the airport kind (runway groups → the
     runway ink, everything else → the Pen)."""
     def group_ink(group_id: str) -> str:
         return splitter.airport_group_ink(group_id, inks.pen, inks.runway)
+    return group_ink
+
+
+def _pcb_mapper(params: PcbRenderParams):
+    """Group-id → ink mapping for the pcb kind (each enabled sub-layer → its
+    resolved ink, anything else → the Pen)."""
+    layer_inks = params.enabled_layers()
+
+    def group_ink(group_id: str) -> str:
+        return splitter.pcb_group_ink(group_id, params.pen, layer_inks)
     return group_ink
 
 

@@ -223,6 +223,11 @@ def _way_tiles(
 ) -> set[tuple[int, int]]:
     """Tiles holding at least one of the way's nodes — Overpass's own rule."""
     out: set[tuple[int, int]] = set()
+    g = way.get("g")
+    if g is not None:  # compact way: geometry inline as lon, lat, lon, lat, ...
+        for i in range(0, len(g) - 1, 2):
+            out.add(tile_of_point(g[i + 1], g[i], deg))
+        return out
     for ref in way.get("nodes", []):
         coord = nodes.get(ref)
         if coord is not None:
@@ -315,6 +320,15 @@ def clip_elements(elements: list[dict], bbox: BBox) -> list[dict]:
         lat, lon = coord
         return south <= lat <= north and west <= lon <= east
 
+    def way_inside(way: dict) -> bool:
+        g = way.get("g")
+        if g is not None:  # compact way
+            return any(
+                south <= g[i + 1] <= north and west <= g[i] <= east
+                for i in range(0, len(g) - 1, 2)
+            )
+        return any(inside(ref) for ref in way.get("nodes", []))
+
     kept: dict[tuple[str, int], dict] = {}
 
     def keep_way(way: dict) -> None:
@@ -328,7 +342,7 @@ def clip_elements(elements: list[dict], bbox: BBox) -> list[dict]:
 
     selected: set[int] = set()
     for wid, way in ways.items():
-        if any(inside(ref) for ref in way.get("nodes", [])):
+        if way_inside(way):
             selected.add(wid)
             keep_way(way)
 

@@ -29,6 +29,7 @@ from backend.cancel import (
 from backend.citymap.cache import KEY_PREFIX, cache_get
 from backend.citymap.config import settings
 from backend.citymap.fetching import _load_raw
+from backend.citymap.shortways import bucket_key, detail_bucket
 from backend.citymap.geocode import (
     BBoxTooLargeError,
     CityNotFoundError,
@@ -189,6 +190,19 @@ async def geocode(city: str = Query(min_length=1, max_length=120)) -> GeocodeRes
     )
 
 
+_render_sem: asyncio.Semaphore | None = None
+_render_sem_cap = 0
+
+
+def _render_slot() -> asyncio.Semaphore:
+    """Per-worker cap on concurrent uncached renders (memory, see config)."""
+    global _render_sem, _render_sem_cap
+    want = max(1, int(settings.render_max_concurrent))
+    if _render_sem is None or _render_sem_cap != want:
+        _render_sem, _render_sem_cap = asyncio.Semaphore(want), want
+    return _render_sem
+
+
 async def _render_uncached(
     bbox: BBox, layers: list[str], body: RenderRequest,
     svg_key: str, counts_key: str, warnings: list[str],
@@ -207,11 +221,29 @@ async def _render_uncached(
     if cached is not None:
         svg_text, path_counts, raw_counts = cached
         return svg_text, path_counts, raw_counts, True
+    # Dense renders hold ~1 GB (raw elements + split + SVG) for a minute or
+    # more; cache hits above never queue behind them. See render_max_concurrent.
+    async with _render_slot():
+        return await _render_heavy(
+            bbox, layers, body, svg_key, counts_key, warnings,
+            request=request, endpoint=endpoint, started_mono=started_mono,
+        )
+
+
+async def _render_heavy(
+    bbox: BBox, layers: list[str], body: RenderRequest,
+    svg_key: str, counts_key: str, warnings: list[str],
+    request: Request | None = None,
+    endpoint: str = "/v1/citymap/render",
+    started_mono: float = 0.0,
+) -> tuple[str, dict[str, int], dict[str, int], bool] | JSONResponse:
+    """Uncached part of :func:`_render_uncached` (runs inside the render slot)."""
     # 1 — before any network/CPU work.
     await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started_mono)
     # P5: same area+layers with different width/minlen reuses the split
     # and skips the Overpass/tile fetch entirely.
-    split_cache = await _load_cached_split(bbox, layers, warnings)
+    bucket = bucket_key(detail_bucket(body.min_path_len_m))
+    split_cache = await _load_cached_split(bbox, layers, warnings, bucket)
     raw_elements = None
     geoms_pre: dict | None = None
     raw_counts_pre: dict | None = None
@@ -221,6 +253,7 @@ async def _render_uncached(
         raw_elements, err = await _load_raw(
             bbox, layers, warnings,
             request=request, endpoint=endpoint, started_mono=started_mono,
+            min_path_len_m=body.min_path_len_m,
         )
         if err is not None:
             return err
@@ -264,8 +297,12 @@ async def _render_uncached(
     # Thread may have finished just as the client went away — do not
     # poison the cache with a run nobody will use.
     await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
+    if "partial_data" in warnings:
+        # Upstream lost layers/cells: serve what we have, but never pin it
+        # as the final render — the next request must refetch the gaps.
+        return svg_text, path_counts, raw_counts, False
     if store_me is not None:
-        await _store_split(bbox, layers, store_me[0], store_me[1])
+        await _store_split(bbox, layers, store_me[0], store_me[1], bucket)
     await _store_render(svg_key, counts_key, svg_text, path_counts, raw_counts)
     return svg_text, path_counts, raw_counts, False
 

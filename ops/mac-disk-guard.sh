@@ -16,7 +16,7 @@
 #                    data dir, git state or anything newer than the age
 #                    threshold.
 #
-# Intended as a launchd agent (every 6 h); see ops/mac-disk-guard.plist and
+# Intended as a launchd agent (hourly, 06:00-22:00); see ops/mac-disk-guard.plist and
 # docs/CR-009-mac-disk-guard.md. Recovery for the read-only-filesystem state
 # is in the same doc: `rdctl shutdown` + `rdctl start`.
 #
@@ -72,6 +72,23 @@ if [ "$above_floor" = "1" ]; then
     if [ "$PRUNE" = "1" ]; then
         prune_one "$HOME/Library/Caches/ms-playwright"
         prune_one "$HOME/Library/Caches/rancher-desktop-updater"
+    fi
+
+    # Docker inside the Colima VM: the VM disk image (~/.colima, tens of GB)
+    # is invisible to the host-side prunes above. Unused images and build
+    # cache are regenerable; volumes and running containers are never touched.
+    # fstrim hands the freed blocks back to the host (sparse disk image).
+    if [ "$PRUNE" = "1" ] && command -v colima >/dev/null 2>&1 \
+        && colima status >/dev/null 2>&1; then
+        if [ "$DRY_RUN" = "1" ]; then
+            echo "PRUNE (dry-run): docker image/builder prune in colima"
+            colima ssh -- docker system df 2>&1 || true
+        else
+            echo "PRUNE: docker image + builder cache in colima"
+            colima ssh -- docker image prune -af --filter "until=24h" 2>&1 || true
+            colima ssh -- docker builder prune -af 2>&1 || true
+            colima ssh -- sudo fstrim -av 2>&1 || true
+        fi
     fi
 
     # Stale agent worktrees: only clean checkouts older than the threshold.

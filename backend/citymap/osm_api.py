@@ -121,6 +121,20 @@ def parse_osm_xml(xml_text: str) -> list[dict]:
     return elements
 
 
+class PartialElements(list):
+    """Elements from an OSM API read in which some cells failed.
+
+    A plain ``list`` to every consumer; ``failed_cells`` names the cells
+    whose data is missing so callers can refuse to treat the area as covered.
+    """
+
+    failed_cells: list
+
+    def __init__(self, elements=(), failed_cells=()):
+        super().__init__(elements)
+        self.failed_cells = list(failed_cells)
+
+
 def merge_elements(chunks: list[list[dict]]) -> list[dict]:
     """Merge per-cell elements, deduping by (type, id)."""
     seen: set[tuple[str, int]] = set()
@@ -165,15 +179,18 @@ async def fetch_osm_api(
         await _raise_if_parked()
         cells = chunk_bbox(bbox, settings.osm_api_max_deg)
         failures: list[str] = []
+        failed_cells: list[BBox] = []
         parsed: list[list[dict]] = []
         for cell in cells:
-            await _fetch_recursive(cell, client, failures, parsed)
+            await _fetch_recursive(cell, client, failures, parsed, failed_cells)
         if not parsed:
             raise OsmApiError("; ".join(failures) or "no cells fetched")
         if failures:
             log.info("osm_api.partial failures=%d cells=%d", len(failures), len(cells))
         elements = merge_elements(parsed)
         log.info("osm_api.ok cells=%d elements=%d", len(cells), len(elements))
+        if failed_cells:
+            return PartialElements(elements, failed_cells)
         return elements
     finally:
         if own_client:
@@ -217,6 +234,7 @@ async def _fetch_recursive(
     client: httpx.AsyncClient,
     failures: list[str],
     parsed: list[list[dict]],
+    failed_cells: list[BBox] | None = None,
 ) -> None:
     """Fetch one cell, subdividing on 400 down to ``osm_api_min_deg``."""
     try:
@@ -225,13 +243,17 @@ async def _fetch_recursive(
         if _cell_too_small(cell, settings.osm_api_min_deg):
             failures.append(f"cell {_cell_param(cell)} answered HTTP 400 ({exc.snippet})" if exc.snippet else f"cell {_cell_param(cell)} answered HTTP 400")
             log.warning("osm_api.fail bbox=%s dense_min_size", _cell_param(cell))
+            if failed_cells is not None:
+                failed_cells.append(cell)
             return
         log.info("osm_api.subdivide bbox=%s", _cell_param(cell))
         for quad in split_quadrants(cell):
-            await _fetch_recursive(quad, client, failures, parsed)
+            await _fetch_recursive(quad, client, failures, parsed, failed_cells)
     except (httpx.HTTPError, OsmApiError) as exc:
         failures.append(f"cell {_cell_param(cell)}: {exc!r}")
         log.warning("osm_api.fail bbox=%s error=%r", _cell_param(cell), exc)
+        if failed_cells is not None:
+            failed_cells.append(cell)
 
 
 async def _raise_if_parked() -> None:
@@ -298,6 +320,7 @@ def _body_snippet(resp: httpx.Response, limit: int = _BODY_SNIPPET_LEN) -> str:
 
 __all__ = [
     "OsmApiError",
+    "PartialElements",
     "chunk_bbox",
     "split_quadrants",
     "parse_osm_xml",

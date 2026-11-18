@@ -22,16 +22,21 @@ from backend.http.mirror_health import configure_mirror_health_redis
 from backend.logging_config import configure_logging
 from backend.citymap.router import router as citymap_router
 from backend.citymap.ui import ui_router as citymap_ui_router
+from backend.osm_local.router import router as osm_local_router
 from backend.airports.cache import configure_airports_redis
 from backend.fulfillment.router import router as fulfillment_router
+from backend.pcb.router import router as pcb_router
 from backend.airports.router import router as airports_router
 from backend.airports.ui import ui_router as airports_ui_router
+from backend.pcb.cache import configure_pcb_redis
 from backend.wordmark.cache import configure_wordmark_redis
 from backend.wordmark.router import router as wordmark_router
 from backend.jobs.router import router as jobs_router
 from backend.jobs.store import configure_jobs_redis
 from backend.traffic.cache import configure_traffic_redis
 from backend.traffic.router import router as traffic_router
+from backend.weather.cache import configure_weather_redis
+from backend.weather.router import router as weather_router
 from backend.penplot.compose_sheet import router as compose_sheet_router
 from backend.penplot.errors import PenPlotError
 from backend.penplot.ratelimit import configure_redis
@@ -120,7 +125,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allow_origins,
     allow_origin_regex=settings.cors_allow_origin_regex,
-    # Shop work order §1: no credentials mode — all shop-facing endpoints
+    # Shop work order §1: no credentials mode - all shop-facing endpoints
     # stay unauthenticated, abuse-controlled by rate limits.
     allow_credentials=False,
     allow_methods=["*"],
@@ -158,6 +163,7 @@ app.include_router(jobs_router)
 # City maps next: versioned routes must win over the catch-all proxy below.
 app.include_router(citymap_router)
 app.include_router(citymap_ui_router)
+app.include_router(osm_local_router)
 # Airport diagrams last: same versioned-before-catch-all rule.
 app.include_router(airports_router)
 app.include_router(airports_ui_router)
@@ -165,8 +171,12 @@ app.include_router(airports_ui_router)
 app.include_router(wordmark_router)
 # Airport traffic (Phase 1: availability + ingest job; Mac-only until R2).
 app.include_router(traffic_router)
+# Weather map (Phase 1: availability; render and import in Phase 2).
+app.include_router(weather_router)
 # Fulfillment ink-split (fund-vista #147): one SVG per distinct ink.
 app.include_router(fulfillment_router)
+# Gerber single-file SVG preview (POST /v1/pcb/preview): same /v1 rule.
+app.include_router(pcb_router)
 app.add_exception_handler(PenPlotError, penplot_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
 
@@ -213,8 +223,10 @@ async def _startup() -> None:
         configure_citymap_redis(redis_client)
         configure_airports_redis(redis_client)
         configure_wordmark_redis(redis_client)
+        configure_pcb_redis(redis_client)
         configure_jobs_redis(redis_client)
         configure_traffic_redis(redis_client)
+        configure_weather_redis(redis_client)
         configure_mirror_health_redis(redis_client)
     except Exception as exc:
         redis_client = None
@@ -222,8 +234,10 @@ async def _startup() -> None:
         configure_citymap_redis(None)
         configure_airports_redis(None)
         configure_wordmark_redis(None)
+        configure_pcb_redis(None)
         configure_jobs_redis(None)
         configure_traffic_redis(None)
+        configure_weather_redis(None)
         configure_mirror_health_redis(None)
         print(f"Redis unavailable, continuing without cache: {exc}")
 

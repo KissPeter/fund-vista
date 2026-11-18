@@ -36,12 +36,14 @@ strokes:
   long_percentile: 70
   drawn_min_px: 20
   min_drawn_share: 0.1
-  split_over_s: 20      # pen-event gaps longer than this get synthetic cut points; null = off
+  split_over_s: 20      # gaps longer than this (incl. start and end of the source) get synthetic cut points; null = off
   split_piece_s: 7      # each split gap becomes ceil(gap / split_piece_s) equal pieces
 
 segment:
   min_s: 3
   max_s: 8
+  first_min_s: 10       # each clip opens with one take of first_min_s..first_max_s: no early cut
+  first_max_s: 14
   lead_short: [2, 3]
   pre_roll: 0.15
   post_roll: 0.25

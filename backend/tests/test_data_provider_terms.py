@@ -235,7 +235,7 @@ def test_citymap_overpass_falls_over_in_configured_order(monkeypatch):
         monkeypatch.setattr(citymap_settings, "overpass_retries", 0)
         monkeypatch.setattr(citymap_settings, "overpass_max_concurrent", 2)
         city_overpass._reset_overpass_semaphore()
-        elements = [{"type": "node", "id": 1}]
+        elements = [{"type": "relation", "id": 1, "members": [], "tags": {}}]
         client = _OverpassClient([
             _OverpassResp(504),
             _OverpassResp(200, {"elements": elements}),
@@ -244,7 +244,7 @@ def test_citymap_overpass_falls_over_in_configured_order(monkeypatch):
         return out, client
 
     out, client = asyncio.run(scenario())
-    assert out == [{"type": "node", "id": 1}]
+    assert out == [{"type": "relation", "id": 1, "members": [], "tags": {}}]
     assert [url for url, _ in client.calls] == list(citymap_settings.overpass_urls[:2])
     for _, headers in client.calls:
         assert headers["User-Agent"] == citymap_settings.user_agent
@@ -262,7 +262,7 @@ def test_citymap_overpass_remark_retries_then_fails_over(monkeypatch):
 
         monkeypatch.setattr(asyncio, "sleep", no_sleep)
         bad = {"elements": [], "remark": "runtime error: Query timed out in \"query\""}
-        good = [{"type": "node", "id": 9}]
+        good = [{"type": "relation", "id": 9, "members": [], "tags": {}}]
         client = _OverpassClient([
             _OverpassResp(200, bad),
             _OverpassResp(200, bad),
@@ -272,7 +272,7 @@ def test_citymap_overpass_remark_retries_then_fails_over(monkeypatch):
         return out, client
 
     out, client = asyncio.run(scenario())
-    assert out == [{"type": "node", "id": 9}]
+    assert out == [{"type": "relation", "id": 9, "members": [], "tags": {}}]
     # Same mirror retried once, then the next mirror answered.
     urls = [url for url, _ in client.calls]
     assert urls == [citymap_settings.overpass_urls[0]] * 2 + [citymap_settings.overpass_urls[1]]
@@ -305,7 +305,7 @@ def test_citymap_overpass_fail_fast_on_403_no_same_mirror_retry(monkeypatch):
             raise AssertionError("403 must not back off / retry")
 
         monkeypatch.setattr(asyncio, "sleep", boom_sleep)
-        elements = [{"type": "node", "id": 7}]
+        elements = [{"type": "relation", "id": 7, "members": [], "tags": {}}]
         client = _OverpassClient([
             _OverpassResp(403),
             _OverpassResp(200, {"elements": elements}),
@@ -314,7 +314,7 @@ def test_citymap_overpass_fail_fast_on_403_no_same_mirror_retry(monkeypatch):
         return out, client
 
     out, client = asyncio.run(scenario())
-    assert out == [{"type": "node", "id": 7}]
+    assert out == [{"type": "relation", "id": 7, "members": [], "tags": {}}]
     assert [url for url, _ in client.calls] == list(citymap_settings.overpass_urls[:2])
 
 

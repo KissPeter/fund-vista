@@ -55,6 +55,8 @@ LINE_COLORS: dict[str, str] = {
     "blue": "#0000FF",
     # Shop RUNWAY_INK_HEX / ink_split green.
     "green": "#1E7A46",
+    # Two-pen geometry items on black / electric-blue paper (shop #c2185b).
+    "pink": "#C2185B",
 }
 
 LINE_COLOR_IDS = tuple(LINE_COLORS)

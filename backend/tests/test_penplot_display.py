@@ -24,6 +24,7 @@ STROKE = {
     "red": "#FF0000",
     "blue": "#0000FF",
     "green": "#1E7A46",
+    "pink": "#C2185B",
 }
 
 

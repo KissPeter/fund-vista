@@ -18,6 +18,7 @@ import httpx
 
 from backend.citymap.config import settings
 from backend.citymap.layers import selectors_for
+from backend.citymap.shortways import compact_elements
 from backend.http.overpass_client import OverpassClient, OverpassConfig, OverpassError
 
 log = logging.getLogger(__name__)
@@ -154,22 +155,27 @@ def split_elements(
     """
     from backend.cancel import ClientCancelled
     nodes: dict[int, tuple[float | None, float | None]] = {}
-    ways: dict[int, tuple[list[int], dict]] = {}
+    ways: dict[int, tuple[list[int], dict, list[float] | None]] = {}
     relations: list[dict] = []
     for el in elements:
         kind = el.get("type")
         if kind == "node":
             nodes[el["id"]] = (el.get("lon"), el.get("lat"))
         elif kind == "way":
-            ways[el["id"]] = (el.get("nodes", []), el.get("tags", {}) or {})
+            ways[el["id"]] = (el.get("nodes", []), el.get("tags", {}) or {}, el.get("g"))
         elif kind == "relation":
             relations.append(el)
 
     geoms: dict[str, list[list[tuple[float, float]]]] = {layer: [] for layer in layers}
     emitted_ways: set[int] = set()
 
-    def emit(layer: str, refs: list[int]) -> None:
+    def emit(layer: str, refs: list[int], g: list[float] | None = None) -> None:
         pts: list[tuple[float, float]] = []
+        if g is not None:  # compact way: [lon, lat, lon, lat, ...]
+            pts = list(zip(g[0::2], g[1::2]))
+            if len(pts) >= 2:
+                geoms[layer].append(pts)
+            return
         for ref in refs:
             coord = nodes.get(ref)
             if coord is None or coord[0] is None or coord[1] is None:
@@ -187,17 +193,17 @@ def split_elements(
         for member in rel.get("members", []):
             if member.get("type") == "way" and member.get("ref") in ways:
                 ref = member["ref"]
-                emit(layer, ways[ref][0])
+                emit(layer, ways[ref][0], ways[ref][2])
                 emitted_ways.add(ref)
 
-    for n, (wid, (refs, tags)) in enumerate(ways.items()):
+    for n, (wid, (refs, tags, wg)) in enumerate(ways.items()):
         if wid in emitted_ways:
             continue
         if cancelled is not None and n % max(1, cancel_every) == 0 and callable(cancelled) and cancelled():
             raise ClientCancelled("citymap", "svg_build")
         layer = match_way_layer(tags, layers)
         if layer is not None:
-            emit(layer, refs)
+            emit(layer, refs, wg)
 
     counts = {"nodes": len(nodes), "ways": len(ways), "relations": len(relations)}
     return geoms, counts
@@ -207,8 +213,13 @@ async def fetch_overpass(
     query: str,
     client: httpx.AsyncClient | None = None,
     budget_s: float | None = None,
+    min_len_m: float = 0.0,
 ) -> list[dict]:
-    """POST the query to the first healthy Overpass mirror.
+    """Answer the query from the local extract, else the first healthy mirror.
+
+    The local Hungary extract (``CITYMAP_LOCAL_OSM_DB``, in-process) goes
+    first; it declines anything outside its polygon, so those requests POST
+    to the public mirrors exactly as before.
 
     Thin binding of citymap settings to the shared
     :class:`backend.http.overpass_client.OverpassClient`: mirror failover,
@@ -219,6 +230,11 @@ async def fetch_overpass(
     Raises :class:`OverpassError` when every mirror fails, is parked, or
     answers with non-JSON so the router can map it to a 502 envelope.
     """
+    from backend.osm_local.service import fetch_local
+
+    local = await fetch_local(query, min_len_m)
+    if local is not None:
+        return local  # already filtered at the source
     cfg = OverpassConfig(
         urls=tuple(settings.overpass_urls),
         user_agent=settings.user_agent,
@@ -232,9 +248,13 @@ async def fetch_overpass(
         fail_park_s=settings.overpass_fail_park_s,
         name="overpass",
     )
-    return await OverpassClient(
+    elements = await OverpassClient(
         cfg, semaphore=_overpass_semaphore, error_cls=OverpassError, http=client
     ).fetch(query, budget_s)
+    # Public mirrors cannot filter by length cheaply (measured: slower), so
+    # convert to compact elements (node dicts gone) and drop short ways as
+    # soon as the payload is parsed.
+    return compact_elements(elements, min_len_m)
 
 
 __all__ = [

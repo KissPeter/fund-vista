@@ -44,6 +44,12 @@ class Settings(BaseSettings):
         default=100, validation_alias="PENPLOT_RATE_LIMIT"
     )
     rate_limit_window_s: int = 60
+    # Master kill switch (same env name as the affilio redirect service's
+    # DISABLE_RATELIMIT): when true require_rate_limit is a no-op, so CI and
+    # local test runs are never throttled. Unset in production.
+    disable_ratelimit: bool = Field(
+        default=False, validation_alias="DISABLE_RATELIMIT"
+    )
     # NoDecode: source-side JSON decode is skipped so the raw "a, b, c" string
     # reaches the split validator below (a frozenset is a "complex" env type).
     rate_limit_whitelist: Annotated[frozenset[str], NoDecode] = frozenset()
@@ -85,6 +91,12 @@ class Settings(BaseSettings):
     # coordinate is snapped to this grid (mm) right after layout, so the
     # vpype_command string in convert responses describes what really ran.
     quantization_mm: float = 0.02
+    # Stats/context table cell padding (mm): breathing room between the cell
+    # text and the column / row rules. Env: PENPLOT_TABLE_CELL_PAD_X_MM,
+    # PENPLOT_TABLE_CELL_PAD_Y_MM. Part of the drawn geometry, so a change
+    # applies to sheets composed after it (cached sheets keep the old pad).
+    table_cell_pad_x_mm: float = Field(default=4.0, ge=0.0, le=20.0)
+    table_cell_pad_y_mm: float = Field(default=2.6, ge=0.0, le=20.0)
     # P5: content-addressed disk cache of parse_svg_vectors output (keyed by
     # image_id == sha256 of the SVG bytes). Dense SVGs cost seconds to parse on
     # every convert; re-parsing is wasted once the result cache (P1) serves the
