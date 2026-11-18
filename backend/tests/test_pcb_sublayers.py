@@ -89,3 +89,18 @@ CLEAR_MACRO = (
 def test_clear_macro_primitive_is_not_drawn():
     shapes = board_shapes(CLEAR_MACRO)
     assert _layer_counts(shapes) == {"pads": 1}
+
+
+def test_pads_drawn_as_lines_are_pads_not_tracks() -> None:
+    """A row of short isolated equal lines and a rect-aperture line are pads; a long connected line stays a track."""
+    from pathlib import Path
+
+    from backend.pcb.layers import board_shapes
+
+    data = (Path(__file__).parent / "fixtures" / "pcb_drawn_pads.gbr").read_bytes()
+    shapes = board_shapes(data)
+    pads = [s for s in shapes if s.layer == "pads"]
+    tracks = [s for s in shapes if s.layer == "tracks"]
+    assert len(pads) == 5  # four drawn row pads + the rectangular-aperture line
+    assert all(s.closed for s in pads)
+    assert len(tracks) == 2  # the connected long line pair

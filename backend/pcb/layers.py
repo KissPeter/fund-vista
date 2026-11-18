@@ -139,13 +139,114 @@ def _object_shapes(obj, excellon: bool) -> list[Shape]:
     return shapes
 
 
+#: A pad drawn as a stroke: an isolated line at most this long (mm) ...
+DRAWN_PAD_MAX_LEN_MM = 4.0
+#: ... with a sibling of the same length (5 %) and direction (2 degrees).
+DRAWN_PAD_LEN_TOL = 0.05
+DRAWN_PAD_ANGLE_TOL = math.radians(2.0)
+_GRID_MM = 0.01
+
+
+def _key(point: Point) -> tuple[int, int]:
+    return (round(point[0] / _GRID_MM), round(point[1] / _GRID_MM))
+
+
+def _stroke_outline(p0: Point, p1: Point, width: float, round_caps: bool) -> list[Point]:
+    """Closed outline of a line of ``width`` dragged from p0 to p1."""
+    ang = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
+    r = width / 2.0
+    if not round_caps:
+        ex, ey = r * math.cos(ang), r * math.sin(ang)
+        nx, ny = -ey, ex
+        return [
+            (p0[0] - ex + nx, p0[1] - ey + ny), (p1[0] + ex + nx, p1[1] + ey + ny),
+            (p1[0] + ex - nx, p1[1] + ey - ny), (p0[0] - ex - nx, p0[1] - ey - ny),
+        ]
+    out: list[Point] = []
+    for centre, start in ((p1, ang - math.pi / 2), (p0, ang + math.pi / 2)):
+        for i in range(9):
+            a = start + math.pi * i / 8
+            out.append((centre[0] + r * math.cos(a), centre[1] + r * math.sin(a)))
+    return out
+
+
+def _is_round(obj) -> bool:
+    return obj.aperture.__class__.__name__ == "CircleAperture"
+
+
+def _mm_ends(obj) -> tuple[Point, Point, float]:
+    """Endpoints and width of a round-aperture line, in mm."""
+    prim = next(iter(obj.to_primitives(unit=MM)))
+    return (prim.x1, prim.y1), (prim.x2, prim.y2), float(prim.width)
+
+
+def _drawn_pads(board) -> set[int]:
+    """Ids of the Line objects that are pads drawn as strokes, not tracks.
+
+    A line is a pad when its aperture is not round (a track is never drawn with
+    a rectangle), or when it is short, touches no other stroke or flash, and
+    has a sibling of the same length and direction (a row of fine-pitch pads).
+    """
+    touch: dict[tuple[int, int], int] = {}
+    for obj in board.objects:
+        if isinstance(obj, (Line, Arc)):
+            for prim in obj.to_primitives(unit=MM):
+                for pt in ((prim.x1, prim.y1), (prim.x2, prim.y2)):
+                    touch[_key(pt)] = touch.get(_key(pt), 0) + 1
+        elif isinstance(obj, Flash):
+            touch[_key((MM.convert_from(obj.unit, obj.x), MM.convert_from(obj.unit, obj.y)))] = 2
+    ids: set[int] = set()
+    cands: list[tuple[int, float, float]] = []
+    for obj in board.objects:
+        if not isinstance(obj, Line):
+            continue
+        if not _is_round(obj):
+            ids.add(id(obj))
+            continue
+        p0, p1, _width = _mm_ends(obj)
+        length = math.dist(p0, p1)
+        if 0 < length <= DRAWN_PAD_MAX_LEN_MM and touch[_key(p0)] == 1 and touch[_key(p1)] == 1:
+            cands.append((id(obj), length, math.atan2(p1[1] - p0[1], p1[0] - p0[0]) % math.pi))
+    for k, length, ang in cands:
+        for j, length2, ang2 in cands:
+            d = abs(ang - ang2)
+            d = min(d, math.pi - d)
+            if j != k and abs(length - length2) <= DRAWN_PAD_LEN_TOL * length and d <= DRAWN_PAD_ANGLE_TOL:
+                ids.add(k)
+                break
+    return ids
+
+
+def _drawn_pad_shapes(obj) -> list[Shape]:
+    if not getattr(obj, "polarity_dark", True):
+        return []
+    if _is_round(obj):
+        p0, p1, width = _mm_ends(obj)
+        outlines = [_stroke_outline(p0, p1, width or STROKE_WIDTH_MM, True)]
+    else:
+        outlines = [_outline_points(prim) for prim in obj.to_primitives(unit=MM)]
+    return [
+        Shape(layer="pads", points=tuple(pts), closed=True)
+        for pts in map(_clean, outlines)
+        if len(pts) >= 3
+    ]
+
+
 def board_shapes(data: bytes) -> list[Shape]:
-    """Parse one Gerber or Excellon file into sub-layer shapes (mm, Y up)."""
+    """Parse one Gerber or Excellon file into sub-layer shapes (mm, Y up).
+
+    Some CAM tools draw an SMD pad as a short line instead of flashing it; such
+    a line is reported as a pad outline (see ``_drawn_pads``), not as a track.
+    """
     kind, board = _open_board(data)
     excellon = kind == "excellon"
+    drawn = set() if excellon else _drawn_pads(board)
     shapes: list[Shape] = []
     for obj in board.objects:
-        shapes.extend(_object_shapes(obj, excellon))
+        if id(obj) in drawn:
+            shapes.extend(_drawn_pad_shapes(obj))
+        else:
+            shapes.extend(_object_shapes(obj, excellon))
         if len(shapes) > MAX_SHAPES:
             raise PenPlotError(
                 status=422,
