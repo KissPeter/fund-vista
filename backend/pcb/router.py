@@ -124,7 +124,7 @@ router = APIRouter(prefix="/v1/pcb", tags=["pcb-v1"])
 _settings = Settings()
 
 #: Bump when the sheet geometry or the stats change, so stale renders miss.
-SHEET_VERSION = "sheet-v1"
+SHEET_VERSION = "sheet-v2"
 
 
 @router.post(
