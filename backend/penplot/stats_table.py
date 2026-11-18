@@ -28,9 +28,9 @@ FONT = SVG_FONT_ID
 #: Glyph height of the table cells.
 HEIGHT_MM = 3.0
 #: Horizontal breathing room between cell text and the column rules.
-CELL_PAD_X_MM = 2.5
+CELL_PAD_X_MM = 4.0
 #: Vertical breathing room between cell text and the row rules.
-CELL_PAD_Y_MM = 1.8
+CELL_PAD_Y_MM = 2.6
 #: Gap kept from neighbouring strips (label divider / page edge rules).
 TABLE_GAP_MM = 1.0
 #: Hard cap so a hostile row list cannot blow up the geometry stage.
