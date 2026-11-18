@@ -352,11 +352,42 @@ def test_jobs_traffic_progress_counters(live, monkeypatch, tmp_path):
         time.sleep(0.2)
     final = _wait_done(live, job_id)
     assert final["status"] == "done", final
+    # The terminal document carries the last counters too; a poll that
+    # broke on the done status may never have seen a mid-run snapshot.
+    progress = progress or final.get("progress")
     assert progress is not None, "no progress counters were published"
     assert progress["stage"] in ("download", "parse")
     assert progress["done"] > 0
     if progress["stage"] == "download":
         assert progress["total"] == 300
+
+
+def test_poll_progress_writes_counters_mid_run(monkeypatch, tmp_path):
+    """Regression guard for the loaded-runner gate red: the 1 s poller
+    must copy the download thread's counters into a RUNNING document
+    while the download runs. The executor's final snapshot write (the
+    flake fix) must not become the only path that lands counters.
+    """
+    from backend.jobs import store as job_store
+    from backend.jobs._exec_traffic import _poll_progress, _ProgressBridge
+
+    async def scenario():
+        await job_store.create_job("job-polltest", "traffic_ingest",
+                                   {"icao": "LHBP"}, "127.0.0.1")
+        await job_store.set_status("job-polltest", "running")
+        bridge = _ProgressBridge()
+        bridge.report({"stage": "download", "done": 100, "total": 300})
+        stop = threading.Event()
+        task = asyncio.create_task(_poll_progress("job-polltest", bridge, stop))
+        await asyncio.sleep(1.3)  # one poller tick at 1.0 s
+        stop.set()
+        await task
+        return await job_store.get_job("job-polltest")
+
+    doc = asyncio.run(scenario())
+    assert doc is not None and doc["status"] == "running"
+    assert doc["progress"]["done"] == 100
+    assert doc["progress"]["total"] == 300
 
 
 def test_jobs_traffic_l1_hit_idempotent(live, monkeypatch, tmp_path):

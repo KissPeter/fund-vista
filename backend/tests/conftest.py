@@ -114,18 +114,29 @@ def _reset_overpass_mirror_parks():
     yield
     overpass_mirrors.reset()
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-perf", action="store_true", default=False,
+        help="Run performance-budget tests (skipped by default on the shared CI runner).",
+    )
+
 
 def pytest_configure(config):
+    config.addinivalue_line("markers", "perf: performance-budget tests (run with --run-perf)")
     config.addinivalue_line(
         "markers", "network: live call to an external store; skipped unless selected with -m network"
     )
 
 
 def pytest_collection_modifyitems(config, items):
-    """Network-marked tests run only when explicitly selected with -m network."""
-    if "network" in (config.getoption("-m") or ""):
-        return
-    skip = pytest.mark.skip(reason="live network test; run with -m network")
-    for item in items:
-        if "network" in item.keywords:
-            item.add_marker(skip)
+    """Skip perf budgets unless --run-perf, and network tests unless -m network."""
+    if not config.getoption("--run-perf"):
+        skip_perf = pytest.mark.skip(reason="performance-budget test; run with --run-perf")
+        for item in items:
+            if "perf" in item.keywords:
+                item.add_marker(skip_perf)
+    if "network" not in (config.getoption("-m") or ""):
+        skip_network = pytest.mark.skip(reason="live network test; run with -m network")
+        for item in items:
+            if "network" in item.keywords:
+                item.add_marker(skip_network)
