@@ -412,7 +412,8 @@ class ConvertParams(BaseModel):
             "``<g id=\"traffic-...\" inkscape:groupmode=\"layer\">`` of the "
             "result instead of merging everything into one group. Geometry "
             "and layout are unchanged; page furniture stays in the first "
-            "group. Ignored for other inputs and methods, and when "
+            "group. The shop's 3D city view groups ``buildings`` and ``map`` are "
+            "kept the same way. Ignored for other inputs and methods, and when "
             "runway_ink_group is set."
         ),
     )
@@ -525,6 +526,15 @@ class SegmentsStats(BaseModel):
     after: int
 
 
+class LayerStats(BaseModel):
+    """One kept layer group of a convert (``layer_groups``): its own strokes
+    and pen-down length, so a client can price or report each layer."""
+
+    id: str
+    strokes: int
+    pen_down_mm: float
+
+
 class ConvertStats(BaseModel):
     points: PointsStats
     segments: SegmentsStats
@@ -532,6 +542,9 @@ class ConvertStats(BaseModel):
     pen_down_mm: float
     pen_up_mm: float
     estimated_time_s: float
+    #: Per kept layer group, in document order; ``None`` unless ``layer_groups``
+    #: split the result (the totals above always cover every layer).
+    layers: list[LayerStats] | None = None
 
 
 class ConvertResponse(BaseModel):

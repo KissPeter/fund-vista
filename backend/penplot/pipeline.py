@@ -51,6 +51,7 @@ from backend.penplot.schemas import (
     ConvertStats,
     DRAW_SPEED_MM_MIN,
     LabelParams,
+    LayerStats,
     PointsStats,
     SegmentsStats,
     TRAVEL_SPEED_MM_MIN,
@@ -734,6 +735,15 @@ def run_convert(
         for g_lines in grp_final.values():
             final = final + g_lines
 
+        layer_stats = (
+            [
+                LayerStats(
+                    id=gid, strokes=len(lines),
+                    pen_down_mm=round(sum(polyline_length(pl) for pl in lines), 2),
+                )
+                for gid, lines in grp_final.items()
+            ] if split_layers else None
+        )
         pen_down = sum(polyline_length(pl) for pl in final)
         pen_up = sum(
             dist(final[i][-1], final[i + 1][0]) for i in range(len(final) - 1)
@@ -756,6 +766,7 @@ def run_convert(
             pen_down_mm=round(pen_down, 2),
             pen_up_mm=round(pen_up, 2),
             estimated_time_s=estimated,
+            layers=layer_stats,
         )
         svg_text = to_svg(
             final[:n_main], page_w, page_h,
