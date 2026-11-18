@@ -123,12 +123,20 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "perf: performance-budget tests (run with --run-perf)")
+    config.addinivalue_line(
+        "markers", "network: live call to an external store; skipped unless selected with -m network"
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    if config.getoption("--run-perf"):
-        return
-    skip_perf = pytest.mark.skip(reason="performance-budget test; run with --run-perf")
-    for item in items:
-        if "perf" in item.keywords:
-            item.add_marker(skip_perf)
+    """Skip perf budgets unless --run-perf, and network tests unless -m network."""
+    if not config.getoption("--run-perf"):
+        skip_perf = pytest.mark.skip(reason="performance-budget test; run with --run-perf")
+        for item in items:
+            if "perf" in item.keywords:
+                item.add_marker(skip_perf)
+    if "network" not in (config.getoption("-m") or ""):
+        skip_network = pytest.mark.skip(reason="live network test; run with -m network")
+        for item in items:
+            if "network" in item.keywords:
+                item.add_marker(skip_network)
