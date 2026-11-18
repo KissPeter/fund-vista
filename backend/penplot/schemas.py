@@ -403,6 +403,19 @@ class ConvertParams(BaseModel):
             "unchanged. Ignored for other inputs and methods."
         ),
     )
+    layer_groups: bool = Field(
+        default=False,
+        description=(
+            "Vector SVG inputs only (plain contour): keep each of the "
+            "artwork's renderer layer groups (``<g id=\"traffic-...\">``: "
+            "arrivals, departures, holding, go_around, map layers) as its own "
+            "``<g id=\"traffic-...\" inkscape:groupmode=\"layer\">`` of the "
+            "result instead of merging everything into one group. Geometry "
+            "and layout are unchanged; page furniture stays in the first "
+            "group. Ignored for other inputs and methods, and when "
+            "runway_ink_group is set."
+        ),
+    )
     strip_frame: bool = Field(
         default=False,
         description=(
