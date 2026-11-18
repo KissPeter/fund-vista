@@ -91,6 +91,12 @@ class Settings(BaseSettings):
     # coordinate is snapped to this grid (mm) right after layout, so the
     # vpype_command string in convert responses describes what really ran.
     quantization_mm: float = 0.02
+    # Stats/context table cell padding (mm): breathing room between the cell
+    # text and the column / row rules. Env: PENPLOT_TABLE_CELL_PAD_X_MM,
+    # PENPLOT_TABLE_CELL_PAD_Y_MM. Part of the drawn geometry, so a change
+    # applies to sheets composed after it (cached sheets keep the old pad).
+    table_cell_pad_x_mm: float = Field(default=4.0, ge=0.0, le=20.0)
+    table_cell_pad_y_mm: float = Field(default=2.6, ge=0.0, le=20.0)
     # P5: content-addressed disk cache of parse_svg_vectors output (keyed by
     # image_id == sha256 of the SVG bytes). Dense SVGs cost seconds to parse on
     # every convert; re-parsing is wasted once the result cache (P1) serves the

@@ -16,6 +16,7 @@ label strip (``reserve_bottom_mm``) instead of sliding under it.
 
 from __future__ import annotations
 
+from backend.penplot.config import Settings
 from backend.penplot.hershey_fonts import FACES
 from backend.penplot.knockout import Rect
 from backend.penplot.labels import _rounded_rect
@@ -27,10 +28,9 @@ WARNING_UNSUPPORTED = "stats_table_unsupported_characters"
 FONT = SVG_FONT_ID
 #: Glyph height of the table cells.
 HEIGHT_MM = 3.0
-#: Horizontal breathing room between cell text and the column rules.
-CELL_PAD_X_MM = 4.0
-#: Vertical breathing room between cell text and the row rules.
-CELL_PAD_Y_MM = 2.6
+# Cell padding (text to column rules / row rules) is configurable:
+# ``Settings.table_cell_pad_x_mm`` / ``table_cell_pad_y_mm``, env
+# ``PENPLOT_TABLE_CELL_PAD_X_MM`` / ``PENPLOT_TABLE_CELL_PAD_Y_MM``.
 #: Gap kept from neighbouring strips (label divider / page edge rules).
 TABLE_GAP_MM = 1.0
 #: Hard cap so a hostile row list cannot blow up the geometry stage.
@@ -119,6 +119,9 @@ def layout_stats_table(
     page frame radius; 0 is sharp).
     """
     warnings: list[str] = []
+    cfg = Settings()
+    cell_pad_x = cfg.table_cell_pad_x_mm
+    cell_pad_y = cfg.table_cell_pad_y_mm
     cells = [
         (_display_key(key) if display_keys else key, str(value))
         for key, value in rows[:MAX_ROWS]
@@ -146,9 +149,9 @@ def layout_stats_table(
     if text_h <= 1e-9:
         text_h = HEIGHT_MM
 
-    col0 = max(key_widths) + 2 * CELL_PAD_X_MM
-    col1 = max(val_widths) + 2 * CELL_PAD_X_MM
-    row_h = text_h + 2 * CELL_PAD_Y_MM
+    col0 = max(key_widths) + 2 * cell_pad_x
+    col1 = max(val_widths) + 2 * cell_pad_x
+    row_h = text_h + 2 * cell_pad_y
     table_w = col0 + col1
     table_h = row_h * len(cells)
 
@@ -187,8 +190,8 @@ def layout_stats_table(
         lines.append([_map(0.0, y), _map(table_w, y)])
     # Cell text: left-aligned in each column, vertically centred in the row.
     for i, (key_lines, val_lines) in enumerate(text_blocks):
-        top = i * row_h + CELL_PAD_Y_MM
-        for block, col_x in ((key_lines, CELL_PAD_X_MM), (val_lines, col0 + CELL_PAD_X_MM)):
+        top = i * row_h + cell_pad_y
+        for block, col_x in ((key_lines, cell_pad_x), (val_lines, col0 + cell_pad_x)):
             if not block:
                 continue
             ys = [y for pl in block for _, y in pl]
