@@ -382,7 +382,8 @@ def _walk_children(
         local = _mmul(ctm, _parse_transform(el.attrib.get("transform")))
         if t in ("g", "a", "switch", "symbol"):
             gid = el.attrib.get("id") or ""
-            if layers is not None and layer_prefix and gid.startswith(layer_prefix):
+            if layers is not None and layer_prefix and (
+                    gid.startswith(layer_prefix) or gid in CITY_LAYER_GROUP_IDS):
                 # A renderer layer group: its descendants land in their own
                 # bucket (keyed by the group id), in document order.
                 _walk_children(el, local, layers.setdefault(gid, []), id_map,
@@ -439,6 +440,11 @@ RUNWAY_INK_GROUPS: tuple[str, ...] = ("runways", "osm-runways", "runway")
 #: Id prefix of the traffic renderer's layer groups (``traffic-arrivals``, ...):
 #: ``layer_groups`` keeps each as its own ``<g>`` of the convert result.
 LAYER_GROUP_PREFIX = "traffic-"
+
+#: Exact ids of the shop's 3D city view groups (``<g id="buildings">`` and
+#: ``<g id="map">``): with ``layer_groups`` each is kept as its own layer too,
+#: so the buildings ink can be told apart from the map ink after convert.
+CITY_LAYER_GROUP_IDS: tuple[str, ...] = ("buildings", "map")
 
 
 def parse_svg_vectors(data: bytes) -> tuple[list[list[tuple[float, float]]], float, float, list[str]]:
@@ -1028,6 +1034,7 @@ __all__ = [
     "dist2",
     "RUNWAY_INK_GROUPS",
     "LAYER_GROUP_PREFIX",
+    "CITY_LAYER_GROUP_IDS",
     "parse_svg_vectors",
     "parse_svg_vectors_tagged",
     "parse_svg_vectors_layers",

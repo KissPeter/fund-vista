@@ -58,3 +58,36 @@ def test_option_ignored_where_it_cannot_apply_and_has_own_key():
         ConvertParams(), False)
     on = ConvertParams(methods=["contour"], layer_groups=True)
     assert pipeline.params_hash(on, True) != pipeline.params_hash(ConvertParams(methods=["contour"]), True)
+
+
+# The shop's 3D city view plot: two top-level groups, a map (water + roads)
+# and a buildings group, each with its own ink after convert.
+CITY = b"""<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" viewBox="0 0 210 297">
+<g id="map" fill="none"><path d="M 20 20 L 190 20"/><path d="M 20 40 L 120 40"/></g>
+<g id="buildings" fill="none"><path d="M 60 100 L 120 100 L 120 160 L 60 160 Z"/><path d="M 130 200 L 170 200"/></g>
+</svg>"""
+
+
+def _city(**kw):
+    return pipeline.run_convert(
+        image_id="c" * 64, image_bytes=CITY, is_vector=True, src_w=210, src_h=297,
+        params=ConvertParams(methods=["contour"], **kw), settings=Settings(),
+    )
+
+
+def test_city_map_and_buildings_stay_separate_layers_with_stats():
+    res = _city(layer_groups=True)
+    got = _layers(res.svg_text)
+    assert set(got) == {"map", "buildings"}
+    assert got["buildings"] >= 2 and got["map"] >= 2
+    assert 'inkscape:label="Buildings"' in res.svg_text
+    assert [layer.id for layer in res.stats.layers] == ["map", "buildings"]
+    total = sum(layer.pen_down_mm for layer in res.stats.layers)
+    assert abs(total - res.stats.pen_down_mm) < 0.05
+    assert sum(layer.strokes for layer in res.stats.layers) == res.stats.strokes
+
+
+def test_city_groups_stay_flat_by_default_and_stats_have_no_layers():
+    res = _city()
+    assert "inkscape" not in res.svg_text
+    assert res.stats.layers is None
