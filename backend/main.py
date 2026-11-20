@@ -17,6 +17,8 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from backend.version import backend_built, backend_version
+from backend import warmup
+from backend.warmup import WarmupConfig
 from backend.citymap.cache import configure_citymap_redis
 from backend.http.mirror_health import configure_mirror_health_redis
 from backend.logging_config import configure_logging
@@ -78,6 +80,10 @@ class Settings(BaseSettings):
         "https://pen-pixel.hu",
     ]
     cors_allow_origin_regex: str = r"(https?://[^/]+:8080|https://[^/]+\.github\.io)"
+    # Render-cache warmer (backend/warmup.py). Off unless both URLs are set.
+    shop_base_url: str = ""
+    warmup_target_url: str = ""
+    warmup_item_timeout_s: float = 120.0
 
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
@@ -190,6 +196,7 @@ http_client = upstream.smart_client(
     "proxy", timeout=30.0, retries=1, allowed_methods=("GET", "HEAD", "OPTIONS"),
 )
 redis_client: Optional[Redis] = None
+_warmup_tasks: list = []
 
 
 def _ttl_until_end_of_day() -> int:
@@ -240,10 +247,37 @@ async def _startup() -> None:
         configure_weather_redis(None)
         configure_mirror_health_redis(None)
         print(f"Redis unavailable, continuing without cache: {exc}")
+    _start_warmup()
+
+
+async def _warmup_claim(key: str, ttl: int) -> bool:
+    """One worker wins each warm-up trigger (Redis SET NX); no Redis means run."""
+    if redis_client is None:
+        return True
+    try:
+        return bool(await redis_client.set(key, "1", nx=True, ex=ttl))
+    except RedisError:
+        return True
+
+
+def _start_warmup() -> None:
+    global _warmup_tasks
+    try:
+        cfg = WarmupConfig(
+            shop_base_url=settings.shop_base_url,
+            target_url=settings.warmup_target_url,
+            backend_version=backend_version(),
+            item_timeout_s=settings.warmup_item_timeout_s,
+        )
+        _warmup_tasks = warmup.start(cfg, claim=_warmup_claim)
+    except Exception:  # the warmer MUST NOT break startup
+        logging.getLogger("fund-vista").exception("warmup: failed to start")
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
+    for task in _warmup_tasks:
+        task.cancel()
     await http_client.aclose()
     if redis_client:
         await redis_client.aclose()
