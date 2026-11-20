@@ -155,6 +155,53 @@ class Sheet:
         for line in stroke_text(text, x0, x1, top, cap_h):
             self.add_polyline(line)
 
+    # -- circle-constrained drawing (overlapping shapes, one pen) -----------
+    @staticmethod
+    def _ok(pt, cons) -> bool:
+        return all(((pt[0] - cx) ** 2 + (pt[1] - cy) ** 2 <= r * r) == inside for cx, cy, r, inside in cons)
+
+    def _add_split(self, a, b, cons) -> None:
+        """Draw segment a-b keeping only the parts that satisfy every circle constraint."""
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        d = b - a
+        ts = [0.0, 1.0]
+        for cx, cy, r, _ in cons:
+            f = a - (cx, cy)
+            qa, qb, qc = d @ d, 2 * f @ d, f @ f - r * r
+            disc = qb * qb - 4 * qa * qc
+            if qa > 0 and disc > 0:
+                for s in (-1, 1):
+                    u = (-qb + s * math.sqrt(disc)) / (2 * qa)
+                    if 0 < u < 1:
+                        ts.append(u)
+        ts.sort()
+        for u0, u1 in zip(ts[:-1], ts[1:]):
+            if u1 - u0 > 1e-9 and self._ok(a + d * (u0 + u1) / 2, cons):
+                self.add_polyline(np.array([a + d * u0, a + d * u1]))
+
+    def outline_c(self, pts: np.ndarray, cons, step: float = 1.0) -> None:
+        pts = np.vstack([pts, pts[:1]])
+        run: list = []
+        for a, b in zip(pts[:-1], pts[1:]):
+            n = max(int(np.linalg.norm(b - a) / step), 1)
+            for i in range(n):
+                p0, p1 = a + (b - a) * i / n, a + (b - a) * (i + 1) / n
+                if self._ok((p0 + p1) / 2, cons):
+                    run = run + [p0, p1] if not run else run + [p1]
+                elif run:
+                    self.add_polyline(np.array(run))
+                    run = []
+        if run:
+            self.add_polyline(np.array(run))
+
+    def hatch_c(self, contours, angle_deg: float, pitch_mm: float, cons) -> None:
+        """Like :meth:`hatch`, restricted to the circle constraints (cx, cy, r, inside)."""
+        before = len(self.lines)
+        self.hatch(contours, angle_deg, pitch_mm)
+        raw, self.lines = self.lines[before:], self.lines[:before]
+        for ln in raw:
+            self._add_split(ln[0], ln[-1], cons)
+
     # -- output ------------------------------------------------------------
     def svg(self) -> str:
         paths = []
@@ -303,6 +350,38 @@ def poster6(src: Path) -> str:
     return sh.svg()
 
 
+def poster7(src: Path) -> str:
+    """Two overlapping circles over seven bars: tone by hatch, overlap cross-hatched."""
+    from PIL import Image
+
+    w, h = Image.open(src).size
+    cx, r, ya, yb = 714.0, 434.0, 873.0, 1307.0
+    A, B = (cx, ya, r), (cx, yb, r)
+    sh = Sheet(w, h, "Bauhaus 1919-1933 - overlapping circles (outline + hatch)")
+    ca, cb = circle(cx, ya, r, 720), circle(cx, yb, r, 720)
+    out_a, in_a = [(*A, False)], [(*A, True)]
+    out_b, in_b = [(*B, False)], [(*B, True)]
+    # bars hidden behind the lower circle
+    for i in range(7):
+        y0 = 1303 + i * 66.7
+        rect = np.array([[82, y0], [1347, y0], [1347, y0 + 38], [82, y0 + 38]], float)
+        sh.outline_c(rect, out_b)
+        sh.hatch_c([rect], *BLACK[0], out_b)
+    # upper circle only (dark red): medium; lower only (pink): sparse; overlap: densest
+    sh.outline_c(ca, out_b)
+    sh.hatch_c([ca], 45.0, 1.4, out_b)
+    sh.outline_c(cb, out_a)
+    sh.hatch_c([cb], 45.0, 2.6, out_a)
+    sh.outline_c(ca, in_b)
+    sh.outline_c(cb, in_a)
+    for ang in (45.0, 135.0):
+        sh.hatch_c([ca], ang, 1.0, in_b)
+    sh.text("BAUHAUS", 88, 1347, 168, 117)
+    sh.text("THE FOUNDATION OF MODERN DESIGN", 88, 680, 1868, 32)
+    sh.text("1919-1933", 1155, 1347, 1868, 32)
+    return sh.svg()
+
+
 def main() -> None:
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
@@ -312,6 +391,7 @@ def main() -> None:
     (out / "bauhaus-4-sun.svg").write_text(poster4(src / "4.jpg"))
     (out / "bauhaus-5-dots.svg").write_text(poster5(src / "5.webp"))
     (out / "bauhaus-6-blobs.svg").write_text(poster6(src / "6.webp"))
+    (out / "bauhaus-7-overlap.svg").write_text(poster7(src / "7.webp"))
     print("wrote", *sorted(p.name for p in out.glob("bauhaus-*.svg")))
 
 
