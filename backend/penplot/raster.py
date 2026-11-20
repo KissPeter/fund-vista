@@ -1,9 +1,11 @@
 """Raster ops: format detection, grayscale load, tone cleanup (REF-002 Phase 4).
 
-Pure move from :mod:`backend.penplot.imaging` — identical behavior.
+Pure move from :mod:`backend.penplot.imaging` - identical behavior.
 Only permissive-licensed libraries (Pillow HPND, NumPy BSD, OpenCV
 Apache-2.0); see the module note in ``svg_vector.py`` for why the SVG
-helpers live separately.
+helpers live separately. Exception: the gallery preview PNG rasterizer
+(``raster_out.py``, resvg via resvg-py) is MPL-2.0 at its core, recorded in
+``backend/THIRD_PARTY_NOTICES.md`` section B.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ log = logging.getLogger(__name__)
 # Explicit decompression limit (review D.3.2). Pillow errors out past this
 # pixel count BEFORE touching the pixel buffer, so a ≤25 MB file can never
 # allocate gigabytes. The value is deliberately generous (a 40+ MP DSLR photo
-# must still load so the pipeline can downscale it) — the real guard is the
+# must still load so the pipeline can downscale it) - the real guard is the
 # explicit error path below, not a tight cap.
 Image.MAX_IMAGE_PIXELS = 100_000_000
 
@@ -45,9 +47,9 @@ EXT_TO_PILLOW_FORMAT = {
 def looks_like_svg(data: bytes) -> bool:
     """True when the bytes actually parse as an SVG document.
 
-    A plain ``b"<svg"`` substring test is not enough: valid rasters — e.g.
+    A plain ``b"<svg"`` substring test is not enough: valid rasters - e.g.
     PNG/JPEG exports whose XMP metadata references ``<svg:...>`` /
-    ``xmlns:svg`` — carry that literal inside their first 2 KB and would be
+    ``xmlns:svg`` - carry that literal inside their first 2 KB and would be
     classified as SVG, then rejected with a bogus "not well-formed XML" 400.
     Verify the bytes parse as XML with an ``<svg>`` root instead.
     """
@@ -58,7 +60,7 @@ def looks_like_svg(data: bytes) -> bool:
         root = DefusedET.fromstring(data)
     except Exception:
         # Deliberate: ANY parse failure means "not an SVG document" (never
-        # a 500) — the caller falls through to raster sniffing. Commented,
+        # a 500) - the caller falls through to raster sniffing. Commented,
         # not narrowed, so exotic decoder failures stay a miss, not a crash.
         return False
     return _local_tag(root) == "svg"
@@ -103,7 +105,7 @@ def load_raster(data: bytes) -> tuple[np.ndarray, int, int, str]:
             gray = np.asarray(gray_img, dtype=np.uint8)
     except DecompressionBombError as exc:
         # Review D.3.2: Pillow's bomb error subclasses bare Exception, so a
-        # naive `except Exception` here must not swallow it into a blank 500 —
+        # naive `except Exception` here must not swallow it into a blank 500 -
         # surface it as a clean 413 envelope instead.
         raise image_too_large(f"Image decompresses to too many pixels ({Image.MAX_IMAGE_PIXELS // 1_000_000} MP limit).") from exc
     except (UnidentifiedImageError, OSError, ValueError) as exc:
@@ -175,7 +177,7 @@ def remove_background(gray: np.ndarray) -> np.ndarray:
     Estimates the background with a heavy blur on a thumbnail (fast even on
     3000 px uploads), subtracts it (paper → 0, ink stays positive), normalizes
     to full range and inverts back to dark-ink-on-white semantics so the
-    downstream blur/contrast/threshold chain behaves exactly as before —
+    downstream blur/contrast/threshold chain behaves exactly as before -
     just with the paper gradient gone. Uniform blanks map to all-white.
     """
     h, w = gray.shape[:2]
@@ -203,13 +205,13 @@ def strip_hatch(mask: np.ndarray, kernel_px: int) -> np.ndarray:
     real linework (outlines, bold glyphs, solid fills) is thicker. Opening
     (erode then dilate) with an isotropic kernel removes any connected ink
     region thinner than the kernel in every direction and regenerates the
-    rest at full width — so hatch strokes vanish, whether they sit in
+    rest at full width - so hatch strokes vanish, whether they sit in
     decorative background or inside a shape's own shading, while thicker
     strokes survive intact.
 
     This is deliberately texture-agnostic: unlike ``remove_background`` (a
     flat-field/vignette corrector for uneven paper tone), it never asks
-    whether a region is "background" or "foreground" — only stroke width
+    whether a region is "background" or "foreground" - only stroke width
     decides. Pick ``kernel_px`` just above the hatch line width and below
     the thinnest stroke you want to keep; 0 disables (identity).
     """
@@ -242,7 +244,7 @@ def rasterize_polylines(
     gray for threshold/blur/contrast to act on, while stroke cores stay
     pure black at any default threshold.
 
-    Returns uint8 gray (0 = ink, 255 = paper) at the working resolution —
+    Returns uint8 gray (0 = ink, 255 = paper) at the working resolution -
     callers use its shape as the layout source size, exactly like a
     downscaled raster upload.
     """
@@ -254,7 +256,7 @@ def rasterize_polylines(
     draw = ImageDraw.Draw(img)
     k = scale * ss
     # Solid cores at any threshold: hairlines draw `ss` wide (== 1 working
-    # pixel), so only antialiased edges — never stroke bodies — respond to
+    # pixel), so only antialiased edges - never stroke bodies - respond to
     # the threshold slider.
     hair = max(1, ss)
     for pl in polylines:

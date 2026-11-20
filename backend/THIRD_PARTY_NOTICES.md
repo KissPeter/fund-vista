@@ -88,11 +88,18 @@ that file has a shop-side consequence, see §D.
 | contourpy | BSD-3-Clause | (c) the contourpy developers (Matplotlib contour engine) - https://github.com/contourpy/contourpy |
 | zarr | MIT | (c) the zarr developers - https://github.com/zarr-developers/zarr-python |
 | gcsfs | BSD-3-Clause | (c) Continuum Analytics and the gcsfs contributors - https://github.com/fsspec/gcsfs |
+| resvg-py (gallery preview PNG, `penplot/raster_out.py`) | MIT binding; the rasterizer it wraps, resvg, is MPL-2.0 | (c) baseplate-admin (binding) - https://github.com/baseplate-admin/resvg-py ; resvg (c) Yevhenii Reizov and contributors - https://github.com/linebender/resvg. MPL-2.0 is file-level weak copyleft: the server uses resvg unmodified, so no MPL file is distributed or changed here |
 | pytest (test group) | MIT | (c) Holger Krekel and the pytest-dev team - https://github.com/pytest-dev/pytest |
 
 Engines used but NOT vendored and NOT Python dependencies: libtesseract /
 `tesseract` binary (Apache-2.0, https://github.com/tesseract-ocr/tesseract)
 - bundled in the `tesserocr` Linux wheel or provided by the host.
+
+Optional fallback, NOT a declared dependency and NOT installed:
+`cairosvg` (LGPL-3.0-or-later, https://github.com/Kozea/CairoSVG) is imported
+lazily by `penplot/raster_out.py` only when `resvg-py` is absent. Adding it to
+`pyproject.toml` needs a licence decision (LGPL) and a system Cairo library,
+so it is not part of this change.
 
 ## C. Deliberately excluded (D1 server-side-only exception)
 

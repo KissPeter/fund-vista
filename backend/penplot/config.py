@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     low_res_dpi_threshold: float = Field(
         default=100.0, validation_alias="PENPLOT_LOW_RES_DPI"
     )
-    # A4 width in mm — the reference for the DPI pre-check (spec §4.1).
+    # A4 width in mm - the reference for the DPI pre-check (spec §4.1).
     a4_width_mm: float = 210.0
     # Absolute public base URL for result links (shop work order §3). When
     # set, svg_url values use this origin instead of the request Host, so
@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     # Anonymous previews keep image_ttl_hours.
     retained_ttl_hours: int = 90 * 24
     # Signed design tokens for the shop bridge (§2). Env names carry the
-    # PENPIXEL_ prefix (shared with Woo), hence the explicit aliases —
+    # PENPIXEL_ prefix (shared with Woo), hence the explicit aliases -
     # field-by-name would read PENPLOT_HMAC_SECRET instead. Empty secret =
     # signing disabled; POST /v1/tokens answers 503 until one is set.
     hmac_secret: str = Field(default="", validation_alias="PENPIXEL_HMAC_SECRET")
@@ -133,6 +133,15 @@ class Settings(BaseSettings):
     # (~60 bytes/pixel peak), so 4 MP keeps a request near 300 MB.
     trace_max_pixels: int = 4_000_000
 
+    # Gallery preview PNG (POST /v1/compose-sheet with preview="png"). The sheet
+    # is fitted inside this box, aspect kept, never enlarged, so it touches one
+    # edge: A4 portrait comes out about 1527 x 2160 (height touches), A4 landscape
+    # about 3055 x 2160. 3840 x 2160 is the 4K screen. The box is fixed by the
+    # server (a client never picks it) and each side is capped at 4096 px.
+    # Env: PENPLOT_PREVIEW_PNG_BOX_W_PX / PENPLOT_PREVIEW_PNG_BOX_H_PX.
+    preview_png_box_w_px: int = Field(default=3840, ge=512, le=4096)
+    preview_png_box_h_px: int = Field(default=2160, ge=512, le=4096)
+
     # Ownership / licence notice stamped into every deliverable SVG (see
     # ``svgmeta``). All empty = nothing added (output byte-identical). Server
     # side on purpose: clients cannot remove or replace it.
@@ -159,7 +168,7 @@ class Settings(BaseSettings):
     @field_validator("rate_limit_whitelist", mode="before")
     @classmethod
     def _split_whitelist(cls, value: object) -> object:
-        # Env arrives as "ip1, ip2, ip3" — split to a list so pydantic can build
+        # Env arrives as "ip1, ip2, ip3" - split to a list so pydantic can build
         # the frozenset. A plain str would otherwise be iterated char-by-char.
         if isinstance(value, str):
             return [ip.strip() for ip in value.split(",") if ip.strip()]
