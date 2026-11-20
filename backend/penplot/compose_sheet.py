@@ -41,26 +41,42 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
+import os
 import re
+import struct
+import time
+import uuid
 from dataclasses import dataclass
 from xml.sax.saxutils import escape
 
 from defusedxml import ElementTree as DefusedET
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
+from starlette.status import HTTP_404_NOT_FOUND
 
-from backend.penplot import art_fill, art_placement, labels, stats_table
+from backend.http import error_response
+from backend.penplot import art_fill, art_placement, colour_bake, labels, raster_out, stats_table
 from backend.penplot.errors import ErrorCode, PenPlotError, sheet_not_plottable
 from backend.penplot.methods import Polyline
 from backend.penplot.raster import looks_like_svg
-from backend.penplot.router import get_settings, require_rate_limit
+from backend.penplot.router import get_settings, require_rate_limit, resolve_public_base, store
 from backend.penplot.schemas import ComposeContextPads, ComposeSheetRequest
 from backend.penplot.svg_vector import Matrix, _parse_viewbox, _viewbox_ctm, parse_svg_vectors
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["penplot-v1"])
+
+#: Version of the preview render recipe. Bump it when the raster changes so
+#: cached PNGs made by an older recipe are not served.
+PREVIEW_RENDER_VERSION = 1
+#: Paper colour of the PNG when the request names none.
+DEFAULT_PAPER = "#ffffff"
+#: Immutable: the file name is the content hash of the request.
+PREVIEW_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_PREVIEW_NAME = re.compile(r"[0-9a-f]{64}_preview\.png")
 
 #: Gap between stacked title-block lines, in mm (shop mock ``LINE_GAP_MM``).
 LINE_GAP_MM = 1.5
@@ -619,11 +635,13 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
         # A fill artwork is cropped to the free area's aspect (not letterboxed).
         free = _plan_sheet(body, _Artwork(None, None, None)).area
         svg_text = art_fill.crop_to_aspect(svg_text, free[2] / free[3])
+    # Pen and runway colours are baked into the artwork here (no-op when unset).
+    svg_text = colour_bake.recolour_artwork(svg_text, pen=body.pen, runway=body.runway)
     data = svg_text.encode("utf-8")
     root, polylines, vp_w, vp_h = _validate_svg(data, max_svg_bytes)
 
     style = body.layout.label
-    ink = body.ink_hex
+    ink = body.pen or body.ink_hex
     lines = [line for line in body.lines if line.strip()]
     title = lines[0] if lines else ""
     subtitle = lines[1] if len(lines) > 1 else ""
@@ -801,15 +819,122 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     return sheet
 
 
+def _sheet_mm(sheet: str) -> tuple[float, float]:
+    """Sheet size in mm, read back from the root ``viewBox`` this module wrote."""
+    m = re.search(r'viewBox="0 0 ([0-9.]+) ([0-9.]+)"', sheet)
+    if m is None:
+        raise sheet_not_plottable()
+    return float(m.group(1)), float(m.group(2))
+
+
+def _preview_key(body: ComposeSheetRequest, settings) -> str:
+    """Content hash of everything that decides the PNG (request + render recipe)."""
+    payload = body.model_dump(mode="json")
+    payload["_render"] = [
+        PREVIEW_RENDER_VERSION, raster_out.RENDERER,
+        settings.preview_png_box_w_px, settings.preview_png_box_h_px,
+    ]
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _read_file(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _write_file_atomic(path: str, data: bytes) -> None:
+    tmp = f"{path}.{uuid.uuid4().hex}.tmp"
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, path)
+
+
+def _render_preview(body: ComposeSheetRequest, settings) -> bytes:
+    """Compose the sheet (the one composer) and rasterize it at the fixed size."""
+    started = time.perf_counter()
+    sheet = compose_sheet_svg(body, max_svg_bytes=settings.max_upload_bytes)
+    width_mm, height_mm = _sheet_mm(sheet)
+    width_px, height_px = raster_out.preview_size(
+        width_mm, height_mm, settings.preview_png_box_w_px, settings.preview_png_box_h_px,
+    )
+    data = raster_out.render_png(sheet, width_px, height_px, body.paper or DEFAULT_PAPER)
+    log.info(
+        "compose.preview png_bytes=%d px=%dx%d render_ms=%d renderer=%s",
+        len(data), width_px, height_px, int((time.perf_counter() - started) * 1000),
+        raster_out.RENDERER,
+    )
+    return data
+
+
+def _png_size(data: bytes) -> tuple[int, int]:
+    """Width and height from the IHDR chunk of a PNG we wrote."""
+    width, height = struct.unpack(">II", data[16:24])
+    return width, height
+
+
 @router.post(
     "/compose-sheet",
     response_class=Response,
-    responses={200: {"content": {"image/svg+xml": {}}, "description": "Composed A4 sheet."}},
+    responses={
+        200: {
+            "content": {"image/svg+xml": {}, "image/png": {}},
+            "description": "Composed A4 sheet (svg, default) or its preview (png).",
+        },
+    },
     dependencies=[Depends(require_rate_limit)],
 )
-async def compose_sheet_endpoint(body: ComposeSheetRequest) -> Response:
-    """Compose the gallery sheet: artwork + page furniture + title + context table."""
+async def compose_sheet_endpoint(body: ComposeSheetRequest, request: Request) -> Response:
+    """Compose the gallery sheet: artwork + page furniture + title + context table.
+
+    ``preview="svg"`` (default) answers the sheet SVG. ``preview="png"`` answers
+    the same sheet as PNG and names its cached GET URL in ``X-Preview-Url``.
+    """
+    settings = get_settings()
+    if body.preview == "png":
+        key = _preview_key(body, settings)
+        filename = f"{key}_preview.png"
+        path = store.result_path(filename)
+        if os.path.exists(path):
+            data = await asyncio.to_thread(_read_file, path)
+        else:
+            data = await asyncio.to_thread(_render_preview, body, settings)
+            await asyncio.to_thread(_write_file_atomic, path, data)
+        width_px, height_px = _png_size(data)
+        return Response(
+            content=data,
+            media_type="image/png",
+            headers={
+                "ETag": f'"{key}"',
+                "Cache-Control": PREVIEW_CACHE_CONTROL,
+                "X-Preview-Url": f"{resolve_public_base(request)}/v1/previews/{filename}",
+                "X-Preview-Width": str(width_px),
+                "X-Preview-Height": str(height_px),
+            },
+        )
     svg = await asyncio.to_thread(
-        compose_sheet_svg, body, max_svg_bytes=get_settings().max_upload_bytes,
+        compose_sheet_svg, body, max_svg_bytes=settings.max_upload_bytes,
     )
     return Response(content=svg, media_type="image/svg+xml")
+
+
+@router.get("/previews/{filename}", response_class=Response,
+            dependencies=[Depends(require_rate_limit)])
+async def get_preview(filename: str) -> Response:
+    """Serve a cached preview PNG. The name is the content hash, never a path."""
+    if not _PREVIEW_NAME.fullmatch(filename):
+        return error_response(
+            HTTP_404_NOT_FOUND, "result_not_found", "Unknown preview file."
+        )
+    path = store.result_path(filename)
+    try:
+        data = await asyncio.to_thread(_read_file, path)
+    except OSError:
+        return error_response(
+            HTTP_404_NOT_FOUND, "result_not_found", "Unknown preview file."
+        )
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={"Cache-Control": PREVIEW_CACHE_CONTROL},
+    )

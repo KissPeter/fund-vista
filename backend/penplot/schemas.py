@@ -701,6 +701,33 @@ class ComposeSheetRequest(BaseModel):
             "clip-path, mask, markers, and artwork that reaches past its box."
         ),
     )
+    preview: Literal["svg", "png"] = Field(
+        default="svg",
+        description=(
+            "Output format. svg: the composed sheet (default, unchanged). png: the "
+            "same sheet rasterized at a server-fixed size (fitted in 3840 x 2160, aspect "
+            "kept); the response is image/png with an X-Preview-Url header. The "
+            "order file never uses png."
+        ),
+    )
+    pen: str | None = Field(
+        default=None, pattern=r"^#[0-9a-fA-F]{6}$",
+        description=(
+            "Pen colour. Baked into the artwork's solid paint and the sheet's "
+            "furniture; absent keeps ink_hex for the furniture and the artwork's own paint."
+        ),
+    )
+    paper: str | None = Field(
+        default=None, pattern=r"^#[0-9a-fA-F]{6}$",
+        description="Paper colour, the PNG canvas background (default #ffffff). Ignored by svg.",
+    )
+    runway: str | None = Field(
+        default=None, pattern=r"^#[0-9a-fA-F]{6}$",
+        description=(
+            "Runway colour, baked into the artwork elements whose id contains "
+            "'runway'. Absent: those elements take pen."
+        ),
+    )
 
     @model_validator(mode="after")
     def _no_control_chars(self) -> ComposeSheetRequest:

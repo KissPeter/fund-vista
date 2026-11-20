@@ -1,4 +1,4 @@
-# F-007 — Gallery sheet compose on the backend
+# F-007 - Gallery sheet compose on the backend
 
 - Status: in progress
 - Created: 2026-10-30
@@ -32,6 +32,42 @@ described in RFC 2119.
   envelope; an oversize body MUST return 413; no valid input may return 5xx.
 - Logs MUST carry sizes and counts only, never the title, the table text or
   the artwork.
+
+## Preview PNG (`preview`, `pen`, `paper`, `runway`)
+
+- `preview` MUST be `"svg"` (default, unchanged) or `"png"`. With `"png"` the
+  response is `image/png` of the same composed sheet, rasterized by
+  `penplot/raster_out.py` (resvg through `resvg-py`; `cairosvg` only as a
+  lazily imported fallback that is not installed). The order file MUST NOT use
+  `"png"`; it stays `artwork="inline"` with `preview` absent or `"svg"`.
+- The raster MUST fit inside the box `preview_png_box_w_px` x
+  `preview_png_box_h_px` (`backend/penplot/config.py`, default 3840 x 2160,
+  each side capped at 4096 px), keep the sheet's aspect, MUST NOT enlarge it,
+  and MUST touch one edge of the box. A4 portrait is about 1527 x 2160
+  (3.3 MPx); A4 landscape is about 3055 x 2160 (6.6 MPx). The client MUST NOT
+  choose the size.
+- `pen`, `paper`, `runway` are optional `#rrggbb` strings. `pen` replaces the
+  furniture ink (instead of `ink_hex`) and the solid `fill`/`stroke` paint of
+  the artwork, except white, `none` and `url()`. `runway` replaces the paint of
+  elements whose `id` contains `runway` (descendants included); without it
+  they take `pen`. `paper` is the PNG canvas (default `#ffffff`) and is ignored
+  by `svg`. With no colour field the input is unchanged, so the SVG default and
+  the inline order file stay byte-identical (pinned by digest in the tests).
+- Routes: `POST /v1/compose-sheet` (`preview: "png"`) answers the PNG with
+  `ETag`, `Cache-Control: public, max-age=31536000, immutable`, and
+  `X-Preview-Url`, `X-Preview-Width`, `X-Preview-Height`. `GET /v1/previews/{sha256}_preview.png`
+  serves the cached PNG with the same immutable headers. The file name MUST
+  match `[0-9a-f]{64}_preview\.png`; anything else is 404.
+- The cache key is the SHA-256 of the request plus the render recipe
+  (`PREVIEW_RENDER_VERSION`, renderer, box). Results follow the store TTL.
+- Renderer safety: the SVG is parsed with `defusedxml` before rendering, no
+  `resources_dir` is given (no external `href` is loaded), and system fonts are
+  not scanned.
+- Memory: one RGBA pixmap is `width * height * 4` bytes, about 13 MB for A4
+  portrait and about 26 MB for landscape at the box size; the PNG encoder adds
+  a second copy during the render. Measured in the PR.
+- Payload: a PNG of simple line art is about 20-35 KB; the target is under
+  2 MB per sheet.
 
 ### Known limits (Phase 1)
 
