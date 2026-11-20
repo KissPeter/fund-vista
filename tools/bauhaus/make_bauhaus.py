@@ -382,6 +382,131 @@ def poster7(src: Path) -> str:
     return sh.svg()
 
 
+def _band(center: np.ndarray, width: float) -> Contour:
+    """Closed polygon: the polyline ``center`` thickened to ``width`` (butt ends)."""
+    d = np.gradient(center, axis=0)
+    n = np.column_stack([-d[:, 1], d[:, 0]])
+    n /= np.linalg.norm(n, axis=1, keepdims=True)
+    return np.vstack([center + n * width / 2, (center - n * width / 2)[::-1]])
+
+
+def ribbon_n(sh: Sheet, *, cx1, cy1, r_out, pitch, n, cx2, cy2, y_a, y_c, width) -> None:
+    """Parallel stripes: up an arch (centre cx1,cy1) and round a U (centre cx2,cy2)."""
+
+    def arc(cx, cy, r, t0, t1):
+        t = np.radians(np.linspace(t0, t1, max(int(abs(t1 - t0) / 2), 8)))
+        return np.column_stack([cx + r * np.cos(t), cy + r * np.sin(t)])
+
+    for i in range(n):
+        r1 = r_out - i * pitch
+        r2 = cx2 - cx1 - r1
+        pts = np.vstack(
+            [
+                [(cx1 - r1, y_a)],
+                arc(cx1, cy1, r1, -180, 0),
+                arc(cx2, cy2, r2, 180, 0),
+                [(cx2 + r2, y_c)],
+            ]
+        )
+        sh.fill([_band(pts, width)], BLACK)
+
+
+def poster8(src: Path) -> str:
+    h, w = cv2.imread(str(src), 0).shape
+    sh = Sheet(w, h, "Bauhaus Ausstellung 1923 - arch ribbon (outline + hatch)")
+    ribbon_n(sh, cx1=274.5, cy1=279, r_out=190, pitch=17.2, n=10, cx2=499, cy2=614, y_a=523, y_c=372.5, width=5.2)
+    sh.fill([circle(612, 260, 75)], BLACK)
+    sh.fill([circle(163, 638, 75)], BLACK)
+    sh.text("BAUHAUS", 78, 692, 872, 63)
+    sh.text("AUSSTELLUNG 1923", 143, 632, 968, 28)
+    return sh.svg()
+
+
+def poster9(src: Path) -> str:
+    h, w = cv2.imread(str(src), 0).shape
+    sh = Sheet(w, h, "Bauhaus 1919 - U ribbon with discs (outline + hatch)")
+    ribbon_n(sh, cx1=216.5, cy1=242, r_out=158, pitch=9.87, n=16, cx2=384.5, cy2=504, y_a=503.5, y_c=241.5, width=4.8)
+    sh.fill([circle(469, 155, 76)], [(45.0, 1.4)])
+    sh.fill([circle(133.5, 590.5, 76.5)], [(45.0, 1.4)])
+    sh.add_polyline(np.array([[57, 706], [543, 706]], float))
+    sh.add_polyline(np.array([[57, 709], [543, 709]], float))
+    sh.text("1919", 57, 115, 729, 23)
+    sh.text("BAUHAUS", 388, 543, 729, 23)
+    return sh.svg()
+
+
+def poster10(src: Path) -> str:
+    """Coloured shapes measured from the reference by colour mask; tone = hatching."""
+    bgr = cv2.imread(str(src), cv2.IMREAD_COLOR)
+    h, w = bgr.shape[:2]
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    hue, sat, val = (hsv[..., i].astype(int) for i in range(3))
+
+    def bbox(m):
+        ys, xs = np.where(m)
+        return xs.min(), ys.min(), xs.max(), ys.max()
+
+    blue = (hue > 100) & (hue < 130) & (sat > 80) & (val > 100)
+    yellow = (hue > 15) & (hue < 30) & (sat > 150) & (val > 200)
+    red = ((hue < 8) | (hue > 170)) & (sat > 150) & (val > 150)
+    black = val < 60
+    blue[1000:] = False  # lettering / print notes
+    bx0, by0, bx1, _ = bbox(blue)
+    yx0, _, yx1, yy1 = bbox(yellow)
+    r = ((bx1 - bx0) + (yx1 - yx0)) / 4.0
+    cx = (bx0 + bx1 + yx0 + yx1) / 4.0
+    ca_y, cb_y = by0 + r, yy1 - r
+    rm = red.copy()
+    rm[:880] = False
+    rm[1152:] = False  # the saucer bar below
+    rm[:, 680:] = False
+    rx0, ry0, rx1, ry1 = bbox(rm)
+    ring = red.copy()
+    ring[:860] = False
+    ring[1030:] = False
+    ring[:, :680] = False
+    gx0, gy0, gx1, gy1 = bbox(ring)
+    blk = black.copy()
+    blk[:860] = False
+    blk[1030:] = False
+    blk[:, :680] = False
+    kx0, ky0, kx1, ky1 = bbox(blk)
+    bar = red.copy()
+    bar[:1140] = False
+    bx_0, by_0, bx_1, by_1 = bbox(bar)
+
+    sh = Sheet(w, h, "Bauhaus - circles, bowl and cup (outline + hatch)")
+    ca, cb = circle(cx, ca_y, r, 720), circle(cx, cb_y, r, 720)
+    out_a, in_a = [(cx, ca_y, r, False)], [(cx, ca_y, r, True)]
+    out_b, in_b = [(cx, cb_y, r, False)], [(cx, cb_y, r, True)]
+    sh.outline_c(ca, out_b)
+    sh.hatch_c([ca], 45.0, 1.6, out_b)  # blue
+    sh.outline_c(cb, out_a)
+    sh.hatch_c([cb], 45.0, 2.8, out_a)  # yellow
+    sh.outline_c(ca, in_b)
+    sh.outline_c(cb, in_a)
+    sh.hatch_c([ca], 90.0, 1.1, in_b)  # overlap: vertical stripes like the original
+    # red half bowl (flat top)
+    br = (rx1 - rx0) / 2.0
+    t = np.linspace(0, math.pi, 180)
+    bowl = np.vstack([[(rx0, ry0)], np.column_stack([(rx0 + rx1) / 2 - br * np.cos(t), ry0 + br * np.sin(t)])])
+    sh.fill([bowl], [(135.0, 1.0)])
+    # red cup ring with black centre
+    gcx, gcy, gr = (gx0 + gx1) / 2, (gy0 + gy1) / 2, (gx1 - gx0) / 2
+    kr = (kx1 - kx0) / 2
+    sh.fill([circle(gcx, gcy, gr), circle((kx0 + kx1) / 2, (ky0 + ky1) / 2, kr)], [(135.0, 1.0)])
+    sh.fill([circle((kx0 + kx1) / 2, (ky0 + ky1) / 2, kr * 0.95)], BLACK, outline=False)
+    # red saucer bar with round ends
+    hh = (by_1 - by_0) / 2.0
+    cyb = (by_0 + by_1) / 2.0
+    tt = np.linspace(-math.pi / 2, math.pi / 2, 40)
+    right = np.column_stack([bx_1 - hh + hh * np.cos(tt), cyb + hh * np.sin(tt)])
+    left = np.column_stack([bx_0 + hh - hh * np.cos(tt), cyb - hh * np.sin(tt)])
+    sh.fill([np.vstack([right, left])], [(135.0, 1.0)])
+    sh.text("BAUHAUS", 35, 273, 112, 46)
+    return sh.svg()
+
+
 def main() -> None:
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
@@ -392,6 +517,9 @@ def main() -> None:
     (out / "bauhaus-5-dots.svg").write_text(poster5(src / "5.webp"))
     (out / "bauhaus-6-blobs.svg").write_text(poster6(src / "6.webp"))
     (out / "bauhaus-7-overlap.svg").write_text(poster7(src / "7.webp"))
+    (out / "bauhaus-8-arch.svg").write_text(poster8(src / "8.webp"))
+    (out / "bauhaus-9-ribbon-u.svg").write_text(poster9(src / "9.png"))
+    (out / "bauhaus-10-bowl.svg").write_text(poster10(src / "10.png"))
     print("wrote", *sorted(p.name for p in out.glob("bauhaus-*.svg")))
 
 
