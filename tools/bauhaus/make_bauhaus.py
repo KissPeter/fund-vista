@@ -19,17 +19,15 @@ hand-built block face for 2), then hatched like any other shape.
 from __future__ import annotations
 
 import math
-import re
 import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
-from fontTools.pens.basePen import BasePen
-from fontTools.ttLib import TTCollection
 
-FUTURA = "/System/Library/Fonts/Supplemental/Futura.ttc"
-FUTURA_MEDIUM, FUTURA_BOLD = 0, 2
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from backend.penplot.svgfont import get_svg_face  # noqa: E402
+
 PAGE_W, PAGE_H, MARGIN, PEN = 210.0, 297.0, 10.0, 0.4
 
 Contour = np.ndarray  # (n, 2) closed polygon, last point != first
@@ -43,117 +41,28 @@ def circle(cx: float, cy: float, r: float, n: int = 360) -> Contour:
     return np.column_stack([cx + r * np.cos(t), cy + r * np.sin(t)])
 
 
-class _Flatten(BasePen):
-    def __init__(self, gs, k, ox, oy):
-        super().__init__(gs)
-        self.k, self.ox, self.oy = k, ox, oy
-        self.contours: list[list[tuple[float, float]]] = []
-        self.cur: list[tuple[float, float]] = []
+def stroke_text(text: str, x0: float, x1: float, top: float, cap_h: float) -> list[np.ndarray]:
+    """Single-stroke ZnikoSL capitals (the shop's plotter font) spanning x0..x1.
 
-    def _p(self, p):
-        return (self.ox + p[0] * self.k, self.oy - p[1] * self.k)
-
-    def _moveTo(self, p):
-        self.cur = [self._p(p)]
-
-    def _lineTo(self, p):
-        self.cur.append(self._p(p))
-
-    def _curveToOne(self, a, b, c):
-        p0 = np.array(self.cur[-1])
-        pa, pb, pc = (np.array(self._p(q)) for q in (a, b, c))
-        for t in np.linspace(0, 1, 13)[1:]:
-            q = (1 - t) ** 3 * p0 + 3 * (1 - t) ** 2 * t * pa + 3 * (1 - t) * t**2 * pb + t**3 * pc
-            self.cur.append((q[0], q[1]))
-
-    def _qCurveToOne(self, a, b):
-        p0 = np.array(self.cur[-1])
-        pa, pb = np.array(self._p(a)), np.array(self._p(b))
-        for t in np.linspace(0, 1, 9)[1:]:
-            q = (1 - t) ** 2 * p0 + 2 * (1 - t) * t * pa + t**2 * pb
-            self.cur.append((q[0], q[1]))
-
-    def _closePath(self):
-        if len(self.cur) > 2:
-            self.contours.append(self.cur)
-        self.cur = []
-
-    _endPath = _closePath
-
-
-def text_contours(index: int, text: str, x0: float, x1: float, baseline: float, cap_h: float):
-    """Flattened glyph outlines of ``text`` spanning x0..x1 (tracking absorbs the slack)."""
-    from fontTools.pens.boundsPen import BoundsPen
-
-    font = TTCollection(FUTURA).fonts[index]
-    gs, cmap = font.getGlyphSet(), font.getBestCmap()
-    k = cap_h / (font["OS/2"].sCapHeight or font["head"].unitsPerEm * 0.7)
-    names = [cmap[ord(c)] for c in text]
-    adv = [font["hmtx"][n][0] * k for n in names]
-
-    def bounds(n):
-        bp = BoundsPen(gs)
-        gs[n].draw(bp)
-        return bp.bounds
-
-    lsb = bounds(names[0])[0] * k
-    ink = sum(adv[:-1]) + bounds(names[-1])[2] * k - lsb
-    track = ((x1 - x0) - ink) / max(len(text) - 1, 1)
-    x, out = x0 - lsb, []
-    for n, a in zip(names, adv):
-        pen = _Flatten(gs, k, x, baseline)
-        gs[n].draw(pen)
-        out += [np.array(c) for c in pen.contours]
+    The cap height shrinks if the line would not fit without overlapping. Umlaut
+    dots rise above ``top``.
+    """
+    face = get_svg_face()
+    text = text.upper()
+    while True:
+        k = cap_h / face["cap_height"]
+        adv = [(face["glyphs"][c]["advance"] if c in face["glyphs"] else face["space_advance"]) * k for c in text]
+        track = ((x1 - x0) - sum(adv)) / max(len(text) - 1, 1)
+        if track >= 0.12 * cap_h or cap_h < 4:
+            break
+        cap_h *= 0.95
+    out, x = [], x0
+    for c, a in zip(text, adv):
+        g = face["glyphs"].get(c)
+        if g:
+            for line in g["lines"]:
+                out.append(np.array([(x + px * k, top + py * k) for px, py in line]))
         x += a + track
-    return out
-
-
-BLOCK = {  # stroke paths on a 4 x 6 grid
-    "B": [[(0, 0), (3.4, 0), (3.4, 3), (0, 3)], [(0, 3), (4, 3), (4, 6), (0, 6)], [(0, 0), (0, 6)]],
-    "A": [[(0, 6), (0, 0), (4, 0), (4, 6)], [(0, 3), (4, 3)]],
-    "U": [[(0, 0), (0, 6), (4, 6), (4, 0)]],
-    "H": [[(0, 0), (0, 6)], [(4, 0), (4, 6)], [(0, 3), (4, 3)]],
-    "S": [[(4, 0), (0, 0), (0, 3), (4, 3), (4, 6), (0, 6)]],
-    "1": [[(0, 1.2), (2, 0), (2, 6)], [(0, 6), (4, 6)]],
-    "9": [[(4, 3), (0, 3), (0, 0), (4, 0), (4, 6), (0, 6)]],
-    "0": [[(0, 0), (4, 0), (4, 6), (0, 6), (0, 0)]],
-    "2": [[(0, 0), (4, 0), (4, 3), (0, 3), (0, 6), (4, 6)]],
-    "3": [[(0, 0), (4, 0), (4, 6), (0, 6)], [(1, 3), (4, 3)]],
-    "T": [[(0, 0), (4, 0)], [(2, 0), (2, 6)]],
-    "E": [[(4, 0), (0, 0), (0, 6), (4, 6)], [(0, 3), (3, 3)]],
-    "R": [[(0, 6), (0, 0), (4, 0), (4, 3), (0, 3)], [(2, 3), (4, 6)]],
-    "L": [[(0, 0), (0, 6), (4, 6)]],
-    "I": [[(0, 0), (4, 0)], [(2, 0), (2, 6)], [(0, 6), (4, 6)]],
-    "N": [[(0, 6), (0, 0), (4, 0), (4, 6)]],
-    "D": [[(0, 0), (3, 0), (4, 1), (4, 5), (3, 6), (0, 6), (0, 0)]],
-    "\u00dc": [[(0, 0), (0, 6), (4, 6), (4, 0)], [(0.5, -2), (0.5, -1)], [(3.5, -2), (3.5, -1)]],
-}
-
-
-def block_contours(text: str, x: float, y: float, cell: float, pitch: float) -> list[Contour]:
-    """Union of the stroked block glyphs as rectilinear polygons (via a hi-res raster)."""
-    ss = 16  # raster px per cell
-    out: list[Contour] = []
-    top = 3  # grid units of head-room for umlaut dots
-    for i, ch in enumerate(text):
-        if ch == " ":
-            continue
-        w, h = int((4 + 1.5) * ss), int((top + 6 + 1.5) * ss)
-        img = np.zeros((h, w), np.uint8)
-        for stroke in BLOCK[ch]:
-            pts = np.array([[(px + 0.5) * ss, (py + top + 0.5) * ss] for px, py in stroke], np.float32)
-            for a, b in zip(pts[:-1], pts[1:]):
-                d = b - a
-                n = d / (np.linalg.norm(d) or 1)
-                nrm = np.array([-n[1], n[0]]) * ss / 2
-                quad = np.array([a - nrm, a + nrm, b + nrm, b - nrm], np.int32)  # butt ends
-                cv2.fillConvexPoly(img, quad, 255)
-            for p in pts[1:-1]:
-                cv2.rectangle(img, (int(p[0] - ss / 2), int(p[1] - ss / 2)), (int(p[0] + ss / 2), int(p[1] + ss / 2)), 255, -1)
-        cnts, hier = cv2.findContours(img, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-        for c in cnts:
-            a = cv2.approxPolyDP(c, 0.8, True).reshape(-1, 2).astype(float)
-            out.append(np.column_stack([x + i * pitch + a[:, 0] * cell / ss, y + a[:, 1] * cell / ss - top * cell]))
     return out
 
 
@@ -242,6 +151,10 @@ class Sheet:
         for angle, pitch in hatches:
             self.hatch(contours, angle, pitch)
 
+    def text(self, text: str, x0: float, x1: float, top: float, cap_h: float) -> None:
+        for line in stroke_text(text, x0, x1, top, cap_h):
+            self.add_polyline(line)
+
     # -- output ------------------------------------------------------------
     def svg(self) -> str:
         paths = []
@@ -276,9 +189,9 @@ def poster1(src: Path) -> str:
             continue
         a = cv2.approxPolyDP(c, 1.6, True).reshape(-1, 2).astype(float)
         sh.fill([a], BLACK)
-    sh.fill(text_contours(FUTURA_MEDIUM, "BAUHAUS", 148, 820, 138, 70), BLACK)
-    sh.fill(text_contours(FUTURA_MEDIUM, "Ausstellung", 128, 590, 1262, 47), BLACK)
-    sh.fill(text_contours(FUTURA_MEDIUM, "1919", 700, 848, 1262, 47), BLACK)
+    sh.text("BAUHAUS", 148, 820, 68, 70)
+    sh.text("Ausstellung", 128, 590, 1215, 47)
+    sh.text("1919", 700, 848, 1215, 47)
     return sh.svg()
 
 
@@ -290,9 +203,8 @@ def poster2() -> str:
     sh.fill([c_out, c_mid], [(45.0, 2.4)])  # light pink  -> sparse
     sh.fill([c_mid, c_in], [(45.0, 1.1), (135.0, 1.1)])  # red -> cross-hatch (darkest)
     sh.fill([c_in], [(135.0, 1.7)])  # orange -> medium
-    cell = 7.2
-    sh.fill(block_contours("BAUHAUS", 50, 1327, cell, 44.5), BLACK)
-    sh.fill(block_contours("1919", 838, 1327, cell, 34.5), BLACK)
+    sh.text("BAUHAUS", 50, 346, 1327, 45)
+    sh.text("1919", 838, 970, 1327, 45)
     return sh.svg()
 
 
@@ -320,8 +232,8 @@ def poster3() -> str:
         sh.add_polyline(pts)
     sh.fill([circle(204, 339, 82)], BLACK)
     sh.fill([circle(287, 951, 82)], BLACK)
-    sh.fill(text_contours(FUTURA_BOLD, "BAUHAUS", 78, 405, 140, 38), BLACK)
-    sh.fill(text_contours(FUTURA_BOLD, "1919", 668, 752, 143, 30), BLACK)
+    sh.text("BAUHAUS", 78, 405, 102, 38)
+    sh.text("1919", 668, 752, 113, 30)
     sh.add_polyline(np.array([[78, 170], [752, 170]], float))
     sh.add_polyline(np.array([[78, 172], [752, 172]], float))
     return sh.svg()
@@ -353,9 +265,9 @@ def poster4(src: Path) -> str:
     sh = Sheet(w, h, "Bauhaus 1923 Sutterlin - sun over waves (outline + hatch)")
     sh.fill(_smooth_contours(red), [(45.0, 1.0), (135.0, 1.0)])  # sun: darkest
     sh.fill(_smooth_contours(yellow), [(45.0, 1.5)])  # waves: medium
-    sh.fill(block_contours("BAUHAUS", 12, 18, 5.57, 44.7), BLACK)
-    sh.fill(block_contours("1923", 420, 17, 1.86, 11.9), BLACK)
-    sh.fill(block_contours("S\u00dcTTERLIN BADENERSTRASSE 109", 12, 685, 2.86, 16.36), BLACK)
+    sh.text("BAUHAUS", 12, 308, 18, 39)
+    sh.text("1923", 420, 465, 17, 13)
+    sh.text("S\u00dcTTERLIN BADENERSTRASSE 109", 12, 468, 685, 20)
     return sh.svg()
 
 
