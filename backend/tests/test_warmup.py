@@ -1,8 +1,9 @@
-"""Cache warmer (backend/warmup.py): contract replay against a mocked shop and target."""
+"""Cache warmer (backend/warmup.py): contract replay against a mocked shop and NAS."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime
 
 import httpx
@@ -12,6 +13,7 @@ from backend.warmup import WarmupConfig, run_warmup, seconds_until_daily
 
 SHOP = "https://shop.example"
 TARGET = "https://nas.example"
+DAY = "2026-11-19"
 
 # Body strings deliberately carry non-canonical spacing and key order: the
 # replayed bytes MUST match them exactly, not a re-serialised form.
@@ -24,15 +26,30 @@ def _item(name, path, body=BODY_A, content_type="application/json", **extra):
             "contentType": content_type, **extra}
 
 
-class Recorder:
-    """Mock shop (contract endpoint) and mock NAS (replay targets) in one transport."""
+def _ingest(name="traffic-ingest", icao="LHBP", date=DAY):
+    return {"name": name, "kind": "traffic_ingest", "icao": icao, "date": date}
 
-    def __init__(self, items, *, target_status=None, raise_for=(), contract_status=200):
+
+def _next(seq: list):
+    """Pop the next scripted value; the last value repeats."""
+    return seq.pop(0) if len(seq) > 1 else seq[0]
+
+
+class Recorder:
+    """Mock shop (contract) and mock NAS (replay, availability, jobs) in one transport."""
+
+    def __init__(self, items, *, target_status=None, raise_for=(), contract_status=200,
+                 verdicts=None, job_states=None):
         self.items = items
         self.target_status = target_status or {}
         self.raise_for = set(raise_for)
         self.contract_status = contract_status
-        self.calls = []  # (path, body bytes, content-type)
+        self.verdicts = list(verdicts or ["ready"])  # "error" answers HTTP 500
+        self.job_states = list(job_states or ["done"])
+        self.calls = []  # replayed POSTs: (path, body bytes, content-type)
+        self.availability_checks = 0
+        self.jobs_created = []  # JSON bodies of POST /v1/jobs
+        self.job_deletes = []
         self.in_flight = 0
         self.max_in_flight = 0
 
@@ -42,15 +59,33 @@ class Recorder:
                 return httpx.Response(self.contract_status)
             return httpx.Response(200, json={"generatedAt": "2026-11-20T00:00:00Z",
                                              "items": self.items})
+        path = request.url.path
+        if path == "/v1/traffic/availability":
+            self.availability_checks += 1
+            verdict = _next(self.verdicts)
+            if verdict == "error":
+                return httpx.Response(500)
+            return httpx.Response(200, json={"status": verdict})
+        if request.method == "POST" and path == "/v1/jobs":
+            self.jobs_created.append(json.loads(request.content))
+            return httpx.Response(202, json={"job_id": "j1", "status": "queued",
+                                             "status_url": "/v1/jobs/j1",
+                                             "cancel_url": "/v1/jobs/j1"})
+        if request.method == "GET" and path == "/v1/jobs/j1":
+            return httpx.Response(200, json={"job_id": "j1", "type": "traffic_ingest",
+                                             "status": _next(self.job_states)})
+        if request.method == "DELETE" and path.startswith("/v1/jobs/"):
+            self.job_deletes.append(path)
+            return httpx.Response(200, json={"job_id": "j1", "status": "cancelled"})
+
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
         try:
             await asyncio.sleep(0)  # yield, so a concurrent loop would overlap
-            self.calls.append((request.url.path, request.content,
-                               request.headers.get("content-type")))
-            if request.url.path in self.raise_for:
+            self.calls.append((path, request.content, request.headers.get("content-type")))
+            if path in self.raise_for:
                 raise httpx.ReadTimeout("slow target", request=request)
-            return httpx.Response(self.target_status.get(request.url.path, 200), content=b"ok")
+            return httpx.Response(self.target_status.get(path, 200), content=b"ok")
         finally:
             self.in_flight -= 1
 
@@ -58,8 +93,19 @@ class Recorder:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handler))
 
 
-def _run(coro):
-    return asyncio.run(coro)
+async def _no_sleep(_seconds: float) -> None:
+    return None
+
+
+def _run(rec: Recorder, **kwargs) -> dict:
+    kwargs.setdefault("poll_interval_s", 0)
+    kwargs.setdefault("sleep", _no_sleep)
+
+    async def go():
+        async with rec.client() as client:
+            return await run_warmup(SHOP, TARGET, client=client, **kwargs)
+
+    return asyncio.run(go())
 
 
 def test_replays_exact_body_bytes_against_target():
@@ -67,12 +113,7 @@ def test_replays_exact_body_bytes_against_target():
         _item("render", "/v1/render", BODY_A),
         _item("compose", "/v1/compose-sheet", BODY_B),
     ])
-
-    async def go():
-        async with rec.client() as client:
-            return await run_warmup(SHOP, TARGET, client=client)
-
-    summary = _run(go())
+    summary = _run(rec)
 
     assert summary == {"total": 2, "ok": 2, "failed": 0, "skipped": 0}
     assert rec.calls == [
@@ -88,12 +129,7 @@ def test_failing_items_do_not_stop_the_rest():
         target_status={"/v1/render": 500},
         raise_for={"/v1/convert"},
     )
-
-    async def go():
-        async with rec.client() as client:
-            return await run_warmup(SHOP, TARGET, client=client)
-
-    summary = _run(go())
+    summary = _run(rec)
 
     assert summary == {"total": 3, "ok": 1, "failed": 2, "skipped": 0}
     assert [path for path, _, _ in rec.calls] == ["/v1/render", "/v1/convert", "/v1/compose-sheet"]
@@ -101,12 +137,7 @@ def test_failing_items_do_not_stop_the_rest():
 
 def test_items_run_sequentially():
     rec = Recorder([_item(f"i{n}", "/v1/render") for n in range(5)])
-
-    async def go():
-        async with rec.client() as client:
-            await run_warmup(SHOP, TARGET, client=client)
-
-    _run(go())
+    _run(rec)
     assert len(rec.calls) == 5
     assert rec.max_in_flight == 1
 
@@ -120,27 +151,107 @@ def test_invalid_and_unsupported_items_are_skipped():
         _item("multi", "/v1/compose-sheet", content_type="multipart"),
         _item("nonstr", "/v1/render", body={"a": 1}),
         "not-an-object",
+        _ingest(icao=""),
         _item("ok", "/v1/render"),
     ])
-
-    async def go():
-        async with rec.client() as client:
-            return await run_warmup(SHOP, TARGET, client=client)
-
-    summary = _run(go())
-    assert summary == {"total": 7, "ok": 1, "failed": 0, "skipped": 6}
+    summary = _run(rec)
+    assert summary == {"total": 8, "ok": 1, "failed": 0, "skipped": 7}
     assert len(rec.calls) == 1
 
 
 def test_contract_fetch_failure_replays_nothing_and_does_not_raise():
     rec = Recorder([_item("x", "/v1/render")], contract_status=503)
-
-    async def go():
-        async with rec.client() as client:
-            return await run_warmup(SHOP, TARGET, client=client)
-
-    summary = _run(go())
+    summary = _run(rec)
     assert summary["total"] == 0
+    assert rec.calls == []
+
+
+def test_ready_day_skips_ingest_and_replays_traffic_render():
+    rec = Recorder([
+        _ingest(),
+        _item("traffic-render", "/v1/traffic/render", BODY_B),
+    ], verdicts=["ready"])
+    summary = _run(rec)
+
+    assert rec.jobs_created == []
+    assert summary == {"total": 2, "ok": 1, "failed": 0, "skipped": 0}
+    assert rec.calls == [("/v1/traffic/render", BODY_B.encode("utf-8"), "application/json")]
+
+
+def test_available_day_runs_one_ingest_job_then_replays_render():
+    rec = Recorder([
+        _ingest(),
+        _item("traffic-render", "/v1/traffic/render", BODY_B),
+    ], verdicts=["available"], job_states=["queued", "running", "done"])
+    summary = _run(rec)
+
+    assert rec.jobs_created == [{"type": "traffic_ingest",
+                                 "request": {"icao": "LHBP", "date": DAY}}]
+    assert summary["ok"] == 1
+    assert [path for path, _, _ in rec.calls] == ["/v1/traffic/render"]
+
+
+def test_failed_ingest_job_keeps_traffic_render_out():
+    rec = Recorder([
+        _ingest(),
+        _item("traffic-render", "/v1/traffic/render"),
+        _item("render", "/v1/render"),
+    ], verdicts=["available"], job_states=["running", "failed"])
+    summary = _run(rec)
+
+    assert len(rec.jobs_created) == 1
+    assert [path for path, _, _ in rec.calls] == ["/v1/render"]
+    assert summary["skipped"] == 1
+
+
+def test_ingest_timeout_cancels_job_and_keeps_traffic_render_out():
+    rec = Recorder([
+        _ingest(),
+        _item("traffic-render", "/v1/traffic/render"),
+    ], verdicts=["available"], job_states=["running"])
+    _run(rec, ingest_timeout_s=0)
+
+    assert len(rec.jobs_created) == 1
+    assert rec.job_deletes == ["/v1/jobs/j1"]
+    assert rec.calls == []
+
+
+def test_unpublished_day_is_retried_hourly_then_given_up():
+    rec = Recorder([
+        _ingest(),
+        _item("traffic-render", "/v1/traffic/render"),
+        _item("render", "/v1/render"),
+    ], verdicts=["unavailable"])
+    sleeps: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    summary = _run(rec, sleep=record_sleep)
+
+    assert rec.availability_checks == 12
+    assert sleeps == [3600.0] * 11  # 12 hourly checks in total
+    assert rec.jobs_created == []
+    assert [path for path, _, _ in rec.calls] == ["/v1/render"]
+    assert summary["skipped"] == 1
+
+
+def test_published_later_is_ingested_on_a_retry():
+    rec = Recorder([
+        _ingest(),
+        _item("traffic-render", "/v1/traffic/render"),
+    ], verdicts=["error", "unavailable", "available"], job_states=["done"])
+    _run(rec)
+
+    assert rec.availability_checks == 3
+    assert len(rec.jobs_created) == 1
+    assert [path for path, _, _ in rec.calls] == ["/v1/traffic/render"]
+
+
+def test_traffic_render_without_ingest_item_is_skipped():
+    rec = Recorder([_item("traffic-render", "/v1/traffic/render")])
+    summary = _run(rec)
+    assert summary == {"total": 1, "ok": 0, "failed": 0, "skipped": 1}
     assert rec.calls == []
 
 
@@ -189,7 +300,7 @@ def test_startup_trigger_runs_once_when_claimed(monkeypatch):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    _run(go())
+    asyncio.run(go())
 
     assert claims == ["warmup:startup:deploy-1"]
     assert len(rec.calls) == 1
@@ -204,5 +315,5 @@ def test_lost_claim_skips_the_run():
     async def go():
         await warmup._run_claimed(WarmupConfig(SHOP, TARGET, "v1"), claim, "warmup:startup:v1", 60)
 
-    _run(go())
+    asyncio.run(go())
     assert rec.calls == []
