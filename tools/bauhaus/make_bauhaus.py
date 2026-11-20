@@ -550,7 +550,7 @@ def _lines_in_box(black: np.ndarray, box, n: int):
     return out
 
 
-def trace_colour_poster(src: Path, k: int, zones: list, title: str) -> str:
+def trace_colour_poster(src: Path, k: int, zones: list, title: str, crop=CROP) -> str:
     """Generic mock-up poster: crop, redraw lettering in ZnikoSL, trace colour regions as hatched shapes.
 
     ``zones`` are ``(box, strings)`` in the mock-up's pixel space.  Black ink inside a box is
@@ -558,7 +558,7 @@ def trace_colour_poster(src: Path, k: int, zones: list, title: str) -> str:
     (``strings=None`` erases without redrawing, for tiny print).  The source image is only read.
     """
     full = cv2.imread(str(src), cv2.IMREAD_COLOR)
-    cx0, cy0, cx1, cy1 = CROP
+    cx0, cy0, cx1, cy1 = crop if crop else (0, 0, full.shape[1], full.shape[0])
     black_full = full.max(axis=2) < 90
     img = full[cy0:cy1, cx0:cx1].copy()
     h, w = img.shape[:2]
@@ -579,13 +579,16 @@ def trace_colour_poster(src: Path, k: int, zones: list, title: str) -> str:
     _, labels, centers = cv2.kmeans(data, k, None, (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.5), 3, cv2.KMEANS_PP_CENTERS)
     raw = labels.reshape(h, w).astype(np.uint8)
     smooth = cv2.medianBlur(raw, 5)
-    corner = int(smooth[6, 6])
+    counts = np.bincount(smooth.ravel(), minlength=k)
+    lums = 0.114 * centers[:, 0] + 0.587 * centers[:, 1] + 0.299 * centers[:, 2]
+    light = [c for c in range(k) if lums[c] > 200] or list(range(k))
+    corner = max(light, key=lambda c: counts[c])  # paper = the commonest light colour
     sh = Sheet(w, h, title)
     for c in range(k):
         b, g, r = centers[c]
         lum = 0.114 * b + 0.587 * g + 0.299 * r
         recipe = _tone(lum)
-        if c == corner or recipe is None:
+        if c == corner or recipe is None or np.linalg.norm(centers[c] - centers[corner]) < 18:
             continue
         if lum < 70:  # black: keep hair-line rules and frames
             mask = (raw == c).astype(np.uint8) * 255
@@ -618,6 +621,21 @@ MOCKUP_NAMES = {
 }
 
 
+PHOTOS = {  # file -> (crop, k, title, zones, output name); framed shots are cropped to the paper
+    "21.png": (CROP, 5, "Bauhaus - circle, triangle, square", [((350, 704, 455, 735), ["BAUHAUS"])], "bauhaus-shapes-trio"),
+    "22.png": (CROP, 6, "Shapes 04 - half-circles and discs", [((185, 695, 262, 722), ["SHAPES"]), ((262, 688, 292, 705), ["04"]), ((340, 700, 615, 745), None)], "bauhaus-shapes-04"),
+    "23.png": (CROP, 3, "Bauhaus 1919 - brick pattern", [], "bauhaus-1919-tiles"),
+    "24.png": ((251, 117, 839, 949), 5, "Bauhaus Ausstellung 1923 - pills and arcs",
+               [((262, 180, 374, 224), ["1923"]), ((262, 226, 374, 252), ["JULY - SEPT"]), ((262, 764, 490, 814), ["BAUHAUS"]), ((500, 764, 830, 814), ["AUSSTELLUNG"]), ((262, 862, 500, 918), None)], "bauhaus-1923-ausstellung"),
+    "25.webp": ((153, 111, 575, 703), 5, "Bauhaus 1919-1923 - composition", [((305, 350, 565, 405), ["BAUHAUS"]), ((305, 410, 490, 450), ["1919-1923"])], "bauhaus-1919-1923-composition"),
+    "26.png": (None, 7, "Bauhaus Ausstellung - Mondrian grid", [], "bauhaus-ausstellung-grid"),
+    "27.png": (None, 4, "Bauhaus Dessau - bar and tower", [((60, 30, 320, 62), ["BAUHAUS DESSAU"]), ((110, 478, 270, 498), ["GROPIUS - MCMXXVI - NOIR GALLERY"])], "bauhaus-dessau"),
+    "28.png": (None, 5, "Bauhaus Ausstellung 1923 - cubes", [((40, 430, 218, 466), ["BAUHAUS"]), ((220, 428, 338, 448), ["AUSSTELLUNG"]), ((40, 467, 214, 490), ["JULY - AUGUST - SEPTEMBER"]), ((218, 456, 338, 494), ["1923"])], "bauhaus-1923-cubes"),
+    "29.png": ((48, 45, 432, 587), 5, "Bauhaus - discs and crossing lines", [((85, 492, 216, 526), ["BAUHAUS"])], "bauhaus-crossing-lines"),
+    "30.webp": (None, 5, "Bauhaus - diagonal composition", [], "bauhaus-diagonal"),
+}
+
+
 def main() -> None:
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
@@ -634,6 +652,9 @@ def main() -> None:
     for f, (k, title, texts) in MOCKUPS.items():
         if (src / f).exists():
             (out / f"{MOCKUP_NAMES[f]}.svg").write_text(trace_colour_poster(src / f, k, texts, title))
+    for f, (crop, k, title, zones, name) in PHOTOS.items():
+        if (src / f).exists():
+            (out / f"{name}.svg").write_text(trace_colour_poster(src / f, k, zones, title, crop))
     print("wrote", *sorted(p.name for p in out.glob("bauhaus-*.svg")))
 
 
