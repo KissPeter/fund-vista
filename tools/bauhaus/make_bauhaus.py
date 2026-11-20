@@ -286,13 +286,13 @@ def poster3() -> str:
     return sh.svg()
 
 
-def _smooth_contours(mask: np.ndarray, pad: int = 8, up: int = 4, eps: float = 1.3) -> list[Contour]:
+def _smooth_contours(mask: np.ndarray, pad: int = 8, up: int = 4, eps: float = 1.3, holes: bool = False) -> list[Contour]:
     """Smooth outlines of a binary mask, in source px; edge padding keeps page-edge cuts open."""
     m = cv2.copyMakeBorder(mask, pad, pad, pad, pad, cv2.BORDER_REPLICATE)
     m = cv2.resize(m, None, fx=up, fy=up, interpolation=cv2.INTER_CUBIC)
     m = cv2.GaussianBlur(m, (0, 0), up * 0.8)
     m = (m > 127).astype(np.uint8) * 255
-    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    cnts, _ = cv2.findContours(m, cv2.RETR_CCOMP if holes else cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     out = []
     for c in cnts:
         if cv2.contourArea(c) < 30 * up * up:
@@ -507,6 +507,117 @@ def poster10(src: Path) -> str:
     return sh.svg()
 
 
+CROP = (155, 30, 645, 770)  # the poster inside the 800x800 mock-up shot (shadow and white excluded)
+
+
+def _tone(lum: float) -> list[tuple[float, float]] | None:
+    """Hatch recipe for a region of luminance ``lum`` (darker = denser); None = paper."""
+    if lum > 235:
+        return None
+    if lum < 70:
+        return BLACK
+    if lum < 110:
+        return [(45.0, 1.0), (135.0, 1.0)]
+    if lum < 150:
+        return [(45.0, 1.3)]
+    if lum < 190:
+        return [(135.0, 1.8)]
+    return [(45.0, 2.6)]
+
+
+def _lines_in_box(black: np.ndarray, box, n: int):
+    """Row groups of black ink in ``box``, merged (smallest gaps first) down to ``n`` lines."""
+    x0, y0, x1, y1 = box
+    sub = black[y0:y1, x0:x1]
+    rows = np.where(sub.any(1))[0]
+    if not len(rows):
+        return []
+    groups = [[rows[0], rows[0]]]
+    for y in rows[1:]:
+        if y - groups[-1][1] <= 3:
+            groups[-1][1] = y
+        else:
+            groups.append([y, y])
+    while len(groups) > n:
+        gaps = [groups[i + 1][0] - groups[i][1] for i in range(len(groups) - 1)]
+        i = int(np.argmin(gaps))
+        groups[i] = [groups[i][0], groups[i + 1][1]]
+        del groups[i + 1]
+    out = []
+    for r0, r1 in groups:
+        cols = np.where(sub[r0 : r1 + 1].any(0))[0]
+        out.append((x0 + cols.min(), x0 + cols.max() + 1, y0 + r0, y0 + r1 + 1))
+    return out
+
+
+def trace_colour_poster(src: Path, k: int, zones: list, title: str) -> str:
+    """Generic mock-up poster: crop, redraw lettering in ZnikoSL, trace colour regions as hatched shapes.
+
+    ``zones`` are ``(box, strings)`` in the mock-up's pixel space.  Black ink inside a box is
+    measured and erased; each line is redrawn in single-stroke capitals over the same extent
+    (``strings=None`` erases without redrawing, for tiny print).  The source image is only read.
+    """
+    full = cv2.imread(str(src), cv2.IMREAD_COLOR)
+    cx0, cy0, cx1, cy1 = CROP
+    black_full = full.max(axis=2) < 90
+    img = full[cy0:cy1, cx0:cx1].copy()
+    h, w = img.shape[:2]
+    placed = []
+    for box, strings in zones:
+        x0, y0, x1, y1 = box
+        ink = np.zeros_like(black_full)
+        ink[y0:y1, x0:x1] = black_full[y0:y1, x0:x1]
+        if strings:
+            for s, (a, b, top, bottom) in zip(strings, _lines_in_box(ink, box, len(strings))):
+                placed.append((s, a - cx0, b - cx0, top - cy0, bottom - cy0))
+        grown = cv2.dilate(ink[cy0:cy1, cx0:cx1].astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+        ring = cv2.dilate(grown.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool) & ~grown
+        if ring.any():
+            img[grown] = np.median(img[ring], axis=0)
+    cv2.setRNGSeed(7)
+    data = img.reshape(-1, 3).astype(np.float32)
+    _, labels, centers = cv2.kmeans(data, k, None, (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.5), 3, cv2.KMEANS_PP_CENTERS)
+    raw = labels.reshape(h, w).astype(np.uint8)
+    smooth = cv2.medianBlur(raw, 5)
+    corner = int(smooth[6, 6])
+    sh = Sheet(w, h, title)
+    for c in range(k):
+        b, g, r = centers[c]
+        lum = 0.114 * b + 0.587 * g + 0.299 * r
+        recipe = _tone(lum)
+        if c == corner or recipe is None:
+            continue
+        if lum < 70:  # black: keep hair-line rules and frames
+            mask = (raw == c).astype(np.uint8) * 255
+            cnts = _smooth_contours(mask, holes=True, up=6)
+        else:
+            mask = cv2.morphologyEx((smooth == c).astype(np.uint8) * 255, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+            cnts = _smooth_contours(mask, holes=True)
+        if cnts:
+            sh.fill(cnts, recipe)
+    for s, x0, x1, top, bottom in placed:
+        sh.text(s, x0, x1, top, bottom - top)
+    return sh.svg()
+
+
+MOCKUPS = {  # file -> (k, title, zones)
+    "11.png": (4, "Bauhaus - blue, yellow, red bars", [((300, 700, 500, 750), ["BAUHAUS"])]),
+    "12.png": (5, "Bauhaus 1923 - concentric rings and swatches", [((200, 75, 310, 112), ["BAUHAUS"]), ((540, 75, 600, 112), ["1923"])]),
+    "13.png": (3, "Venus 02 - sun behind stripes", [((180, 705, 260, 750), ["02"]), ((450, 705, 630, 750), ["VENUS"])]),
+    "14.png": (3, "Bauhaus 1923 Weimar - stripes and red disc", [((170, 50, 340, 96), ["BAUHAUS"]), ((570, 50, 630, 96), ["1923"]), ((500, 712, 630, 750), ["WEIMAR"])]),
+    "15.png": (5, "Bauhaus Ausstellung 1919 - arches", [((598, 62, 642, 95), ["1919"]), ((165, 630, 390, 690), ["BAUHAUS"]), ((165, 692, 390, 732), ["AUSSTELLUNG"])]),
+    "16.png": (4, "Bauhaus 1921 Cologne - sun and striped disc", [((185, 62, 420, 112), ["BAUHAUS"]), ((560, 85, 620, 112), ["1921"]), ((415, 715, 620, 742), ["RUTTKOWSKI 68, COLOGNE"])]),
+    "17.png": (8, "Bauhaus 1923 - dot gradient", [((185, 662, 295, 696), ["BAUHAUS"]), ((555, 662, 610, 696), ["1923"])]),
+    "18.png": (3, "Bauhaus - halftone dots", [((400, 170, 640, 285), ["BAUHAUS"]), ((170, 70, 640, 125), None)]),
+    "19.png": (4, "Less is more - Farnsworth House", [((195, 82, 245, 98), ["LESS"]), ((195, 99, 245, 115), ["IS"]), ((195, 117, 245, 132), ["MORE"]), ((195, 640, 282, 676), ["FARNSWORTH", "HOUSE"]), ((284, 640, 400, 690), None)]),
+}
+MOCKUP_NAMES = {
+    "11.png": "bauhaus-bars-rgb", "12.png": "bauhaus-1923-rings", "13.png": "bauhaus-venus", "14.png": "bauhaus-1923-weimar",
+    "15.png": "bauhaus-1919-arches", "16.png": "bauhaus-1921-cologne", "17.png": "bauhaus-1923-gradient",
+    "18.png": "bauhaus-halftone", "19.png": "bauhaus-farnsworth",
+}
+
+
 def main() -> None:
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
@@ -520,6 +631,9 @@ def main() -> None:
     (out / "bauhaus-8-arch.svg").write_text(poster8(src / "8.webp"))
     (out / "bauhaus-9-ribbon-u.svg").write_text(poster9(src / "9.png"))
     (out / "bauhaus-10-bowl.svg").write_text(poster10(src / "10.png"))
+    for f, (k, title, texts) in MOCKUPS.items():
+        if (src / f).exists():
+            (out / f"{MOCKUP_NAMES[f]}.svg").write_text(trace_colour_poster(src / f, k, texts, title))
     print("wrote", *sorted(p.name for p in out.glob("bauhaus-*.svg")))
 
 
