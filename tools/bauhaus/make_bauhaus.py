@@ -4,8 +4,8 @@ Usage (from the repo root):
 
     backend/.venv/bin/python -I tools/bauhaus/make_bauhaus.py SRC_DIR OUT_DIR
 
-SRC_DIR holds the reference raster ``1.webp`` (stacked bars; its polygons are
-traced with OpenCV).  Posters 2 and 3 are pure geometry measured off the
+SRC_DIR holds the reference raster ``1.webp`` (stacked bars) and ``4.jpg`` (sun over
+waves); their shapes are traced with OpenCV.  Posters 2 and 3 are pure geometry measured off the
 references.  Every filled area becomes a closed outline plus parallel hatch
 lines (even-odd scanlines, so holes and letter counters work); there are no
 backgrounds, no fills and no fonts: single stroke colour, 0.4 mm pen, A4
@@ -116,6 +116,17 @@ BLOCK = {  # stroke paths on a 4 x 6 grid
     "S": [[(4, 0), (0, 0), (0, 3), (4, 3), (4, 6), (0, 6)]],
     "1": [[(0, 1.2), (2, 0), (2, 6)], [(0, 6), (4, 6)]],
     "9": [[(4, 3), (0, 3), (0, 0), (4, 0), (4, 6), (0, 6)]],
+    "0": [[(0, 0), (4, 0), (4, 6), (0, 6), (0, 0)]],
+    "2": [[(0, 0), (4, 0), (4, 3), (0, 3), (0, 6), (4, 6)]],
+    "3": [[(0, 0), (4, 0), (4, 6), (0, 6)], [(1, 3), (4, 3)]],
+    "T": [[(0, 0), (4, 0)], [(2, 0), (2, 6)]],
+    "E": [[(4, 0), (0, 0), (0, 6), (4, 6)], [(0, 3), (3, 3)]],
+    "R": [[(0, 6), (0, 0), (4, 0), (4, 3), (0, 3)], [(2, 3), (4, 6)]],
+    "L": [[(0, 0), (0, 6), (4, 6)]],
+    "I": [[(0, 0), (4, 0)], [(2, 0), (2, 6)], [(0, 6), (4, 6)]],
+    "N": [[(0, 6), (0, 0), (4, 0), (4, 6)]],
+    "D": [[(0, 0), (3, 0), (4, 1), (4, 5), (3, 6), (0, 6), (0, 0)]],
+    "\u00dc": [[(0, 0), (0, 6), (4, 6), (4, 0)], [(0.5, -2), (0.5, -1)], [(3.5, -2), (3.5, -1)]],
 }
 
 
@@ -123,11 +134,14 @@ def block_contours(text: str, x: float, y: float, cell: float, pitch: float) -> 
     """Union of the stroked block glyphs as rectilinear polygons (via a hi-res raster)."""
     ss = 16  # raster px per cell
     out: list[Contour] = []
+    top = 3  # grid units of head-room for umlaut dots
     for i, ch in enumerate(text):
-        w, h = int((4 + 1.5) * ss), int((6 + 1.5) * ss)
+        if ch == " ":
+            continue
+        w, h = int((4 + 1.5) * ss), int((top + 6 + 1.5) * ss)
         img = np.zeros((h, w), np.uint8)
         for stroke in BLOCK[ch]:
-            pts = np.array([[(px + 0.5) * ss, (py + 0.5) * ss] for px, py in stroke], np.float32)
+            pts = np.array([[(px + 0.5) * ss, (py + top + 0.5) * ss] for px, py in stroke], np.float32)
             for a, b in zip(pts[:-1], pts[1:]):
                 d = b - a
                 n = d / (np.linalg.norm(d) or 1)
@@ -139,7 +153,7 @@ def block_contours(text: str, x: float, y: float, cell: float, pitch: float) -> 
         cnts, hier = cv2.findContours(img, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
         for c in cnts:
             a = cv2.approxPolyDP(c, 0.8, True).reshape(-1, 2).astype(float)
-            out.append(np.column_stack([x + i * pitch + a[:, 0] * cell / ss, y + a[:, 1] * cell / ss]))
+            out.append(np.column_stack([x + i * pitch + a[:, 0] * cell / ss, y + a[:, 1] * cell / ss - top * cell]))
     return out
 
 
@@ -276,7 +290,6 @@ def poster2() -> str:
     sh.fill([c_out, c_mid], [(45.0, 2.4)])  # light pink  -> sparse
     sh.fill([c_mid, c_in], [(45.0, 1.1), (135.0, 1.1)])  # red -> cross-hatch (darkest)
     sh.fill([c_in], [(135.0, 1.7)])  # orange -> medium
-    sh.add_polyline(np.array([[0, 0], [w, 0], [w, h], [0, h]], float), closed=True)  # print edge
     cell = 7.2
     sh.fill(block_contours("BAUHAUS", 50, 1327, cell, 44.5), BLACK)
     sh.fill(block_contours("1919", 838, 1327, cell, 34.5), BLACK)
@@ -314,12 +327,45 @@ def poster3() -> str:
     return sh.svg()
 
 
+def _smooth_contours(mask: np.ndarray, pad: int = 8, up: int = 4, eps: float = 1.3) -> list[Contour]:
+    """Smooth outlines of a binary mask, in source px; edge padding keeps page-edge cuts open."""
+    m = cv2.copyMakeBorder(mask, pad, pad, pad, pad, cv2.BORDER_REPLICATE)
+    m = cv2.resize(m, None, fx=up, fy=up, interpolation=cv2.INTER_CUBIC)
+    m = cv2.GaussianBlur(m, (0, 0), up * 0.8)
+    m = (m > 127).astype(np.uint8) * 255
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    out = []
+    for c in cnts:
+        if cv2.contourArea(c) < 30 * up * up:
+            continue
+        a = cv2.approxPolyDP(c, eps, True).reshape(-1, 2).astype(float) / up - pad
+        out.append(a)
+    return out
+
+
+def poster4(src: Path) -> str:
+    img = cv2.imread(str(src), cv2.IMREAD_COLOR)
+    h, w = img.shape[:2]
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    hue, sat, val = hsv[..., 0].astype(int), hsv[..., 1], hsv[..., 2]
+    yellow = ((hue > 12) & (hue < 28) & (sat > 110) & (val > 150)).astype(np.uint8) * 255
+    red = (((hue < 8) | (hue > 170)) & (sat > 110) & (val > 120)).astype(np.uint8) * 255
+    sh = Sheet(w, h, "Bauhaus 1923 Sutterlin - sun over waves (outline + hatch)")
+    sh.fill(_smooth_contours(red), [(45.0, 1.0), (135.0, 1.0)])  # sun: darkest
+    sh.fill(_smooth_contours(yellow), [(45.0, 1.5)])  # waves: medium
+    sh.fill(block_contours("BAUHAUS", 12, 18, 5.57, 44.7), BLACK)
+    sh.fill(block_contours("1923", 420, 17, 1.86, 11.9), BLACK)
+    sh.fill(block_contours("S\u00dcTTERLIN BADENERSTRASSE 109", 12, 685, 2.86, 16.36), BLACK)
+    return sh.svg()
+
+
 def main() -> None:
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
     (out / "bauhaus-1-bars.svg").write_text(poster1(src / "1.webp"))
     (out / "bauhaus-2-circles.svg").write_text(poster2())
     (out / "bauhaus-3-ribbon.svg").write_text(poster3())
+    (out / "bauhaus-4-sun.svg").write_text(poster4(src / "4.jpg"))
     print("wrote", *sorted(p.name for p in out.glob("bauhaus-*.svg")))
 
 
