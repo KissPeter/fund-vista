@@ -271,6 +271,38 @@ def poster4(src: Path) -> str:
     return sh.svg()
 
 
+def poster5(src: Path) -> str:
+    """Dot grid: each dot is detected and redrawn as an exact circle."""
+    img = cv2.imread(str(src), cv2.IMREAD_GRAYSCALE)
+    h, w = img.shape[:2]
+    mask = (img < 110).astype(np.uint8) * 255
+    mask[1120:, :] = 0  # lettering
+    n, _, stats, cent = cv2.connectedComponentsWithStats(mask)
+    dots = [(cent[i], stats[i]) for i in range(1, n) if 600 < stats[i][4] < 4000]
+    r = float(np.median([math.sqrt(s[4] / math.pi) for _, s in dots]))
+    sh = Sheet(w, h, "Bauhaus 1919 - dot grid (outline + hatch)")
+    sh.fill([circle(c[0], c[1], r * 0.97, 72) for c, _ in dots], BLACK)
+    sh.add_polyline(np.array([[46, 1182], [836, 1182]], float))
+    sh.add_polyline(np.array([[46, 1184], [836, 1184]], float))
+    sh.text("BAUHAUS", 48, 430, 1200, 45)
+    sh.text("1919", 740, 836, 1210, 35)
+    return sh.svg()
+
+
+def poster6(src: Path) -> str:
+    img = cv2.imread(str(src), cv2.IMREAD_GRAYSCALE)
+    h, w = img.shape[:2]
+    mask = (img < 110).astype(np.uint8) * 255
+    keep = np.zeros_like(mask)
+    keep[300:1060, :] = 255  # the blobs only
+    sh = Sheet(w, h, "Bauhaus Juli-Sept 1923 - blobs (outline + hatch)")
+    sh.fill(_smooth_contours(cv2.bitwise_and(mask, keep)), BLACK)
+    sh.text("BAUHAUS", 82, 752, 112, 46)
+    sh.add_polyline(np.array([[80, 195], [752, 195]], float))
+    sh.text("JULI - SEPT 1923", 498, 752, 222, 25)
+    return sh.svg()
+
+
 def main() -> None:
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
@@ -278,6 +310,8 @@ def main() -> None:
     (out / "bauhaus-2-circles.svg").write_text(poster2())
     (out / "bauhaus-3-ribbon.svg").write_text(poster3())
     (out / "bauhaus-4-sun.svg").write_text(poster4(src / "4.jpg"))
+    (out / "bauhaus-5-dots.svg").write_text(poster5(src / "5.webp"))
+    (out / "bauhaus-6-blobs.svg").write_text(poster6(src / "6.webp"))
     print("wrote", *sorted(p.name for p in out.glob("bauhaus-*.svg")))
 
 
