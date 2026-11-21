@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     shop_base_url: str = ""
     warmup_target_url: str = ""
     warmup_item_timeout_s: float = 120.0
+    warmup_ingest_timeout_s: float = 3600.0
 
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
@@ -268,6 +269,7 @@ def _start_warmup() -> None:
             target_url=settings.warmup_target_url,
             backend_version=backend_version(),
             item_timeout_s=settings.warmup_item_timeout_s,
+            ingest_timeout_s=settings.warmup_ingest_timeout_s,
         )
         _warmup_tasks = warmup.start(cfg, claim=_warmup_claim)
     except Exception:  # the warmer MUST NOT break startup
