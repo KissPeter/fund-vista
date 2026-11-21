@@ -1,8 +1,8 @@
 # CR-009 — Mac disk-space guard + the read-only-docker recovery runbook (issue #111)
 
-- Status: done
+- Status: in progress
 - Created: 2026-10-26
-- Last updated: 2026-10-26
+- Last updated: 2026-11-21
 - Type: change request
 - Issue: https://github.com/KissPeter/fund-vista/issues/111
 - Decided: a shell guard on the Mac host (launchd, 2× daily) alerts when the
@@ -76,3 +76,29 @@ checkouts — the VM disk (100 GiB) was never the constraint.
 - [x] Backend suite still green (`runtests.sh`) — the change is ops/docs
       only, so this is a regression check, not coverage for the script
       itself; the script is exercised on the Mac host directly.
+
+## Phase 2 — active recovery (2026-11-21)
+
+On 2026-11-21 the host volume reached `0 GiB` free from 06:00 through 11:00.
+The guard detected every breach, but `colima status` was already failing with
+`error retrieving current runtime: empty value`, so the Colima `docker prune`
+and `fstrim` branch was skipped. The other prune targets no longer existed or
+were younger than the 14-day age floor. The app only recovered after a manual
+`colima stop` / `colima start` and `fstrim`.
+
+The guard MUST therefore recover, not just alert:
+
+- [ ] Hourly schedule covers every hour, including 23:00–05:00.
+- [ ] The Docker/VM prune and `fstrim` MUST run without a `colima status`
+      gate; a failed status check MUST be treated as a reason to recover,
+      not a reason to skip cleanup.
+- [ ] When the floor is still breached after cache and VM cleanup, the guard
+      MUST restart Colima once per `RECOVERY_RETRY_HOURS` window, then retry
+      VM cleanup.
+- [ ] The cache prune MUST include the regenerable caches that actually
+      grew: uv, npm, Homebrew, Colima, JetBrains, browser and updater caches.
+- [ ] A hermetic shell test MUST cover healthy, prune-only, broken-VM recovery,
+      recent-recovery backoff and dry-run paths.
+- [ ] The installed launchd agent on this Mac MUST be refreshed from the
+      repository plist, and the public `/v1/citymap/render` check MUST be
+      green after the merge.
