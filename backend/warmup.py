@@ -33,9 +33,12 @@ Replay rules:
 * ``body`` MUST be the exact payload string as the shop produced it. It is
   sent as its UTF-8 bytes without re-serialising, because the render cache key
   includes every parameter byte.
-* ``contentType`` ``application/json`` is replayed. ``multipart`` items (PCB)
-  are skipped and logged: the contract does not yet specify the multipart
-  boundary. ``assetUrl`` is not fetched.
+* ``contentType`` ``application/json`` and boundary-bearing
+  ``multipart/form-data; boundary=<...>`` (PCB) are replayed verbatim. A
+  multipart item MUST carry a non-empty boundary: ``body`` is sent as its
+  exact UTF-8 bytes, so the warmer needs the delimiter the shop used. Any
+  other content type (including a boundary-less ``multipart``) is skipped and
+  logged. ``assetUrl`` is not fetched.
 * A ``traffic_ingest`` item gates the traffic replay items that follow it. The
   NAS availability verdict decides: ``ready`` skips the ingest and opens the
   gate; ``available`` runs one ``traffic_ingest`` job on the NAS and waits for
@@ -54,6 +57,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -69,7 +73,12 @@ DEFAULT_ITEM_TIMEOUT_S = 120.0
 DEFAULT_INGEST_TIMEOUT_S = 3600.0
 DAILY_CLAIM_TTL_S = 6 * 3600
 STARTUP_CLAIM_TTL_S = 3600
-SUPPORTED_CONTENT_TYPES = ("application/json",)
+JSON_CONTENT_TYPE = "application/json"
+# A multipart replay carries its delimiter in the content type (the shop sends
+# a fixed boundary for the PCB warm-up body). The boundary MUST be non-empty:
+# the body is forwarded verbatim, so the warmer cannot invent a delimiter.
+_MULTIPART_BOUNDARY_RE = re.compile(r"^multipart/form-data;\s*boundary\s*=\s*(\S.*)$",
+                                    re.IGNORECASE)
 TRAFFIC_PATH_PREFIX = "/v1/traffic/"
 INGEST_KIND = "traffic_ingest"
 AVAILABILITY_ATTEMPTS = 12
@@ -99,6 +108,22 @@ class WarmupConfig:
 
 def contract_url(shop_base_url: str) -> str:
     return shop_base_url.rstrip("/") + CONTRACT_PATH
+
+
+def content_type_supported(content_type: Any) -> bool:
+    """True for a verbatim-replayable content type.
+
+    ``application/json`` and ``multipart/form-data`` with a non-empty
+    boundary are replayed. A bare ``multipart`` or a boundary-less
+    ``multipart/form-data`` is NOT: the body is sent as-is, so without the
+    delimiter the target cannot parse it.
+    """
+    if content_type == JSON_CONTENT_TYPE:
+        return True
+    if not isinstance(content_type, str):
+        return False
+    match = _MULTIPART_BOUNDARY_RE.match(content_type)
+    return bool(match and match.group(1).strip())
 
 
 def seconds_until_daily(now: datetime) -> float:
@@ -145,7 +170,7 @@ def _validate_item(item: Any) -> Union[_Replay, _Ingest]:
     ):
         raise ValueError(f"path must be a relative absolute path: {path!r}")
     content_type = item.get("contentType")
-    if content_type not in SUPPORTED_CONTENT_TYPES:
+    if not content_type_supported(content_type):
         raise ValueError(f"unsupported contentType {content_type!r}")
     body = item.get("body")
     if not isinstance(body, str):

@@ -42,9 +42,13 @@ The shop side is KissPeter/pen-pixel-shop#1432.
   every parameter byte.
 - `path` MUST be a relative absolute path (`/v1/...`). Absolute URLs and
   protocol-relative paths are skipped.
-- `contentType` `application/json` is replayed. `multipart` items (PCB) MUST be
-  skipped and logged: the contract does not yet specify the multipart boundary.
-  `assetUrl` is not fetched.
+- `contentType` `application/json` and boundary-bearing
+  `multipart/form-data; boundary=<...>` (PCB) MUST be replayed verbatim with
+  that exact header. A multipart item MUST carry a non-empty boundary, because
+  `body` is sent as its exact UTF-8 bytes and the target needs the delimiter
+  the shop used. Any other content type (including a boundary-less `multipart`
+  or `multipart/form-data`) MUST be skipped and logged. `assetUrl` is not
+  fetched.
 - A failing item (HTTP error, timeout, malformed item) MUST be logged and
   skipped. It MUST NOT stop the remaining items or raise into startup.
 - A failed contract fetch MUST log a warning and replay nothing.

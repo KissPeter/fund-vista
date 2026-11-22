@@ -20,6 +20,19 @@ DAY = "2026-11-19"
 BODY_A = '{"z": 1,  "a":[2, 3]}'
 BODY_B = '{"width":210,"height":297}'
 
+# A PCB-style multipart replay: fixed boundary, shipped sample file + params.
+MULTIPART_CT = "multipart/form-data; boundary=----kp-warmup-pcb-v1"
+MULTIPART_BODY = (
+    "------kp-warmup-pcb-v1\r\n"
+    'Content-Disposition: form-data; name="file"; filename="ESP32DIV2-pcb.GTL"\r\n'
+    "Content-Type: application/octet-stream\r\n\r\n"
+    "G04 sample board\r\n"
+    "------kp-warmup-pcb-v1\r\n"
+    'Content-Disposition: form-data; name="params"\r\n\r\n'
+    '{"paper":"white","layers":{"pads":{"ink":"blue"}}}\r\n'
+    "------kp-warmup-pcb-v1--\r\n"
+)
+
 
 def _item(name, path, body=BODY_A, content_type="application/json", **extra):
     return {"name": name, "method": "POST", "path": path, "body": body,
@@ -120,6 +133,41 @@ def test_replays_exact_body_bytes_against_target():
         ("/v1/render", BODY_A.encode("utf-8"), "application/json"),
         ("/v1/compose-sheet", BODY_B.encode("utf-8"), "application/json"),
     ]
+
+
+def test_multipart_item_with_boundary_is_replayed_verbatim():
+    """PCB warm-up: the exact multipart bytes and content type reach the target."""
+    rec = Recorder([_item("pcb", "/v1/pcb/render", MULTIPART_BODY, MULTIPART_CT)])
+    summary = _run(rec)
+
+    assert summary == {"total": 1, "ok": 1, "failed": 0, "skipped": 0}
+    assert rec.calls == [("/v1/pcb/render", MULTIPART_BODY.encode("utf-8"), MULTIPART_CT)]
+
+
+def test_boundary_less_multipart_items_are_skipped():
+    """A multipart body cannot be replayed without its delimiter."""
+    rec = Recorder([
+        _item("bare", "/v1/pcb/render", content_type="multipart"),
+        _item("no-boundary", "/v1/pcb/render", content_type="multipart/form-data"),
+        _item("empty-boundary", "/v1/pcb/render",
+              content_type="multipart/form-data; boundary="),
+        _item("whitespace-boundary", "/v1/pcb/render",
+              content_type="multipart/form-data; boundary=   "),
+        _item("pcb", "/v1/pcb/render", MULTIPART_BODY, MULTIPART_CT),
+    ])
+    summary = _run(rec)
+
+    assert summary == {"total": 5, "ok": 1, "failed": 0, "skipped": 4}
+    assert rec.calls == [("/v1/pcb/render", MULTIPART_BODY.encode("utf-8"), MULTIPART_CT)]
+
+
+def test_content_type_supported_helper():
+    assert warmup.content_type_supported("application/json")
+    assert warmup.content_type_supported(MULTIPART_CT)
+    assert warmup.content_type_supported("multipart/form-data; boundary=abc")
+    for bad in ("multipart", "multipart/form-data", "multipart/form-data; boundary=",
+                "multipart/form-data; boundary=   ", "text/plain", None, 123):
+        assert not warmup.content_type_supported(bad)
 
 
 def test_failing_items_do_not_stop_the_rest():
