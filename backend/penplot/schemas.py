@@ -103,6 +103,14 @@ class LabelParams(BaseModel):
         default=0.0, ge=0.0, le=20.0,
         description="Text inset from the right frame vertical.",
     )
+    placement: str = Field(
+        default="inside",
+        description="inside/below/above title placement (title-placement-outside).",
+    )
+    lines: list[str] | None = Field(
+        default=None,
+        description="Title then optional subtitle (<=41 chars each); replaces text when set.",
+    )
 
 
 # Measured machine feedrates (mm/min): pen-down drawing, pen-up travel.
