@@ -3,7 +3,7 @@
 Date: 2026-11-24. Full findings: `docs/stl-svg-generation-toolchain.md`; CLI docs: `docs/stl2plot-cli.md`.
 
 ## Decision
-- STL -> artwork-only SVG uses `slice3d` cross-sections and emits **side view only**.
+- STL -> artwork-only SVG uses `slice3d` cross-sections and emits ONE view: the third orthographic projection (broad-face / top), NOT end-on or edge-on. Both earlier views were rejected by the user.
 - Hand-rolled hidden-line removal and the three-view layout were removed.
 - `svg3d` was evaluated but rejected (shaded triangles, not single-stroke line art).
 
@@ -22,18 +22,25 @@ Date: 2026-11-24. Full findings: `docs/stl-svg-generation-toolchain.md`; CLI doc
 - `backend.penplot.schemas.ComposeSheetRequest.artwork` defaults to `"image"`; gallery artwork MUST pass `"inline"`.
 - AGENTS.md "One sheet source": `POST /v1/compose-sheet` is the only composer of preview/personalisation/order sheets.
 
-## Axis mapping for side view
+## Axis mapping (third / broad-face view)
 - `thin, mid, long = argsort(mesh.extents)`.
-- Slice across `mid` (width axis); project `polylines_3d[:, [long, thin]]` so length is horizontal and thickness vertical. This is the side-looking view the user wants, NOT cross-sections along the length.
+- Slice along `thin`; project `polylines_3d[:, [long, mid]]` so length is horizontal and width vertical.
 - Scale longest extent to `--fit-mm` (default 180), add `--margin-mm` (5), simplify at 0.06 mm, emit via `to_svg`.
 - Deterministic output: drop duplicate consecutive points, normalise polyline direction, sort polylines.
 - `slice3d` gives cross-sections, not orthographic hidden-line removal; that trade-off is accepted.
 
 ## Samples
-- `backend/tests/fixtures/knipexXs.stl`: 2306 faces, not watertight, extents [33.43, 103.53, 10.0]; generated side-looking `knipexXs.svg` has 68 paths and no text/image. User supplied it with no explicit redistribution licence.
-- Crescent Wrench Pair was requested next but was not found in `~/Downloads` at the last check; recheck and copy into `backend/tests/fixtures/` with provenance before generating.
+- `backend/tests/fixtures/knipexXs.stl`: 2306 faces, not watertight, extents [33.43, 103.53, 10.0]; generated broad-face `knipexXs.svg` has 16 paths and no text/image. User supplied it with no explicit redistribution licence but asked to add it under the shop `tools` gallery category.
+- Crescent Wrench Pair: zip `crescent-wrench-pair20180403-25492-5s5yc6.zip` found in `~/Downloads` on 2026-11-24; contains `wrench_v2_assembly_FIXED.stl` (65,502 faces) and `wrench_v2_assembly_VORONOI_FIXED.stl` (215,318 faces). Both extents ~[71.5, 25.3, 266] with thin=Y, mid=X, long=Z; third view produces 37 and 130 paths respectively. User to pick the variant before committing artwork.
+
+## Shop gallery item (in progress)
+- Worktree `/Users/kissp/PycharmProjects/pen-pixel-shop-knipex`, branch `feat/knipex-gallery-item` from `origin/main`.
+- Seeds: `src/lib/tools.seeds.ts` (`TOOLS_SEEDS`, `PlaneSeed`); asset: `public/artwork/tools/<slug>.svg` (A4 landscape 297x210, plotter-safe, no text/image/style, metadata stamped).
+- Source rules: `docs/tools-sources.md`, `docs/new-source-rule.md` (5-point checklist), `docs/terms-requirements.md` chapter 3 ToS row, `specTable` "Forrásfájl" row stays.
+- Gate: `npm run test:unit -- src/lib/shop.server.test.ts src/lib/gallery-routes.test.ts src/lib/galleryArtworkAssets.test.ts`.
+- Sheet for the shop asset MUST come from `compose_sheet_svg(..., max_svg_bytes=...)` with `artwork="inline"` (One sheet source); stamp ownership metadata with `svgmeta.stamp`.
 
 ## Reproduce
 `python3 -m backend.penplot.stl2plot backend/tests/fixtures/knipexXs.stl -o backend/tests/fixtures/knipexXs.svg --slices 8`
 `python3 -m pytest backend/tests/test_penplot_stl_views.py -q`
-`rsvg-convert -b white -w 1400 backend/tests/fixtures/knipexXs.svg -o knipex-side-preview.png`
+`rsvg-convert -b white -w 1400 backend/tests/fixtures/knipexXs.svg -o knipex-third-view.png`
