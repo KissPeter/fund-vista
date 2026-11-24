@@ -112,3 +112,11 @@ ruff check backend/penplot backend/tests
 
 CPU abuse by large meshes (caps + shared rate limit), TTL expiry of ordered derived
 files, placement drift between preview and inline, and toolchain absence in production.
+
+## T7 runtime-install ticket (open)
+
+Production deployment is deferred; the named install owner is Péter Kiss
+(peter.kiss@pepperstone.com). Follow-up ticket:
+`docs/B-003-stl-toolchain-runtime-install.md` (status `todo`). `backend/uv.lock`
+MUST stay unchanged, and sample STL rights (Knipex XS, crescent pair) MUST stay
+blocked before sale while shop ticket S15 is open.

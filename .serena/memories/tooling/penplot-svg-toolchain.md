@@ -11,7 +11,8 @@ Date: 2026-11-24. Full findings: `docs/stl-svg-generation-toolchain.md`; CLI doc
 - `slice3d 0.1.1`: `load_mesh`, `slice_mesh(axis, thickness)`, `Slice.is_empty`, `Slice.polylines_3d`, `save_section`.
 - `trimesh 5.2.2` + `trimesh[easy]` soft deps: mesh parsing, extents, sections.
 - Installed with `python3 -m pip install --user slice3d 'trimesh[easy]'`; scripts in `~/Library/Python/3.13/bin` are not on PATH.
-- `backend/.venv` does NOT have these; run the CLI with `python3`. Tests use `pytest.importorskip` and skip there.
+- `backend/.venv` does NOT have these; run the CLI with `python3`. Geometry tests skip there; `test_toolchain_importable` is the one explicit opt-in check (fails with `PENPLOT_STL_REQUIRE_TOOLCHAIN=1`).
+- T7 production install is deferred and owned by Péter Kiss: `docs/B-003-stl-toolchain-runtime-install.md`. Sample STL rights remain blocked before sale while S15 is open.
 - Do not touch `backend/uv.lock` without regenerating the shop licence inventory (`mem:ops/shop-licence-inventory-coupling`).
 
 ## Existing SVG code to reuse, never rebuild

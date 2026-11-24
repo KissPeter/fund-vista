@@ -30,6 +30,11 @@ class ErrorCode:
     ARTWORK_UNSAFE = "artwork_unsafe"
     ARTWORK_NOT_PLOTTABLE = "artwork_not_plottable"
     SHEET_NOT_PLOTTABLE = "sheet_not_plottable"
+    # STL custom design (docs/stl-custom-design-plan.md). Toolchain absence is
+    # a server fault (503), a bad/unsupported mesh is an input fault (422).
+    STL_INVALID = "stl_invalid"
+    STL_TOO_HEAVY = "stl_too_heavy"
+    STL_TOOLCHAIN_UNAVAILABLE = "stl_toolchain_unavailable"
 
 
 class PenPlotError(Exception):
@@ -94,4 +99,27 @@ def rate_limited(retry_after: int) -> PenPlotError:
         code=ErrorCode.RATE_LIMITED,
         message=f"Too many requests. Retry after {retry_after}s.",
         retry_after=retry_after,
+    )
+
+
+def stl_invalid(message: str) -> PenPlotError:
+    """Input is not a usable STL mesh (422)."""
+    return PenPlotError(status=422, code=ErrorCode.STL_INVALID, message=message)
+
+
+def stl_too_heavy(message: str) -> PenPlotError:
+    """Mesh exceeds the server's face cap (422)."""
+    return PenPlotError(status=422, code=ErrorCode.STL_TOO_HEAVY, message=message)
+
+
+def stl_toolchain_unavailable() -> PenPlotError:
+    """slice3d/trimesh are not installed on this host (503)."""
+    return PenPlotError(
+        status=503,
+        code=ErrorCode.STL_TOOLCHAIN_UNAVAILABLE,
+        message=(
+            "STL rendering is unavailable on this server (slice3d/trimesh "
+            "missing). Install with python3 -m pip install --user slice3d "
+            "'trimesh[easy]'."
+        ),
     )

@@ -23,7 +23,19 @@ from pydantic import (
     model_validator,
 )
 
+from backend.penplot.config import (
+    STL_MAX_FIT_MM,
+    STL_MAX_MARGIN_MM,
+    STL_MAX_SLICES,
+    STL_MAX_STROKE_MM,
+    STL_MIN_FIT_MM,
+    STL_MIN_SLICES,
+    STL_MIN_STROKE_MM,
+    STL_VIEWS,
+)
+
 MethodName = Literal["contour", "centerline", "hatch", "flow"]
+StlViewName = Literal["broad", "edge", "end"]
 PageSizeName = Literal["A4", "A3", "A5", "Letter", "a4", "a3", "a5", "letter"]
 Orientation = Literal["portrait", "landscape"]
 
@@ -568,6 +580,68 @@ class ResultMetaResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class StlImportResponse(BaseModel):
+    """Metadata for a validated, content-addressed STL upload."""
+
+    image_id: str
+    format: str
+    filename: str
+    faces: int
+    extents_mm: tuple[float, float, float]
+    canonical_axes: tuple[int, int, int]
+    warnings: list[str] = Field(default_factory=list)
+    expires_at: datetime
+
+
+class StlViewParams(BaseModel):
+    """Rendering knobs for ``POST /v1/stl/views`` (all ranges are server caps)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    views: list[StlViewName] = Field(
+        default_factory=lambda: ["broad", "edge", "end"],
+        min_length=1, max_length=3,
+        description="Views to render; the shop's custom-design tab uses all three.",
+    )
+    slices: int = Field(default=8, ge=STL_MIN_SLICES, le=STL_MAX_SLICES)
+    fit_mm: float = Field(default=180.0, ge=STL_MIN_FIT_MM, le=STL_MAX_FIT_MM)
+    margin_mm: float = Field(default=5.0, ge=0.0, le=STL_MAX_MARGIN_MM)
+    stroke_mm: float = Field(default=0.2, ge=STL_MIN_STROKE_MM, le=STL_MAX_STROKE_MM)
+
+    @field_validator("views")
+    @classmethod
+    def _canonical_views(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("views must not contain duplicates")
+        # Response order and cache keys never depend on the client's order.
+        return [view for view in STL_VIEWS if view in value]
+
+
+class StlViewsRequest(BaseModel):
+    """Body of ``POST /v1/stl/views``: a stored STL plus view parameters."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    image_id: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$")
+    params: StlViewParams = Field(default_factory=StlViewParams)
+
+
+class StlViewResult(BaseModel):
+    """One artwork-only view: a stored SVG, its sidecar and server-computed stats."""
+
+    view: StlViewName
+    result_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    svg_url: str
+    meta_url: str
+    stats: ConvertStats
+
+
+class StlViewsResponse(BaseModel):
+    image_id: str
+    generator_version: str
+    views: list[StlViewResult]
+
+
 class TokenRequest(BaseModel):
     """Mint a signed design token for a known image (shop bridge, §2)."""
 
@@ -679,14 +753,45 @@ class ComposeContextTable(BaseModel):
         return self
 
 
+class ComposeSheetArtwork(BaseModel):
+    """One stored STL view selected for a multi-panel sheet.
+
+    ``result_id`` is the content-addressed id of a server-stored ``_stlview``
+    result. The composer verifies it against the store: a caller cannot smuggle
+    an arbitrary SVG through a made-up id.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    svg: str = Field(min_length=1)
+    result_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    view: StlViewName | None = None
+
+
 class ComposeSheetRequest(BaseModel):
     """Stateless gallery sheet: artwork SVG + layout + title lines + context table."""
 
     model_config = ConfigDict(extra="forbid")
 
-    svg: str = Field(
+    svg: str | None = Field(
+        default=None,
         min_length=1,
-        description="Artwork SVG document, embedded unchanged. Size-capped by max_upload_bytes.",
+        description=(
+            "Artwork SVG document, embedded unchanged. Exactly one of `svg` and "
+            "a non-empty `artworks` list is required. Size-capped by "
+            "max_upload_bytes."
+        ),
+    )
+    artworks: list[ComposeSheetArtwork] | None = Field(
+        default=None, max_length=3,
+        description="Up to three stored STL views, combined into one sheet.",
+    )
+    store: bool = Field(
+        default=False,
+        description=(
+            "Persist the composed inline SVG sheet as an orderable `_stlsheet` "
+            "result. Requires `artwork='inline'` and `preview='svg'`."
+        ),
     )
     ink_hex: str = Field(default="#1a1a1a", pattern=r"^#[0-9a-fA-F]{6}$")
     layout: ComposeLayout = Field(default_factory=ComposeLayout)
@@ -732,6 +837,16 @@ class ComposeSheetRequest(BaseModel):
             "'runway'. Absent: those elements take pen."
         ),
     )
+
+    @model_validator(mode="after")
+    def _one_artwork_source(self) -> ComposeSheetRequest:
+        has_svg = self.svg is not None
+        has_artworks = bool(self.artworks)
+        if has_svg == has_artworks:
+            raise ValueError("exactly one of svg or artworks is required")
+        if self.store and (self.artwork != "inline" or self.preview != "svg"):
+            raise ValueError("store=true requires artwork='inline' and preview='svg'")
+        return self
 
     @model_validator(mode="after")
     def _no_control_chars(self) -> ComposeSheetRequest:

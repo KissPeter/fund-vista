@@ -57,13 +57,44 @@ from fastapi import APIRouter, Depends, Request, Response
 from starlette.status import HTTP_404_NOT_FOUND
 
 from backend.http import error_response
-from backend.penplot import art_fill, art_placement, colour_bake, labels, raster_out, stats_table
-from backend.penplot.errors import ErrorCode, PenPlotError, sheet_not_plottable
+from backend.penplot import (
+    art_fill,
+    art_placement,
+    colour_bake,
+    labels,
+    raster_out,
+    stats_table,
+)
+from backend.penplot.errors import (
+    ErrorCode,
+    PenPlotError,
+    invalid_params,
+    sheet_not_plottable,
+)
 from backend.penplot.methods import Polyline
 from backend.penplot.raster import looks_like_svg
-from backend.penplot.router import get_settings, require_rate_limit, resolve_public_base, store
-from backend.penplot.schemas import ComposeContextPads, ComposeSheetRequest
-from backend.penplot.svg_vector import Matrix, _parse_viewbox, _viewbox_ctm, parse_svg_vectors
+from backend.penplot.router import (
+    get_settings,
+    require_rate_limit,
+    resolve_public_base,
+    store,
+    verify_stored_artworks,
+)
+from backend.penplot.schemas import (
+    ComposeContextPads,
+    ComposeSheetArtwork,
+    ComposeSheetRequest,
+    ConvertStats,
+    PointsStats,
+    SegmentsStats,
+)
+from backend.penplot.stl_views import GENERATOR_VERSION
+from backend.penplot.svg_vector import (
+    Matrix,
+    _parse_viewbox,
+    _viewbox_ctm,
+    parse_svg_vectors,
+)
 
 log = logging.getLogger(__name__)
 
@@ -624,13 +655,128 @@ def suggest_table_fixes(body: ComposeSheetRequest, art: _Artwork) -> list[dict]:
     return fixes
 
 
+#: Gap (mm) between STL view panels in a two/three-panel sheet. Chosen once
+#: here so the PNG preview and the inline order file share the same geometry.
+_STL_PANEL_GAP_MM = 6.0
+
+
+def _panel_markup(svg_text: str) -> tuple[str, str, float, float]:
+    """Inner markup and paint attributes of one artwork SVG (no nested root)."""
+    data = svg_text.encode("utf-8")
+    root = DefusedET.fromstring(data)
+    _assert_inline_safe(root)
+    body = _PROLOG_RE.sub("", svg_text)
+    start = _START_TAG_RE.search(body)
+    if start is None:
+        raise _artwork_error(ErrorCode.ARTWORK_NOT_PLOTTABLE, "Artwork has no <svg> root.")
+    kept = "".join(
+        f" {name}={value}"
+        for name, value in _ATTR_RE.findall(start.group(0))
+        if name != "xmlns"
+        and not name.startswith("data-kp-")
+        and name.lower() not in _ROOT_GEOMETRY_ATTRS
+    )
+    inner = _END_SVG_RE.sub("", body[start.end():])
+    w, h = _root_length(root, "width"), _root_length(root, "height")
+    if w is None or h is None:
+        vb = _parse_viewbox(root.attrib.get("viewBox") or root.attrib.get("viewbox"))
+        if vb:
+            w, h = (vb[2], vb[3]) if w is None or h is None else (w, h)
+        else:
+            _lines, w, h, _warnings = parse_svg_vectors(data)
+    assert w is not None and h is not None and w > 0 and h > 0
+    return inner, kept, w, h
+
+
+def _multi_panel_svg(artworks: list[ComposeSheetArtwork]) -> str:
+    """One SVG document holding up to three stored views side by side.
+
+    Every panel is a plain ``<g transform>`` (never a nested ``<svg>``, which
+    the inline gate refuses), so ``compose_sheet_svg`` plans once for both the
+    PNG preview and the inline/order output.
+    """
+    panels = [_panel_markup(art.svg) for art in artworks]
+    panel_w = max(p[2] for p in panels)
+    panel_h = max(p[3] for p in panels)
+    gap = _STL_PANEL_GAP_MM
+    if len(panels) == 2:
+        origins = [(0.0, 0.0), (panel_w + gap, 0.0)]
+    elif len(panels) == 3:
+        origins = [
+            (0.0, 0.0), (panel_w + gap, 0.0),
+            ((panel_w + gap) / 2.0, panel_h + gap),
+        ]
+    else:  # pragma: no cover - the caller only uses this for two or three
+        raise invalid_params("a multi-panel sheet needs two or three artworks")
+    sheet_w = max(x + panel_w for x, _ in origins)
+    sheet_h = max(y + panel_h for _, y in origins)
+    parts: list[str] = []
+    for art, (inner, kept, w, h), (x, y) in zip(artworks, panels, origins, strict=True):
+        scale = min(panel_w / w, panel_h / h)
+        dx, dy = x + (panel_w - w * scale) / 2, y + (panel_h - h * scale) / 2
+        label = escape(art.view or "view", {'"': "&quot;"})
+        parts.append(
+            f'<g data-kp-stl-panel="{label}"{kept} '
+            f'transform="matrix({_num(scale)} 0 0 {_num(scale)} '
+            f'{_num(dx)} {_num(dy)})">{inner}</g>'
+        )
+    width, height = f"{sheet_w:g}", f"{sheet_h:g}"
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}mm" '
+        f'height="{height}mm" viewBox="0 0 {width} {height}" '
+        f'data-kp-stl-panels="{len(panels)}">'
+        + "".join(parts) + "</svg>"
+    )
+
+
+def _resolve_svg(body: ComposeSheetRequest) -> str:
+    """The single SVG the existing composer places (legacy path unchanged)."""
+    if body.svg is not None:
+        return body.svg
+    artworks = body.artworks or []
+    if len(artworks) == 1:
+        return artworks[0].svg
+    return _multi_panel_svg(artworks)
+
+
+def _aggregate_view_stats(metas: list[dict]) -> ConvertStats:
+    """Sum the server-computed view stats into one sheet stats object."""
+    parsed: list[ConvertStats] = []
+    for meta in metas:
+        try:
+            parsed.append(ConvertStats(**meta["stats"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise invalid_params("a selected view has no usable stats sidecar") from exc
+    return ConvertStats(
+        points=PointsStats(
+            before=sum(s.points.before for s in parsed),
+            after=sum(s.points.after for s in parsed),
+        ),
+        segments=SegmentsStats(
+            before=sum(s.segments.before for s in parsed),
+            after=sum(s.segments.after for s in parsed),
+        ),
+        strokes=sum(s.strokes for s in parsed),
+        pen_down_mm=round(sum(s.pen_down_mm for s in parsed), 2),
+        pen_up_mm=round(sum(s.pen_up_mm for s in parsed), 2),
+        estimated_time_s=round(sum(s.estimated_time_s for s in parsed), 1),
+    )
+
+
 def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     """Compose the A4 gallery sheet SVG. Pure and deterministic.
 
     Raises :class:`PenPlotError` (422 invalid input, 413 oversize) and never
-    returns a partial sheet.
+    returns a partial sheet. Stored artwork ids are verified by the endpoint
+    before this pure function is called; composition itself never reads disk.
     """
+    multi_panel = body.artworks is not None and len(body.artworks) > 1
+    if body.artworks is not None:
+        # One request body drives placement for preview, inline and order. A
+        # legacy `svg` request keeps its original object (byte-for-byte output).
+        body = body.model_copy(update={"svg": _resolve_svg(body), "artworks": None})
     svg_text = body.svg
+    assert svg_text is not None  # guaranteed by the request validator
     if art_fill.is_fill(svg_text):
         # A fill artwork is cropped to the free area's aspect (not letterboxed).
         free = _plan_sheet(body, _Artwork(None, None, None)).area
@@ -803,10 +949,20 @@ def compose_sheet_svg(body: ComposeSheetRequest, *, max_svg_bytes: int) -> str:
     # Outside placements carry the sheet bounds on the root, not in a rect:
     # vpype plots an invisible rect (fill and stroke none) as a path.
     bounds_attr = f' data-kp-a4-bounds="0 0 {width_mm} {height_mm}"' if outside else ""
+    # Multi-panel sheets (and only those) name the single art box the shared
+    # _plan_sheet produced. Preview and inline carries the same bytes here, so
+    # placement parity is assertable without re-implementing the layout in a
+    # test. Legacy one-artwork sheets are deliberately untouched.
+    multi_box_attr = ""
+    if multi_panel:
+        bx, by, bw, bh = box
+        multi_box_attr = (
+            f' data-kp-art-box="{_fmt(bx)} {_fmt(by)} {_fmt(bw)} {_fmt(bh)}"'
+        )
     sheet = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_mm}mm" '
         f'height="{height_mm}mm" viewBox="0 0 {width_mm} {height_mm}" '
-        f'data-kp-compose="1"{bounds_attr}{art_attrs}>'
+        f'data-kp-compose="1"{bounds_attr}{art_attrs}{multi_box_attr}>'
         + "".join(parts)
         + "</svg>"
     )
@@ -873,6 +1029,44 @@ def _png_size(data: bytes) -> tuple[int, int]:
     return width, height
 
 
+def _store_stl_sheet(
+    svg: str, body: ComposeSheetRequest, metas: list[dict], request: Request,
+) -> dict[str, str]:
+    """Persist an orderable combined sheet and return its result headers.
+
+    Raw ``_stlview`` files are artworks, never order files; only this composed
+    ``_stlsheet`` output may be fulfilled. The sidecar carries the summed
+    server-side stats the shop prices from, plus the provenance of every panel.
+    """
+    assert body.artworks  # store=true cannot be set without artworks
+    expected = ("image_id", "generator_version", "params_hash")
+    values = [tuple(meta.get(key) for key in expected) for meta in metas]
+    if not metas or any(value != values[0] for value in values) or not all(values[0]):
+        raise invalid_params("all selected views must share one image and parameter set")
+    source_id, generator_version, params_hash = values[0]
+    stats = _aggregate_view_stats(metas)
+    views = [art.view or str(meta.get("view", "")) for art, meta in zip(
+        body.artworks, metas, strict=True,
+    )]
+    sha = hashlib.sha256(svg.encode("utf-8")).hexdigest()
+    filename = f"{sha}_stlsheet.svg"
+    store.put_result(filename, svg)
+    store.put_result_meta(filename, {
+        "stats": stats.model_dump(mode="json"),
+        "warnings": [],
+        "image_id": source_id,
+        "views": views,
+        "generator_version": generator_version or GENERATOR_VERSION,
+        "params_hash": params_hash,
+    })
+    url = f"{resolve_public_base(request)}/v1/results/{filename}"
+    log.info(
+        "compose.store sheet=%s views=%s strokes=%d pen_down=%.1fmm",
+        sha[:12], views, stats.strokes, stats.pen_down_mm,
+    )
+    return {"X-Result-Url": url, "X-Result-Sha256": sha}
+
+
 @router.post(
     "/compose-sheet",
     response_class=Response,
@@ -891,6 +1085,12 @@ async def compose_sheet_endpoint(body: ComposeSheetRequest, request: Request) ->
     the same sheet as PNG and names its cached GET URL in ``X-Preview-Url``.
     """
     settings = get_settings()
+    # Stored ids are checked at the store boundary; the pure composer below
+    # keeps its keyword-only signature and never reads the filesystem.
+    metas = (
+        await asyncio.to_thread(verify_stored_artworks, body.artworks, store)
+        if body.artworks else []
+    )
     if body.preview == "png":
         key = _preview_key(body, settings)
         filename = f"{key}_preview.png"
@@ -915,7 +1115,8 @@ async def compose_sheet_endpoint(body: ComposeSheetRequest, request: Request) ->
     svg = await asyncio.to_thread(
         compose_sheet_svg, body, max_svg_bytes=settings.max_upload_bytes,
     )
-    return Response(content=svg, media_type="image/svg+xml")
+    headers = _store_stl_sheet(svg, body, metas, request) if body.store else {}
+    return Response(content=svg, media_type="image/svg+xml", headers=headers)
 
 
 @router.get("/previews/{filename}", response_class=Response,

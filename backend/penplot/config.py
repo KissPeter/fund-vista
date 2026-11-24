@@ -15,6 +15,22 @@ from typing import Annotated
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+# STL three-view generator caps (docs/stl-custom-design-plan.md). The API
+# schemas and the geometry module read these same constants, so an env override
+# of a Settings field cannot silently disagree with a wire-range validator.
+STL_MAX_FACES = 250_000
+STL_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+# Unordered STL results are regenerable artworks: 24 h, not the raster TTL.
+STL_UNORDERED_TTL_HOURS = 24
+STL_VIEWS = ("broad", "edge", "end")
+STL_MIN_SLICES = 2
+STL_MAX_SLICES = 16
+STL_MIN_FIT_MM = 20.0
+STL_MAX_FIT_MM = 400.0
+STL_MAX_MARGIN_MM = 20.0
+STL_MIN_STROKE_MM = 0.1
+STL_MAX_STROKE_MM = 1.0
+
 
 class Settings(BaseSettings):
     """Runtime-tunable limits. Frozen so handlers can't mutate them by accident.
@@ -31,6 +47,20 @@ class Settings(BaseSettings):
 
     max_upload_bytes: int = 25 * 1024 * 1024
     image_ttl_hours: int = 48
+    # STL custom-design caps (three views, CPU-abuse guard). Each maps to a
+    # PENPLOT_* env var; the wire schemas import the same numeric constants so
+    # the advertised ranges stay in step with these defaults.
+    stl_max_faces: int = Field(default=STL_MAX_FACES, ge=1)
+    # Dedicated STL upload cap (shop plan: 10 MiB), independent of the larger
+    # raster cap; the endpoint enforces min(this, max_upload_bytes).
+    stl_max_upload_bytes: int = Field(default=STL_MAX_UPLOAD_BYTES, ge=1)
+    stl_min_slices: int = Field(default=STL_MIN_SLICES, ge=1)
+    stl_max_slices: int = Field(default=STL_MAX_SLICES, ge=STL_MIN_SLICES)
+    stl_min_fit_mm: float = Field(default=STL_MIN_FIT_MM, gt=0.0)
+    stl_max_fit_mm: float = Field(default=STL_MAX_FIT_MM, ge=STL_MIN_FIT_MM)
+    stl_max_margin_mm: float = Field(default=STL_MAX_MARGIN_MM, ge=0.0)
+    stl_min_stroke_mm: float = Field(default=STL_MIN_STROKE_MM, gt=0.0)
+    stl_max_stroke_mm: float = Field(default=STL_MAX_STROKE_MM, ge=STL_MIN_STROKE_MM)
     data_dir: str = os.path.join(
         os.path.dirname(os.path.dirname(__file__)), ".data"
     )
@@ -75,6 +105,8 @@ class Settings(BaseSettings):
     # /v1/images/{id}/retain promotes an image to this TTL (default 90 d).
     # Anonymous previews keep image_ttl_hours.
     retained_ttl_hours: int = 90 * 24
+    # Unordered STL view/sheet results (ordered ones get retained_ttl_hours).
+    stl_result_ttl_hours: int = Field(default=STL_UNORDERED_TTL_HOURS, ge=1)
     # Signed design tokens for the shop bridge (§2). Env names carry the
     # PENPIXEL_ prefix (shared with Woo), hence the explicit aliases -
     # field-by-name would read PENPLOT_HMAC_SECRET instead. Empty secret =

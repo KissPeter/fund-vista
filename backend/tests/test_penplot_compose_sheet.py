@@ -27,6 +27,7 @@ from backend.penplot.schemas import (
     ComposeLabelParams,
     ComposeLayout,
     ComposePageParams,
+    ComposeSheetArtwork,
     ComposeSheetRequest,
     ContextTableParams,
     LabelParams,
@@ -1437,3 +1438,58 @@ def test_crop_clips_strokes_and_drops_circles_outside():
         if el.tag.endswith("path"):
             for px, py in _xy(el):
                 assert x - 0.1 <= px <= x + w + 0.1 and y - 0.1 <= py <= y + h + 0.1
+
+
+# -- STL multi-panel parity (one _plan_sheet for preview and order) ------------
+
+
+def _stl_art(view: str) -> ComposeSheetArtwork:
+    return ComposeSheetArtwork(
+        svg=ART.decode(), result_id=hashlib.sha256(view.encode()).hexdigest(),
+        view=view,
+    )
+
+
+def _compose_artworks(artworks: list[dict], **kw) -> str:
+    body = ComposeSheetRequest.model_validate({"artworks": artworks, **kw})
+    return cs.compose_sheet_svg(body, max_svg_bytes=25 * 1024 * 1024)
+
+
+def test_legacy_default_sheet_bytes_are_unchanged():
+    """The original single-`svg` path keeps its exact bytes after the extension."""
+    assert hashlib.sha256(_compose().encode()).hexdigest() == (
+        "2f0dd06d6cd2b9131e41296655dc35f7b51ded930795a7c57f01b4261c4ce57e"
+    )
+
+
+def test_one_artworks_list_is_byte_identical_to_legacy_svg():
+    art = _stl_art("broad")
+    from_svg = _compose()
+    from_artworks = _compose_artworks([art.model_dump()])
+    assert from_artworks == from_svg
+
+
+@pytest.mark.parametrize("views", [("broad", "edge"), ("broad", "edge", "end")])
+def test_multi_panel_preview_and_inline_share_placement_bytes(views):
+    data = [art.model_dump() for art in map(_stl_art, views)]
+    image = _compose_artworks(data, artwork="image")
+    inline = _compose_artworks(data, artwork="inline")
+    # The shared plan is stamped on both outputs, byte for byte.
+    assert _root(image).attrib["data-kp-art-box"] == _root(inline).attrib["data-kp-art-box"]
+    assert _root(image).attrib["viewBox"] == _root(inline).attrib["viewBox"]
+    href = ET.fromstring(image).find(
+        './/{http://www.w3.org/2000/svg}image'
+    ).attrib["href"]
+    embedded = base64.b64decode(href.split(",", 1)[1]).decode("utf-8")
+    assert len(_marked(_root(embedded), "data-kp-stl-panel")) == len(views)
+    assert len(_marked(_root(inline), "data-kp-stl-panel")) == len(views)
+    assert "<image" in image and "<image" not in inline
+    assert "<text" not in inline
+    assert _compose_artworks(data, artwork="inline") == inline  # deterministic repeat
+
+
+def test_multi_panel_rejects_an_empty_or_oversized_artworks_list():
+    with pytest.raises(ValidationError):
+        ComposeSheetRequest.model_validate({"artworks": []})
+    with pytest.raises(ValidationError):
+        _req(artworks=[_stl_art("broad").model_dump()] * 4)
