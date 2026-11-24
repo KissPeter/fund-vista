@@ -300,9 +300,13 @@ ensure_data
 [ -n "$PREV_ID" ] && migrate_data "$NEW_IMAGE"
 
 log "== 3. candidate $CANDIDATE (WORKERS=1, internal only) =="
+# The candidate is removed right after smoke. Keep the post-deploy warm-up
+# claim for the real container: an explicitly-empty value counts as unset
+# (Settings uses env_ignore_empty), so no warm-up task starts here.
 # shellcheck disable=SC2086
 docker run -d --name "$CANDIDATE" --network "$NET" \
   --cpus=1.0 --memory=1g $ENV_ARGS -e WORKERS=1 \
+  -e SHOP_BASE_URL= -e WARMUP_TARGET_URL= \
   --label "fundvista.commit=$SHA" "$NEW_IMAGE" >/dev/null
 sleep 5
 if ! smoke "$CANDIDATE" "$NEW_IMAGE"; then
