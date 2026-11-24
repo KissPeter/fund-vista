@@ -53,9 +53,10 @@ NOT contain `<text>` or `<image>`.
 - `slice3d.save_section(path_2d, out.svg)` exports raw section SVG; the CLI
   uses `polylines_3d` and the repo's `to_svg` so output stays artwork-only.
 - Axes are ranked by extent: `thin, mid, long = argsort(mesh.extents)`.
-- **Side view mapping:** slice along `long`; project each polyline's
-  `[mid, thin]` columns into the drawing plane. Scale the longest extent to
-  `--fit-mm`, add `--margin-mm`, simplify at 0.06 mm, emit with `to_svg`.
+- **Side view mapping:** slice across `mid` (the width axis); project each
+  polyline's `[long, thin]` columns into the drawing plane, so length is
+  horizontal and thickness vertical. Scale the longest extent to `--fit-mm`,
+  add `--margin-mm`, simplify at 0.06 mm, emit with `to_svg`.
 - Output is deterministic: duplicate consecutive points are dropped, open
   polylines are direction-normalised and polylines are sorted.
 
@@ -67,7 +68,7 @@ is the accepted trade-off for this gallery artwork.
 `backend/tests/fixtures/knipexXs.stl`: 2306 faces, not watertight, bounds
 `[[-19.05, -53.12, 0.0], [14.38, 50.41, 10.0]]`, extents
 `[33.43, 103.53, 10.0]`. With 5 mm slices, nonempty counts were x 7/7,
-y 21/21, z 3/2. The generated side view has 16 plot paths and no text/image.
+y 21/21, z 3/2. The generated side-looking view has 68 plot paths and no text/image.
 
 The mesh was supplied by the user with no explicit redistribution licence:
 do not publish it as gallery artwork without confirming rights.

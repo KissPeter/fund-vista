@@ -8,9 +8,10 @@ MUST NOT add sheet furniture: gallery sheets are composed by
 ``POST /v1/compose-sheet`` (AGENTS.md "One sheet source"). Output is paths only
 (``fill="none"``, no ``<text>``, no ``<image>``).
 
-The side view is the only output: ``slice3d`` slices along the mesh's longest
-axis, and each section's polyline is projected into the (second, thinnest)
-axis plane.
+The side view is the only output: ``slice3d`` slices along the mesh's second
+(widest-but-one) axis, and each section's polyline is projected into the
+(longest, thinnest) axis plane. This is the view where the plier is seen from
+the side: length horizontal, thickness vertical.
 """
 
 from __future__ import annotations
@@ -98,19 +99,19 @@ def _as_mesh(value: trimesh.Trimesh | np.ndarray | Path | str) -> trimesh.Trimes
 def _side_lines(mesh: trimesh.Trimesh, slices: int) -> list[Polyline]:
     """Project ``slice3d`` cross-section polylines into the side-view plane."""
     thin, mid, long = canonical_axes(mesh)
-    span = float(mesh.extents[long])
+    span = float(mesh.extents[mid])
     if span <= 0:
-        raise StlFormatError("mesh has zero extent along its longest axis")
+        raise StlFormatError("mesh has zero extent along its width axis")
     thickness = span / max(1, slices)
     out: list[Polyline] = []
-    for section in slice3d.slice_mesh(mesh, axis="xyz"[long], thickness=thickness):
+    for section in slice3d.slice_mesh(mesh, axis="xyz"[mid], thickness=thickness):
         if section.is_empty:
             continue
         for poly in section.polylines_3d:
             pts = np.asarray(poly, dtype=np.float64)
             if pts.ndim != 2 or pts.shape[0] < 2:
                 continue
-            xy = pts[:, [mid, thin]]
+            xy = pts[:, [long, thin]]
             # Drop duplicate consecutive points from slice boundaries.
             xy = xy[np.r_[True, np.any(np.diff(xy, axis=0) != 0, axis=1)]]
             if len(xy) < 2:

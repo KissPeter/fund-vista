@@ -24,13 +24,13 @@ Date: 2026-11-24. Full findings: `docs/stl-svg-generation-toolchain.md`; CLI doc
 
 ## Axis mapping for side view
 - `thin, mid, long = argsort(mesh.extents)`.
-- Slice along `long`; project `polylines_3d[:, [mid, thin]]` into the drawing plane.
+- Slice across `mid` (width axis); project `polylines_3d[:, [long, thin]]` so length is horizontal and thickness vertical. This is the side-looking view the user wants, NOT cross-sections along the length.
 - Scale longest extent to `--fit-mm` (default 180), add `--margin-mm` (5), simplify at 0.06 mm, emit via `to_svg`.
 - Deterministic output: drop duplicate consecutive points, normalise polyline direction, sort polylines.
 - `slice3d` gives cross-sections, not orthographic hidden-line removal; that trade-off is accepted.
 
 ## Samples
-- `backend/tests/fixtures/knipexXs.stl`: 2306 faces, not watertight, extents [33.43, 103.53, 10.0]; generated `knipexXs.svg` has 16 paths and no text/image. User supplied it with no explicit redistribution licence.
+- `backend/tests/fixtures/knipexXs.stl`: 2306 faces, not watertight, extents [33.43, 103.53, 10.0]; generated side-looking `knipexXs.svg` has 68 paths and no text/image. User supplied it with no explicit redistribution licence.
 - Crescent Wrench Pair was requested next but was not found in `~/Downloads` at the last check; recheck and copy into `backend/tests/fixtures/` with provenance before generating.
 
 ## Reproduce

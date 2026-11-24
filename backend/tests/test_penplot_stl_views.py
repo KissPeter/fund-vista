@@ -112,7 +112,7 @@ def test_side_view_is_artwork_only(tmp_path):
     assert w > 0 and h > 0
 
 
-def test_side_view_uses_longest_axis_as_depth(tmp_path):
+def test_side_view_uses_second_axis_as_depth(tmp_path):
     path = tmp_path / "box.stl"
     tris = _cube()
     tris[:, :, 1] *= 4.0
@@ -123,7 +123,7 @@ def test_side_view_uses_longest_axis_as_depth(tmp_path):
     svg = stl_views.render_side_view(mesh, slices=8)
     lines, w, h, warnings = parse_svg_vectors(svg.encode())
     assert not warnings and lines
-    assert w > h  # long axis is horizontal, second axis vertical
+    assert w > h  # longest axis horizontal, thinnest axis vertical
 
 
 def test_invalid_options_are_rejected():

@@ -37,11 +37,12 @@ is Crescent Wrench Pair (not found in `~/Downloads` at the last check).
 
 - **Artwork only:** paths with `fill="none"`, a pen stroke and physical `mm`
   dimensions. It MUST NOT contain `<text>` or `<image>`.
-- **Side view only:** `slice3d` slices along the mesh's longest axis; every
-  section's polyline is projected into the (second, thinnest) axis plane. This
+- **Side view only:** `slice3d` slices across the mesh's second (width) axis;
+  every section's polyline is projected into the (longest, thinnest) plane.
+  The plier is seen from the side: length horizontal, thickness vertical. This
   is cross-section line art, not hidden-line-removal orthographic projection.
-- **Canonical orientation:** axes are ranked by mesh extent. The longest axis
-  is depth, the second is horizontal and the thinnest is vertical. Polylines
+- **Canonical orientation:** axes are ranked by mesh extent. The second axis
+  is depth, the longest is horizontal and the thinnest is vertical. Polylines
   are direction-normalised and sorted, so facet order does not change bytes.
 - **One sheet source:** the tool MUST NOT compose a gallery sheet. Pass the SVG
   to `POST /v1/compose-sheet` with `artwork: "inline"`; the composer owns
@@ -73,7 +74,7 @@ supplies the limit for you.
 | `--report` | — | JSON report (one record per mesh) |
 | `--jobs` | `1` | meshes rendered in parallel |
 | `--skip-existing`, `--fail-fast`, `-q` | off | batch controls, as in `img2plot` |
-| `--slices` | `8` | cross-sections along the longest axis |
+| `--slices` | `8` | cross-sections across the width axis |
 | `--fit-mm` | `180` | largest side-view extent in millimetres |
 | `--margin-mm` | `5` | clearance around the artwork |
 | `--stroke-mm` | `0.2` | plotter pen width |
