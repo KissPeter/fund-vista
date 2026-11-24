@@ -64,6 +64,8 @@ LabelAlign = Literal["left", "center", "right", "fill"]
 #: Where the title sits: ``inside`` the border (band, default) or outside it,
 #: ``below`` or ``above`` the page (frame gives up the strip, sheet stays A4).
 LabelPlacement = Literal["inside", "below", "above"]
+#: Wire cap per ``label.lines`` entry; matches the shop's page-title budget.
+MAX_LABEL_LINE_CHARS = 52
 LabelFont = Literal[
     "znikoslsvginot", "futural", "futuram", "simplex",
     "excalifont", "comic-shanns", "nunito",
@@ -104,9 +106,9 @@ class LabelParams(BaseModel):
     lines: list[str] | None = Field(
         default=None,
         description=(
-            "Title, then optional subtitle (at most two lines, 41 characters "
-            "each). When set it replaces ``text``; the subtitle is drawn smaller "
-            "outside the border and after ' - ' inside it."
+            f"Title, then optional subtitle (at most two lines, {MAX_LABEL_LINE_CHARS} "
+            "characters each). When set it replaces ``text``; the subtitle is "
+            "drawn smaller outside the border and after ' - ' inside it."
         ),
     )
     border: bool = Field(
@@ -132,8 +134,10 @@ class LabelParams(BaseModel):
         if len(value) > 2:
             raise ValueError("at most two lines (title, subtitle)")
         for line in value:
-            if len(line) > 41:
-                raise ValueError("a label line is at most 41 characters")
+            if len(line) > MAX_LABEL_LINE_CHARS:
+                raise ValueError(
+                    f"a label line is at most {MAX_LABEL_LINE_CHARS} characters"
+                )
             if _CONTROL_CHARS.search(line):
                 raise ValueError("control characters are not allowed in label lines")
         return value
@@ -686,7 +690,7 @@ class ComposeSheetRequest(BaseModel):
     )
     ink_hex: str = Field(default="#1a1a1a", pattern=r"^#[0-9a-fA-F]{6}$")
     layout: ComposeLayout = Field(default_factory=ComposeLayout)
-    lines: list[Annotated[str, StringConstraints(max_length=41)]] = Field(
+    lines: list[Annotated[str, StringConstraints(max_length=MAX_LABEL_LINE_CHARS)]] = Field(
         default_factory=list, max_length=2,
         description="Title then subtitle. Blank entries are dropped.",
     )

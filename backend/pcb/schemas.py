@@ -47,8 +47,8 @@ class LayerSpec(BaseModel):
     ink: LayerInk = "auto"
 
 
-#: Title lines: at most two (title, subtitle), each at most this long; the
-#: rule of ``POST /v1/compose-sheet``.
+#: Title lines: at most two (title, subtitle), each at most this long. PCB
+#: keeps this 41-character cap independently of ``label.lines`` (52).
 MAX_LINES = 2
 MAX_LINE_CHARS = 41
 _CONTROL = frozenset(chr(c) for c in [*range(0x20), 0x7F])
