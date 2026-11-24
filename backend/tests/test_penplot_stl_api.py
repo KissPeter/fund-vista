@@ -693,6 +693,22 @@ def test_compose_store_writes_orderable_sheet_with_summed_stats(api):
     assert served.status_code == 200 and served.json()["stats"] == meta["stats"]
 
 
+def test_stlsheet_meta_exposes_source_image_id(api):
+    image_id, views = _three_views(api, _stl_bytes("meta-image-id"))
+    artworks = _artworks(api, views, ("broad", "edge"))
+    sheet = api.client.post("/v1/compose-sheet", json={
+        "artworks": artworks, "artwork": "inline", "store": True,
+    })
+    assert sheet.status_code == 200, sheet.text
+    filename = f"{sheet.headers['X-Result-Sha256']}_stlsheet.svg"
+
+    served = api.client.get(f"/v1/results/{filename}/meta")
+    assert served.status_code == 200, served.text
+    body = served.json()
+    assert body["image_id"] == image_id
+    assert "stats" in body and "warnings" in body
+
+
 def test_unordered_stl_results_expire_at_24_hours(api):
     _image_id, views = _three_views(api, _stl_bytes("expiry"))
     artworks = _artworks(api, views, ("broad", "edge"))

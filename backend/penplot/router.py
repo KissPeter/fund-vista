@@ -761,7 +761,9 @@ async def get_result_meta(filename: str) -> ResultMetaResponse | JSONResponse:
         )
     try:
         return ResultMetaResponse(
-            stats=ConvertStats(**meta["stats"]), warnings=list(meta.get("warnings", []))
+            image_id=meta.get("image_id"),
+            stats=ConvertStats(**meta["stats"]),
+            warnings=list(meta.get("warnings", [])),
         )
     except (KeyError, TypeError, ValueError):
         return error_response(

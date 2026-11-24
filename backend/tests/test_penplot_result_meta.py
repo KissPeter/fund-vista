@@ -20,6 +20,8 @@ def test_meta_returns_the_convert_stats(http_client):
     body = conv.json()
     meta = http_client.get(f"/v1/results/{_filename(body['svg_url'])}/meta")
     assert meta.status_code == 200
+    assert "image_id" in meta.json()  # legacy sidecars have no source id
+    assert meta.json()["image_id"] is None
     assert meta.json()["stats"] == body["stats"]
     assert "pen_down_mm" in meta.json()["stats"]
     assert "estimated_time_s" in meta.json()["stats"]

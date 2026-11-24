@@ -576,6 +576,7 @@ class ConvertResponse(BaseModel):
 class ResultMetaResponse(BaseModel):
     """Stats of a stored convert result - the shop prices a design from these."""
 
+    image_id: str | None = None
     stats: ConvertStats
     warnings: list[str] = Field(default_factory=list)
 
