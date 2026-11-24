@@ -31,7 +31,7 @@ Date: 2026-11-24. Full findings: `docs/stl-svg-generation-toolchain.md`; CLI doc
 
 ## Samples
 - `backend/tests/fixtures/knipexXs.stl`: 2306 faces, not watertight, extents [33.43, 103.53, 10.0]; generated broad-face `knipexXs.svg` has 16 paths and no text/image. User supplied it with no explicit redistribution licence but asked to add it under the shop `tools` gallery category.
-- Crescent Wrench Pair: zip `crescent-wrench-pair20180403-25492-5s5yc6.zip` found in `~/Downloads` on 2026-11-24; contains `wrench_v2_assembly_FIXED.stl` (65,502 faces) and `wrench_v2_assembly_VORONOI_FIXED.stl` (215,318 faces). Both extents ~[71.5, 25.3, 266] with thin=Y, mid=X, long=Z; third view produces 37 and 130 paths respectively. User to pick the variant before committing artwork.
+- Crescent Wrench Pair: zip `crescent-wrench-pair20180403-25492-5s5yc6.zip` found in `~/Downloads` on 2026-11-24; contains `wrench_v2_assembly_FIXED.stl` (65,502 faces) and `wrench_v2_assembly_VORONOI_FIXED.stl` (215,318 faces). User chose plain FIXED; committed as `backend/tests/fixtures/crescent-wrench-pair.stl` + `.svg` (37 paths, extents [71.55, 25.27, 265.98], thin=Y, mid=X, long=Z). Voronoi variant and zip not kept in git. User confirmed the third (broad-face) projection is the right one.
 
 ## Shop gallery item (in progress)
 - Worktree `/Users/kissp/PycharmProjects/pen-pixel-shop-knipex`, branch `feat/knipex-gallery-item` from `origin/main`.
@@ -39,6 +39,7 @@ Date: 2026-11-24. Full findings: `docs/stl-svg-generation-toolchain.md`; CLI doc
 - Source rules: `docs/tools-sources.md`, `docs/new-source-rule.md` (5-point checklist), `docs/terms-requirements.md` chapter 3 ToS row, `specTable` "Forrásfájl" row stays.
 - Gate: `npm run test:unit -- src/lib/shop.server.test.ts src/lib/gallery-routes.test.ts src/lib/galleryArtworkAssets.test.ts`.
 - Sheet for the shop asset MUST come from `compose_sheet_svg(..., max_svg_bytes=...)` with `artwork="inline"` (One sheet source); stamp ownership metadata with `svgmeta.stamp`.
+- DONE: two gallery items on branch `feat/knipex-gallery-item` (`ba888bb0`, `66876aa3`): `p-tools-knipex-xs-fogo` / `knipex-xs-fogo.svg` and `p-tools-crescent-wrench-pair` / `crescent-wrench-pair.svg`, both directly under `tools` (no subcategory). Source logs updated, ToS row S15 + `terms.src.tools.*` HU/EN keys + TermsPage section added. Rights still flagged open before sale (no SPDX on the STLs). Shop unit gate: 35 passed.
 
 ## Reproduce
 `python3 -m backend.penplot.stl2plot backend/tests/fixtures/knipexXs.stl -o backend/tests/fixtures/knipexXs.svg --slices 8`
