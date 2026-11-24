@@ -25,6 +25,7 @@ import httpx
 import numpy as np
 import pytest
 import uvicorn
+from pydantic import ValidationError
 
 from backend.penplot.config import STL_MAX_FACES, STL_MAX_UPLOAD_BYTES, Settings
 from backend.penplot.errors import ErrorCode
@@ -99,6 +100,8 @@ class _Boundary:
     def load(self, data: bytes):
         if self.mode == "missing":
             raise ModuleNotFoundError("No module named 'slice3d'")
+        if self.mode == "toolchain":
+            raise RuntimeError("stl2plot needs slice3d and trimesh")
         if self.mode == "bad":
             from backend.penplot.stl_views import StlFormatError
 
@@ -108,6 +111,8 @@ class _Boundary:
     def render(self, data: bytes, views: list[str], params):
         if self.mode == "missing":
             raise ModuleNotFoundError("No module named 'slice3d'")
+        if self.mode == "toolchain":
+            raise RuntimeError("stl2plot needs slice3d and trimesh")
         if self.mode == "bad":
             from backend.penplot.stl_views import StlFormatError
 
@@ -452,6 +457,7 @@ def test_views_partial_cache_reuses_earlier_view(api):
         "artworks": artworks, "artwork": "inline", "store": True,
     })
     assert sheet.status_code == 200, sheet.text
+    assert api.boundary.render_calls == 2  # composing must not re-render views
 
 
 @pytest.mark.parametrize(
@@ -529,6 +535,21 @@ def test_views_enforce_settings_bounds_from_env(configured_api):
         assert key in body["message"]
 
 
+@pytest.mark.parametrize(
+    ("env", "value", "field"),
+    [
+        ("PENPLOT_STL_MIN_FIT_MM", "1", "stl_min_fit_mm"),
+        ("PENPLOT_STL_MAX_MARGIN_MM", "50", "stl_max_margin_mm"),
+        ("PENPLOT_STL_MIN_STROKE_MM", "0.01", "stl_min_stroke_mm"),
+    ],
+)
+def test_settings_reject_env_outside_hard_stl_ceilings(monkeypatch, env, value, field):
+    monkeypatch.setenv(env, value)
+    with pytest.raises(ValidationError) as exc:
+        Settings()
+    assert field in str(exc.value)
+
+
 def test_views_rejects_unknown_and_non_stl_images(api):
     unknown = _views(api, "0" * 64)
     assert unknown.status_code == 404
@@ -544,6 +565,15 @@ def test_views_rejects_unknown_and_non_stl_images(api):
 def test_views_missing_toolchain_envelope(api):
     image_id = _import_id(api, _stl_bytes("missing-views"))
     api.boundary.mode = "missing"
+    resp = _views(api, image_id)
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == ErrorCode.STL_TOOLCHAIN_UNAVAILABLE
+    assert "ModuleNotFoundError" not in resp.text and "Traceback" not in resp.text
+
+
+def test_views_runtime_toolchain_error_envelope(api):
+    image_id = _import_id(api, _stl_bytes("runtime-toolchain"))
+    api.boundary.mode = "toolchain"
     resp = _views(api, image_id)
     assert resp.status_code == 503
     assert resp.json()["error"]["code"] == ErrorCode.STL_TOOLCHAIN_UNAVAILABLE

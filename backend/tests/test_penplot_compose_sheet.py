@@ -1469,6 +1469,19 @@ def test_one_artworks_list_is_byte_identical_to_legacy_svg():
     assert from_artworks == from_svg
 
 
+def test_multi_panel_artwork_without_usable_size_is_422(monkeypatch):
+    svg = '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 L1 1"/></svg>'
+    arts = [
+        ComposeSheetArtwork(svg=svg, result_id="a" * 64, view="broad"),
+        ComposeSheetArtwork(svg=svg, result_id="b" * 64, view="edge"),
+    ]
+    monkeypatch.setattr(cs, "parse_svg_vectors", lambda _data: ([], 0.0, 0.0, []))
+    with pytest.raises(PenPlotError) as exc:
+        _compose_artworks([a.model_dump() for a in arts], artwork=INLINE_OK)
+    assert exc.value.status == 422
+    assert exc.value.code == "artwork_not_plottable"
+
+
 @pytest.mark.parametrize("views", [("broad", "edge"), ("broad", "edge", "end")])
 def test_multi_panel_preview_and_inline_share_placement_bytes(views):
     data = [art.model_dump() for art in map(_stl_art, views)]

@@ -29,7 +29,7 @@ import numpy as np
 try:  # external tools live in the user Python, not in backend/uv.lock
     import slice3d
     import trimesh
-except ModuleNotFoundError:  # pragma: no cover - exercised only in backend venv
+except ImportError:  # pragma: no cover - exercised only in backend venv
     slice3d = None  # type: ignore[assignment]
     trimesh = None  # type: ignore[assignment]
 

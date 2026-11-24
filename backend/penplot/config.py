@@ -61,14 +61,18 @@ class Settings(BaseSettings):
         default=STL_MAX_SLICES, ge=STL_MIN_SLICES, le=STL_MAX_SLICES
     )
     stl_min_fit_mm: float = Field(
-        default=STL_MIN_FIT_MM, gt=0.0, le=STL_MAX_FIT_MM
+        default=STL_MIN_FIT_MM,
+        ge=STL_MIN_FIT_MM, le=STL_MAX_FIT_MM,
     )
     stl_max_fit_mm: float = Field(
         default=STL_MAX_FIT_MM, ge=STL_MIN_FIT_MM, le=STL_MAX_FIT_MM
     )
-    stl_max_margin_mm: float = Field(default=STL_MAX_MARGIN_MM, ge=0.0)
+    stl_max_margin_mm: float = Field(
+        default=STL_MAX_MARGIN_MM, ge=0.0, le=STL_MAX_MARGIN_MM
+    )
     stl_min_stroke_mm: float = Field(
-        default=STL_MIN_STROKE_MM, gt=0.0, le=STL_MAX_STROKE_MM
+        default=STL_MIN_STROKE_MM,
+        ge=STL_MIN_STROKE_MM, le=STL_MAX_STROKE_MM,
     )
     stl_max_stroke_mm: float = Field(
         default=STL_MAX_STROKE_MM, ge=STL_MIN_STROKE_MM, le=STL_MAX_STROKE_MM

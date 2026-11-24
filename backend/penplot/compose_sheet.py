@@ -684,7 +684,11 @@ def _panel_markup(svg_text: str) -> tuple[str, str, float, float]:
             w, h = (vb[2], vb[3]) if w is None or h is None else (w, h)
         else:
             _lines, w, h, _warnings = parse_svg_vectors(data)
-    assert w is not None and h is not None and w > 0 and h > 0
+    if w is None or h is None or w <= 0 or h <= 0:
+        raise _artwork_error(
+            ErrorCode.ARTWORK_NOT_PLOTTABLE,
+            "Artwork has no usable plot size.",
+        )
     return inner, kept, w, h
 
 

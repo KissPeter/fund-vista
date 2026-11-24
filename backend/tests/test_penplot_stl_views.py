@@ -12,6 +12,8 @@ single explicit opt-in check for hosts that install it.
 
 from __future__ import annotations
 
+import builtins
+import importlib
 import importlib.util
 import json
 import os
@@ -221,6 +223,26 @@ def test_option_caps(kwargs, ok):
     else:
         with pytest.raises(ValueError):
             check()
+
+
+def test_broken_toolchain_import_maps_to_runtime_error(monkeypatch):
+    real_import = builtins.__import__
+
+    def broken_import(name, *args, **kwargs):
+        if name.split(".")[0] in {"slice3d", "trimesh"}:
+            raise ImportError("broken installation")
+        return real_import(name, *args, **kwargs)
+
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(builtins, "__import__", broken_import)
+            importlib.reload(stl_views)
+            assert stl_views.slice3d is None
+            assert stl_views.trimesh is None
+            with pytest.raises(RuntimeError, match="stl2plot needs"):
+                stl_views.load_stl("unused.stl")
+    finally:
+        importlib.reload(stl_views)
 
 
 def test_unknown_view_is_rejected(tmp_path):
