@@ -1,0 +1,39 @@
+# Penplot SVG / STL toolchain
+
+Date: 2026-11-24. Full findings: `docs/stl-svg-generation-toolchain.md`; CLI docs: `docs/stl2plot-cli.md`.
+
+## Decision
+- STL -> artwork-only SVG uses `slice3d` cross-sections and emits **side view only**.
+- Hand-rolled hidden-line removal and the three-view layout were removed.
+- `svg3d` was evaluated but rejected (shaded triangles, not single-stroke line art).
+
+## External tools (user Python 3.13, NOT `backend/uv.lock`)
+- `slice3d 0.1.1`: `load_mesh`, `slice_mesh(axis, thickness)`, `Slice.is_empty`, `Slice.polylines_3d`, `save_section`.
+- `trimesh 5.2.2` + `trimesh[easy]` soft deps: mesh parsing, extents, sections.
+- Installed with `python3 -m pip install --user slice3d 'trimesh[easy]'`; scripts in `~/Library/Python/3.13/bin` are not on PATH.
+- `backend/.venv` does NOT have these; run the CLI with `python3`. Tests use `pytest.importorskip` and skip there.
+- Do not touch `backend/uv.lock` without regenerating the shop licence inventory (`mem:ops/shop-licence-inventory-coupling`).
+
+## Existing SVG code to reuse, never rebuild
+- `backend/penplot/stages/layout_svg.py`: `to_svg(lines_mm, w, h, stroke_mm=0.2)` -> `fill="none"` paths, `mm` dimensions, no `<text>`/`<image>`.
+- `backend/penplot/stages/simplify.py`: `linesimplify(lines, tol)` (RDP).
+- `backend/penplot/svg_vector.py`: `parse_svg_vectors(bytes)` for tests.
+- `backend/penplot/compose_sheet.py`: `compose_sheet_svg(body, *, max_svg_bytes)` is keyword-only and pure.
+- `backend.penplot.schemas.ComposeSheetRequest.artwork` defaults to `"image"`; gallery artwork MUST pass `"inline"`.
+- AGENTS.md "One sheet source": `POST /v1/compose-sheet` is the only composer of preview/personalisation/order sheets.
+
+## Axis mapping for side view
+- `thin, mid, long = argsort(mesh.extents)`.
+- Slice along `long`; project `polylines_3d[:, [mid, thin]]` into the drawing plane.
+- Scale longest extent to `--fit-mm` (default 180), add `--margin-mm` (5), simplify at 0.06 mm, emit via `to_svg`.
+- Deterministic output: drop duplicate consecutive points, normalise polyline direction, sort polylines.
+- `slice3d` gives cross-sections, not orthographic hidden-line removal; that trade-off is accepted.
+
+## Samples
+- `backend/tests/fixtures/knipexXs.stl`: 2306 faces, not watertight, extents [33.43, 103.53, 10.0]; generated `knipexXs.svg` has 16 paths and no text/image. User supplied it with no explicit redistribution licence.
+- Crescent Wrench Pair was requested next but was not found in `~/Downloads` at the last check; recheck and copy into `backend/tests/fixtures/` with provenance before generating.
+
+## Reproduce
+`python3 -m backend.penplot.stl2plot backend/tests/fixtures/knipexXs.stl -o backend/tests/fixtures/knipexXs.svg --slices 8`
+`python3 -m pytest backend/tests/test_penplot_stl_views.py -q`
+`rsvg-convert -b white -w 1400 backend/tests/fixtures/knipexXs.svg -o knipex-side-preview.png`
