@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from backend.penplot import labels
 from backend.penplot.pipeline import effective_params_dump, params_hash
-from backend.penplot.schemas import ConvertParams, LabelParams
+from backend.penplot.schemas import MAX_LABEL_LINE_CHARS, ConvertParams, LabelParams
 from backend.penplot.stages.layout_svg import layout, layout_scale
 from backend.tests.helpers import default_params, png_bytes, upload
 
@@ -612,8 +612,15 @@ def test_unknown_placement_is_rejected():
 
 
 def test_label_lines_are_capped_and_checked():
+    assert MAX_LABEL_LINE_CHARS == 52
     assert LabelParams.model_validate({"lines": ["Title", "Sub"]}).lines == ["Title", "Sub"]
-    for bad in (["a", "b", "c"], ["x" * 42], ["bad\nline"]):
+    full = "x" * MAX_LABEL_LINE_CHARS
+    assert LabelParams.model_validate({"lines": [full, full]}).lines == [full, full]
+    for bad in (
+        ["a", "b", "c"],
+        ["x" * (MAX_LABEL_LINE_CHARS + 1)],
+        ["bad\nline"],
+    ):
         with pytest.raises(ValidationError):
             LabelParams.model_validate({"lines": bad})
 
@@ -740,10 +747,13 @@ def test_unsupported_glyph_in_subtitle_still_warns():
 
 @pytest.mark.parametrize("w,h", SHEETS)
 @pytest.mark.parametrize("placement", ["below", "above"])
-@pytest.mark.parametrize("subtitle", ["", "W" * 41])
+@pytest.mark.parametrize("subtitle", ["", "W" * MAX_LABEL_LINE_CHARS])
 @pytest.mark.parametrize("align", ["left", "right", "fill"])
 def test_outside_stays_inside_the_sheet(w, h, placement, subtitle, align):
-    rows, _ = _outside("W" * 41, placement, subtitle, w=w, h=h, height=25.0, align=align)
+    rows, _ = _outside(
+        "W" * MAX_LABEL_LINE_CHARS, placement, subtitle,
+        w=w, h=h, height=25.0, align=align,
+    )
     points = [pt for row in rows for pl in row for pt in pl]
     assert points
     for x, y in points:

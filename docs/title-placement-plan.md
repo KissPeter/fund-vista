@@ -6,7 +6,7 @@ Status: implemented (phase 1, backend). `inside` stays the default and its outpu
 
 - Subtitle cap height is `labels.SUBTITLE_HEIGHT_RATIO = 0.6` of the title height, one constant.
 - Title and subtitle are stacked with `labels.OUTSIDE_LINE_GAP_MM = 1.0` between them.
-- Shared limits are kept: 41 characters per line, two lines (`lines`), 52 characters for title plus subtitle in the shop.
+- Shared limits are kept: 52 characters per line, two lines (`lines`), matching the shop's 52-character title-plus-subtitle budget.
 - Default placement is `inside`. Its cache key is unchanged because `placement` is dropped from the key when it is `inside`.
 - `label.lines` is optional on convert and replaces `label.text` when it carries text. Inside, it is drawn as `title - subtitle`.
 - Compose keeps `lines` top-level and does not accept them inside `layout.label`.

@@ -22,6 +22,7 @@ from backend.penplot import compose_sheet as cs
 from backend.penplot import labels
 from backend.penplot.errors import PenPlotError
 from backend.penplot.schemas import (
+    MAX_LABEL_LINE_CHARS,
     ComposeContextPads,
     ComposeLabelParams,
     ComposeLayout,
@@ -410,6 +411,16 @@ def test_http_minimal_request_uses_defaults(http_client):
     assert _marked(_root(resp.text), "data-kp-label") == []
 
 
+def test_http_accepts_a_full_length_label_line(http_client):
+    full = "A" * MAX_LABEL_LINE_CHARS
+    resp = _post(http_client, {"svg": ART.decode(), "lines": [full, full]})
+    assert resp.status_code == 200, resp.text
+    assert [el.attrib["data-kp-text"] for el in _marked(_root(resp.text), "data-kp-text")] == [
+        full,
+        full,
+    ]
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -419,7 +430,7 @@ def test_http_minimal_request_uses_defaults(http_client):
         lambda b: b.update(svg='<svg xmlns="http://www.w3.org/2000/svg"></svg>'),
         lambda b: b.update(ink_hex="red"),
         lambda b: b.update(lines=["a", "b", "c"]),
-        lambda b: b.update(lines=["x" * 42]),
+        lambda b: b.update(lines=["x" * (MAX_LABEL_LINE_CHARS + 1)]),
         lambda b: b.update(lines=["Bad\x01"]),
         lambda b: b["layout"]["page"].update(size="A3"),
         lambda b: b["layout"]["page"].update(margin_mm=51),
