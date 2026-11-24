@@ -55,6 +55,22 @@ AROUND_FILTERS: dict[Selector, tuple[Selector, ...]] = {
     ("way", '["waterway"]'): (("way", '["waterway"~"^(river|stream|canal|ditch|drain)$"]'),),
 }
 
+#: ``bbox`` + ``out geom`` queries (traffic basemap): exact filter text ->
+#: registry selectors. The stored bits are wider than the caller's filter, so
+#: ``Store.run_geom`` re-checks every hit with ``tags_match``: primary roads,
+#: streams, unnamed rivers, ponds ... are not returned. Only filters whose
+#: stored selectors already exist are listed; the country border is not in the
+#: registry and keeps going to Overpass (it is cached in L3).
+_WATERWAY_RIVERS = (("way", '["waterway"~"^(river|stream|canal|ditch|drain)$"]'),)
+_WATER_W = (("way", '["natural"="water"]'), ("way", '["water"]'))
+_WATER_R = (("relation", '["type"="multipolygon"]["natural"="water"]'),)
+BBOX_FILTERS: dict[Selector, tuple[Selector, ...]] = {
+    ("way", '["highway"~"^(motorway|trunk)$"]'): _HW,
+    ("way", '["waterway"="river"]["name"]'): _WATERWAY_RIVERS,
+    ("way", '["natural"="water"]["name"]["water"~"^(lake|reservoir)$"]'): _WATER_W,
+    ("relation", '["natural"="water"]["name"]["water"~"^(lake|reservoir)$"]'): _WATER_R,
+}
+
 
 def registry() -> list[Selector]:
     """Every distinct selector in layer order, then the extras (stable across calls)."""

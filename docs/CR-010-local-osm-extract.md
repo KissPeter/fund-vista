@@ -88,9 +88,25 @@ cap, coverage check and fall-through rules as citymap. One implementation:
 `ql.parse_around` (parser), `Store.run_around` (R-tree box, then exact
 distance to the way, `out geom` JSON), `selectors.AROUND_FILTERS` (which
 stored selectors stand in for each filter text). The HTTP interpreter answers
-the same shape. The country-scale basemap queries of airport traffic (motorway,
-river, water, country border) are not in `AROUND_FILTERS`, so they still use
-the mirrors. The 3D city view is not part of this repo and never calls Overpass.
+the same shape.
+
+The country-scale traffic basemap uses the same entry point. Traffic's bbox
+`out geom` queries are parsed by `ql.parse_geom` (single way or union) and
+answered by `Store.run_geom` via `selectors.BBOX_FILTERS` when the quantised
+bbox is entirely inside the extract and every filter has a stored selector:
+
+- motorways: `way["highway"~"^(motorway|trunk)$"]`;
+- waterways: `way["waterway"="river"]["name"]`;
+- water: `way`/`relation["natural"="water"]["name"]["water"~"^(lake|reservoir)$"]`.
+
+The stored selector bits are wider than these filters, so `run_geom`
+re-checks each candidate's tags: primary roads, streams, unnamed rivers and
+ponds/reservoir-less water are not returned. No new registry selector (and no
+database rebuild) is needed. The **country border** query
+(`relation["boundary"="administrative"]["admin_level"="2"]` with
+`ISO3166-1=HU` / `name=Magyarország`) has no selector in the extract, so it
+still goes to Overpass and is served from the L3 basemap cache. The 3D city
+view is not part of this repo and never calls Overpass.
 
 - `["highway"]`-style filters are wider than the registry: ways the registry
   never stores (`highway=construction`) are omitted. The airport splitters drop

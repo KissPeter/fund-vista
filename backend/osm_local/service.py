@@ -1,7 +1,8 @@
 """In-process access to the local extract (no HTTP hop, no second app).
 
 ``fetch_local`` is what :func:`backend.citymap.overpass.fetch_overpass`
-tries before the public mirrors. It returns Overpass ``elements``, or
+tries before the public mirrors; ``fetch_local_geom`` is the ``out geom``
+entry used by airports and traffic. Both return Overpass ``elements``, or
 ``None`` whenever the extract cannot answer faithfully (feature off, file
 missing, other query shape, unsupported filter, bbox not fully inside the
 extract polygon, stale database) so the caller falls through unchanged.
@@ -86,13 +87,21 @@ def answer(query: str, min_len_m: float = 0.0, compact: bool = False) -> dict | 
     try:  # the airport shape: around + out geom
         around = ql.parse_around(query)
     except ql.QueryError:
+        around = None
+    if around is not None:
+        if not all(
+            store.supports_around(m) and store.covers(around_box(m.lat, m.lon, m.radius_m))
+            for m in around
+        ):
+            return None
+        return store.run_around(around)
+    try:  # traffic basemap: bbox (single or union) + out geom
+        geom = ql.parse_geom(query)
+    except ql.QueryError:
         return None
-    if not all(
-        store.supports_around(m) and store.covers(around_box(m.lat, m.lon, m.radius_m))
-        for m in around
-    ):
+    if not all(store.supports_geom(m) and store.covers(m.bbox) for m in geom):
         return None
-    return store.run_around(around)
+    return store.run_geom(geom)
 
 
 async def fetch_local(query: str, min_len_m: float = 0.0) -> list[dict] | None:
@@ -109,10 +118,10 @@ async def fetch_local(query: str, min_len_m: float = 0.0) -> list[dict] | None:
 
 
 async def fetch_local_geom(query: str) -> list[dict] | None:
-    """``out geom`` elements for an airport-style ``around`` query, or ``None`` to fall through.
+    """``out geom`` elements for an ``around`` or bbox query, else ``None``.
 
     Same extract, same per-worker cap and same fall-through rules as
-    :func:`fetch_local`; this is the entry airports and airport traffic use.
+    :func:`fetch_local`; this is the entry airports and traffic use.
     """
     if not _db_path():
         return None
