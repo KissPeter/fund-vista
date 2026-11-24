@@ -6,11 +6,21 @@
   one clip's footage from all videos, ordered by creation time. Each file
   keeps its own start and end: its stages begin and end with the file.
 - Images: found in FOLDER and shown as a slideshow, ``--slide-s`` seconds each
-  (default 3), ordered by EXIF capture time (file mtime when missing).
+  (default 3), ordered by EXIF capture time (file mtime when missing). A clip shows
+  at most ``--max-slides`` (default 3) of them: with more images, each clip gets its
+  own random pick (seeded by ``videos.seed``), kept in capture order.
+- Intro: images in FOLDER/``intro`` (if it exists), shown as a slideshow of
+  ``INTRO_SLIDE_S`` seconds each with the same settings, ordered the same way.
 - Outro: the YAML ``outro`` image or video, relative to the YAML file.
 - Config: the bundled ``folder.yaml`` unless ``--config`` is given.
 
-Order in the MP4: footage, slideshow, outro. Output goes to the same path
+Every run writes ``<name>.plan.json`` next to the clips: the segments (file, start,
+end, part) of each clip. ``--plan JSON`` replays it, re-rendering the same clips.
+
+``--intro LANG=SVG`` (repeatable) adds the animated intro overlay and the fading
+logo: every clip is then written once per language as ``<clip>-<LANG>.mp4``.
+
+Order in the MP4: intro, footage, slideshow, outro. Output goes to the same path
 with the ``raw`` folder replaced by ``processed`` (``.../raw/lhbp`` ->
 ``.../processed/lhbp/lhbp_NN.mp4``); earlier clips of that name are replaced.
 Temporary files (cache, stills, slideshow) go to ``$TMPDIR/plotvid/<folder>/``.
@@ -23,6 +33,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -35,7 +46,7 @@ from pathlib import Path
 import yaml
 from PIL import Image, ImageFilter, ImageOps
 
-from plotvid import assign, cli, config, events, probe, render
+from plotvid import assign, cli, config, events, overlay, probe, render
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "folder.yaml"
 VIDEO_EXTS = {".mov", ".mp4", ".m4v"}
@@ -45,6 +56,9 @@ EXIF_IFD = 0x8769
 EXIF_ORIENTATION = 274
 ROTATED = {5, 6, 7, 8}  # orientations that swap width and height
 PHOTO_ONLY_SIZE = (1080, 1920)
+INTRO_SLIDE_S = 2.0  # seconds per intro image, whatever --slide-s says
+MAX_SLIDES = 3  # default cap on closing photos per clip
+MAX_JOBS = 4  # default cap on parallel worker processes (analysis and rendering)
 
 
 def output_dir(folder: Path) -> Path:
@@ -164,14 +178,45 @@ def _still(path: Path, size: tuple[int, int], out: Path) -> Path:
     return out
 
 
+def _shots(images: list[Path]) -> list[tuple[dt.datetime, tuple[int, int], Path]]:
+    return sorted(((taken, size, p) for p in images
+                   for taken, size in [_image_info(p)]), key=lambda t: (t[0], t[2].name))
+
+
+def _pick_shots(shots: list, limit: int, rng: random.Random) -> list:
+    """At most ``limit`` shots: all of them when there are no more, else a random
+    sample kept in capture order."""
+    if len(shots) <= limit:
+        return list(shots)
+    keep = set(rng.sample(range(len(shots)), limit))
+    return [s for i, s in enumerate(shots) if i in keep]
+
+
+def _slideshow(shots: list[tuple[dt.datetime, tuple[int, int], Path]], size: tuple[int, int],
+               fps: float, cfg: config.Config, slide_s: float, work: Path,
+               label: str) -> render.Part | None:
+    """The images as one silent video of ``slide_s`` seconds each; None without images."""
+    if not shots:
+        return None
+    stills = work / f"{label}_stills"
+    stills.mkdir(exist_ok=True)
+    slides = [render.Part(kind="image", path=_still(p, size, stills / f"{i:03d}.jpg"),
+                          duration_s=slide_s, has_audio=False)
+              for i, (_, _, p) in enumerate(shots)]
+    video = work / f"{label}.mp4"
+    render.render(slides, size, fps, replace(cfg.render, transition="cut"), video)
+    return render.asset_part(video, None)
+
+
 def _footage_clips(cfg: config.Config, infos: list[probe.SourceInfo],
-                   outro_s: float, overrides: dict[str, float]) -> list[list[render.Part]]:
+                   outro_s: float, overrides: dict[str, float]
+                   ) -> tuple[list[list[render.Part]], list[dict]]:
     # One worker per source: the ink check is serial within a source, so
     # separate videos are the unit that runs in parallel.
     # A per-file --detect-prominence overrides the detector's threshold for that file.
     cfgs = [replace(cfg, detect=replace(cfg.detect, min_prominence_db=overrides[info.path.name]))
             if info.path.name in overrides else cfg for info in infos]
-    workers = max(1, min(len(infos), os.cpu_count() or 1))
+    workers = max(1, min(len(infos), MAX_JOBS, os.cpu_count() or 1))
     with ProcessPoolExecutor(max_workers=workers) as pool:
         analysed = list(pool.map(cli.analyse_source, cfgs, infos, [False] * len(infos)))
     per_source = []
@@ -191,21 +236,59 @@ def _footage_clips(cfg: config.Config, infos: list[probe.SourceInfo],
                            f"{cfg.videos.min_total_s} s (tried {result.tried}); adjust the YAML")
     print(f"{result.count} clips (relaxation level {result.level}); tried {result.tried}; "
           f"part pools {[round(x, 1) for x in result.pool_s]} s")
-    clips = []
+    clips, plan = [], []
     for clip in result.clips:
         print(f"clip {clip.clip + 1}: {clip.footage_s:.1f} s footage, "
               f"{len(clip.segments)} segments")
-        clips.append([render.Part(kind="segment", path=infos[s.source].path,
-                                  duration_s=s.duration_s, start_s=s.start_s,
-                                  display_size=infos[s.source].display_size,
-                                  rotate=infos[s.source].rotate_filter,
-                                  has_audio=infos[s.source].has_audio, fade_audio=True)
-                      for s in clip.segments])
+        plan.append({"clip": clip.clip + 1, "footage_s": round(clip.footage_s, 3),
+                     "segments": [{"file": infos[s.source].path.name, "start_s": round(s.start_s, 3),
+                                   "end_s": round(s.end_s, 3), "part": s.part, "level": s.level,
+                                   "final": s.final} for s in clip.segments]})
+        clips.append(_parts_of(infos, [(s.source, s.start_s, s.end_s) for s in clip.segments]))
+    return clips, plan
+
+
+def _parts_of(infos: list[probe.SourceInfo], segs: list[tuple[int, float, float]]
+              ) -> list[render.Part]:
+    return [render.Part(kind="segment", path=infos[i].path, duration_s=end - start, start_s=start,
+                        display_size=infos[i].display_size, rotate=infos[i].rotate_filter,
+                        has_audio=infos[i].has_audio, fade_audio=True) for i, start, end in segs]
+
+
+def _clips_from_plan(plan: dict, infos: list[probe.SourceInfo]) -> list[list[render.Part]]:
+    """The clips of a saved plan, with no detection or planning."""
+    index = {info.path.name: i for i, info in enumerate(infos)}
+    clips = []
+    for clip in plan["clips"]:
+        missing = {s["file"] for s in clip["segments"]} - set(index)
+        if missing:
+            raise RuntimeError(f"plan needs videos that are not in the folder: {sorted(missing)}")
+        clips.append(_parts_of(infos, [(index[s["file"]], s["start_s"], s["end_s"])
+                                       for s in clip["segments"]]))
     return clips
 
 
+def _finish_clip(job: tuple) -> tuple[list[Path], float]:
+    """Render one clip and, with intros, one overlaid file per language. Runs in a
+    worker process; returns the finished files and the clip's length."""
+    parts, size, fps, render_cfg, out, wm, intros, logo, outro_s = job
+    render.render(parts, size, fps, render_cfg, out, watermark=wm)
+    duration = round(render.expected_duration(parts, render_cfg), 2)
+    if not intros:
+        return [out], duration
+    finals = []
+    for lang, svg in intros.items():
+        final = out.with_name(f"{out.stem}-{lang}.mp4")
+        overlay.add_intro(svg, logo, outro_s, out, final)
+        finals.append(final)
+    out.unlink()
+    return finals, duration
+
+
 def process(folder: Path, cfg_path: Path, slide_s: float,
-            overrides: dict[str, float]) -> Path:
+            overrides: dict[str, float], intros: dict[str, Path] | None = None,
+            plan_path: Path | None = None, max_slides: int = MAX_SLIDES,
+            n_jobs: int | None = None) -> Path:
     folder = folder.resolve()
     name = folder.name
     out_root = output_dir(folder)
@@ -217,9 +300,13 @@ def process(folder: Path, cfg_path: Path, slide_s: float,
     if not videos and not images:
         raise RuntimeError(f"{folder}: no videos or images")
     cfg = _load_config(cfg_path, videos, work)
+    logo = cfg.render.watermark
+    if intros:  # the logo comes with the intro overlay, once the intro has gone
+        cfg = replace(cfg, render=replace(cfg.render, watermark=None))
     infos = probe.order_sources(videos, cfg.render.rotate) if videos else []
-    shots = sorted(((taken, size, p) for p in images
-                    for taken, size in [_image_info(p)]), key=lambda t: (t[0], t[2].name))
+    shots = _shots(images)
+    intro_dir = folder / "intro"
+    intro_shots = _shots(_media(intro_dir)[1]) if intro_dir.is_dir() else []
 
     # Video sets the frame like plotvid does; a photo-only folder gets a 9:16 phone frame.
     size = render.output_size([i.display_size for i in infos]) if infos else PHOTO_ONLY_SIZE
@@ -231,45 +318,84 @@ def process(folder: Path, cfg_path: Path, slide_s: float,
     if cfg.render.watermark is not None:
         wm_size = render.watermark_image(cfg.render.watermark,
                                          round(size[0] * cfg.render.watermark_width_frac), wm_png)
-    # The length window counts the slideshow too, since every clip ends with it.
-    ending_s = outro_part.duration_s + len(shots) * slide_s
-    clips = _footage_clips(cfg, infos, ending_s, overrides) if infos else [[]]
-    slide_part = None
-    if shots:
-        slideshow = work / "slideshow.mp4"
-        stills = work / "stills"
-        stills.mkdir(exist_ok=True)
-        slides = [render.Part(kind="image",
-                              path=_still(p, size, stills / f"{i:03d}.jpg"),
-                              duration_s=slide_s, has_audio=False)
-                  for i, (_, _, p) in enumerate(shots)]
-        render.render(slides, size, fps, replace(cfg.render, transition="cut"), slideshow)
-        slide_part = render.asset_part(slideshow, None)
+    # The length window counts the intro, slideshow and outro too, since every clip has them.
+    ending_s = (len(intro_shots) * INTRO_SLIDE_S + outro_part.duration_s
+                + min(len(shots), max_slides) * slide_s)
+    if plan_path is not None:  # replay a saved plan: same segments, no detection
+        saved = json.loads(plan_path.read_text())
+        clips, plan = _clips_from_plan(saved, infos), saved["clips"]
+    elif infos:
+        clips, plan = _footage_clips(cfg, infos, ending_s, overrides)
+    else:
+        clips, plan = [[]], []
+    intro_part = _slideshow(intro_shots, size, fps, cfg, INTRO_SLIDE_S, work, "intro")
 
-    # Every clip is footage, then the slideshow, then the outro.
+    # Each clip closes with at most max_slides photos; with more photos every clip
+    # gets its own random pick. A replayed plan reuses the pick it saved.
+    rng = random.Random(cfg.videos.seed)
+    by_name = {p.name: (t, sz, p) for t, sz, p in shots}
+    picks = []
+    for i in range(len(clips)):
+        saved_names = plan[i].get("images") if i < len(plan) else None
+        if saved_names is not None:
+            missing = [n for n in saved_names if n not in by_name]
+            if missing:
+                raise RuntimeError(f"plan needs images that are not in the folder: {missing}")
+            picks.append([by_name[n] for n in saved_names])
+        else:
+            picks.append(_pick_shots(shots, max_slides, rng))
+    for i, pick in enumerate(picks):
+        if i < len(plan):
+            plan[i]["images"] = [p.name for _, _, p in pick]
+    slide_parts = {}  # identical picks share one slideshow render
+    for pick in picks:
+        key = tuple(p.name for _, _, p in pick)
+        if key not in slide_parts:
+            slide_parts[key] = _slideshow(pick, size, fps, cfg, slide_s, work,
+                                          f"slideshow_{len(slide_parts) + 1:02d}")
+
+    # Every clip is the intro, then footage, then the slideshow, then the outro.
     # Earlier clips of this name are replaced, so a shorter run leaves no stale ones.
-    for old in out_root.glob(f"{name}_[0-9][0-9].mp4"):
-        old.unlink()
+    for pattern in (f"{name}_[0-9][0-9].mp4", f"{name}_[0-9][0-9]-*.mp4", f"{name}-*.mp4"):
+        for old in out_root.glob(pattern):
+            old.unlink()
     (out_root / f"{name}.mp4").unlink(missing_ok=True)
-    outs = []
+    jobs = []
     for i, footage in enumerate(clips):
-        parts = list(footage)
-        if slide_part is not None:
-            parts.append(slide_part)
+        slide_part = slide_parts[tuple(p.name for _, _, p in picks[i])]
+        parts = [part for part in (intro_part, *footage, slide_part) if part is not None]
         parts.append(outro_part)
         out = out_root / (f"{name}.mp4" if len(clips) == 1 else f"{name}_{i + 1:02d}.mp4")
         # The logo runs over the whole clip except the outro, which carries its own.
         wm = None if wm_size is None else render.Watermark(
             wm_png, wm_size, render.expected_duration(parts, cfg.render) - outro_part.duration_s)
-        render.render(parts, size, fps, cfg.render, out, watermark=wm)
-        duration = round(render.expected_duration(parts, cfg.render), 2)
-        outs.append({"output": str(out), "duration_s": duration})
-        print(f"{out.name}: {duration} s")
+        jobs.append((parts, size, fps, cfg.render, out, wm, intros or {}, logo,
+                     outro_part.duration_s))
+    # Clips are independent ffmpeg runs, and one run uses few cores (the filter graph
+    # is mostly serial), so render several at once.
+    workers = max(1, min(len(jobs), n_jobs or MAX_JOBS, os.cpu_count() or 1))
+    if workers == 1:
+        results = [_finish_clip(j) for j in jobs]
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_finish_clip, jobs))
+    outs = []
+    for finals, duration in results:
+        for final in finals:
+            outs.append({"output": str(final), "duration_s": duration})
+            print(f"{final.name}: {duration} s")
 
+    plan_file = out_root / f"{name}.plan.json"
+    plan_file.write_text(json.dumps({
+        "folder": str(folder), "seed": cfg.videos.seed, "parts": cfg.videos.parts,
+        "images": [p.name for _, _, p in shots], "max_slides": max_slides, "intro_images": [p.name for _, _, p in intro_shots],
+        "slide_s": slide_s, "clips": plan}, indent=2))
+    print(f"plan -> {plan_file}")
     summary = {
         "folder": str(folder),
         "videos": [str(i.path) for i in infos],
         "images": [{"file": str(p), "taken": t.isoformat()} for t, _, p in shots],
+        "intro": [{"file": str(p), "taken": t.isoformat()} for t, _, p in intro_shots],
         "size": list(size), "fps": fps, "slide_s": slide_s, "outputs": outs,
     }
     (work / "summary.json").write_text(json.dumps(summary, indent=2))
@@ -283,9 +409,28 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                     help="plotvid YAML (default: the bundled folder.yaml)")
     ap.add_argument("--slide-s", type=float, default=3.0, help="seconds per image")
+    ap.add_argument("--max-slides", type=int, default=MAX_SLIDES, metavar="N",
+                    help="most photos shown at the end of a clip; with more, each clip "
+                         "gets a random pick (default %(default)s)")
+    ap.add_argument("--jobs", type=int, default=None, metavar="N",
+                    help="clips rendered at the same time (default: %d)" % MAX_JOBS)
     ap.add_argument("--detect-prominence", action="append", default=[], metavar="FILE=DB",
                     help="pen-event threshold for one video file, e.g. BDMV.mov=3")
+    ap.add_argument("--intro", action="append", default=[], metavar="LANG=SVG",
+                    help="animated intro overlay (see plotvid.overlay) and fading logo; "
+                         "repeat for more languages: one clip per language, named "
+                         "<clip>-<LANG>.mp4, e.g. --intro hu=common/intro-hu.svg")
+    ap.add_argument("--plan", type=Path, metavar="JSON",
+                    help="replay a saved <name>.plan.json: same segments, no detection or planning")
     args = ap.parse_args(argv)
+    if args.plan is not None and not args.plan.is_file():
+        ap.error(f"no such plan: {args.plan}")
+    intros = {}
+    for item in args.intro:
+        lang, _, svg = item.partition("=")
+        if not svg or not Path(svg).is_file():
+            ap.error(f"--intro needs LANG=SVG with an existing file, got {item!r}")
+        intros[lang] = Path(svg).resolve()
     overrides = {}
     for item in args.detect_prominence:
         name, _, db = item.partition("=")
@@ -293,12 +438,15 @@ def main(argv: list[str] | None = None) -> int:
             ap.error(f"--detect-prominence needs FILE=DB, got {item!r}")
         overrides[name] = float(db)
 
+    if args.max_slides < 1:
+        ap.error("--max-slides must be at least 1")
     for tool in ("ffmpeg", "ffprobe"):
         if shutil.which(tool) is None:
             print(f"plotvid.folder: {tool} not found on PATH", file=sys.stderr)
             return 2
     try:
-        out = process(args.folder, args.config, args.slide_s, overrides)
+        out = process(args.folder, args.config, args.slide_s, overrides, intros, args.plan,
+                      args.max_slides, args.jobs)
     except (RuntimeError, config.ConfigError, OSError, ValueError) as exc:
         print(f"plotvid.folder: {exc}", file=sys.stderr)
         return 1

@@ -22,10 +22,12 @@ from backend.airports.router import (
     _render_keys,
     _render_uncached,
     _runway_infos,
+    _store_degraded_svg,
     _store_render,
     _store_splits,
 )
 from backend.airports.schemas import RenderRequest
+from backend.airports.sources import is_degraded
 from backend.jobs import store as _store
 from backend.jobs._common import (
     _job_err,
@@ -90,12 +92,14 @@ async def _render_document(
         )
         if isinstance(built, JSONResponse):
             raise _job_err(built)
-        svg_text, path_counts, raw_counts, rotation, \
-            computed_aer, computed_ctx, aer_key, ctx_key = built
+        svg_text, path_counts, raw_counts, rotation, computed_ctx, ctx_key = built
         _raise_if_cancelled(stop, endpoint, "svg_build")
         await _store.set_progress(job_id, "svg_build")
-        await _store_splits(aer_key, ctx_key, computed_aer, computed_ctx)
-        await _store_render(svg_key, meta_key, svg_text, path_counts, raw_counts, rotation)
+        await _store_splits(ctx_key, computed_ctx)
+        if is_degraded(warnings):
+            await _store_degraded_svg(svg_key, svg_text)
+        else:
+            await _store_render(svg_key, meta_key, svg_text, path_counts, raw_counts, rotation)
     return _AirportDocument(
         svg_text, path_counts, raw_counts, rotation, airport, runway_rows,
         freq_rows, icao, warnings, cache_hit, svg_key,

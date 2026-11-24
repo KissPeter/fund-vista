@@ -1,0 +1,30 @@
+{
+ "params": {
+  "layers": {
+   "drills": {
+    "enabled": true,
+    "ink": "auto"
+   },
+   "pads": {
+    "enabled": true,
+    "ink": "auto"
+   },
+   "pours": {
+    "enabled": true,
+    "ink": "auto"
+   },
+   "tracks": {
+    "enabled": true,
+    "ink": "auto"
+   }
+  },
+  "mirror": true
+ },
+ "rotated": true,
+ "stats": {
+  "estimated_time_s": 32.6,
+  "pen_down_mm": 864.67,
+  "pen_up_mm": 648.81,
+  "strokes": 6
+ }
+}

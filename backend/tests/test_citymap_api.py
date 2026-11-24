@@ -41,7 +41,7 @@ import time
 from urllib.parse import urlsplit
 
 os.environ.setdefault("PENPLOT_DATA_DIR", tempfile.mkdtemp(prefix="penplot-citymap-api-"))
-os.environ["PENPLOT_RATE_LIMIT"] = "100000"
+os.environ["DISABLE_RATELIMIT"] = "True"
 
 import httpx
 import pytest
@@ -441,8 +441,8 @@ def test_render_overpass_remark_caches_no_tiles(live, monkeypatch):
         async def aclose(self):
             return None
 
-    async def _remark_overpass(query, client=None):
-        return await overpass.fetch_overpass(query, client=_Client())
+    async def _remark_overpass(query, client=None, **kw):
+        return await overpass.fetch_overpass(query, client=_Client(), **kw)
 
     async def _dead_osm_api(*a, **k):
         raise OsmApiError("mock osm api outage")

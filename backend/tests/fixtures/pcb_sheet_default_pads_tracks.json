@@ -1,0 +1,21 @@
+{
+ "params": {
+  "layers": {
+   "pads": {
+    "enabled": true,
+    "ink": "auto"
+   },
+   "tracks": {
+    "enabled": true,
+    "ink": "blue"
+   }
+  }
+ },
+ "rotated": true,
+ "stats": {
+  "estimated_time_s": 23.8,
+  "pen_down_mm": 587.67,
+  "pen_up_mm": 621.11,
+  "strokes": 5
+ }
+}

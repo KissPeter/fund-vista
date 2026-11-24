@@ -272,3 +272,61 @@ a full cell perimeter in pure Python. A follow-up (P6) could switch to a
 radial-cell / kd-tree nearest-neighbour list; default-quality converts — the
 shop's normal path — already skip this stage entirely (`stage=linesort
 ms=0.0`), so the delivered win is the cold 19.35 s vs the old > 5 min.
+
+## Blueprint (3D city view) SVG uploads - issue #144
+
+Shop input: a stroke-only plot SVG with two top-level groups,
+`<g id="map">` (roads, water) and `<g id="buildings">` (wall rings and lines),
+`fill="none"`. Generator: `backend/tools/blueprint_fixtures.py OUT_DIR`
+(deterministic; the fixtures are generated, not committed). Measured with
+`pipeline.run_convert` directly (no HTTP), isolated parse cache per run,
+`methods=["contour"]`, default vector params.
+
+| Fixture | Size | Option | Strokes | Pen-down | Time | Peak RSS |
+|---|---|---|---|---|---|---|
+| small | 0.2 MB | default | 2 362 | 38 044 mm | 0.08 s | 97 MB |
+| small | 0.2 MB | `layer_groups` | 2 396 | 38 043 mm | 0.07 s | 96 MB |
+| typical | 2.0 MB | default | 17 128 | 382 720 mm | 0.81 s | 173 MB |
+| typical | 2.0 MB | `layer_groups` | 19 983 | 382 666 mm | 0.73 s | 155 MB |
+| worst | 9.0 MB | default | 33 422 | 1 729 686 mm | 4.64 s | 455 MB |
+| worst | 9.0 MB | `layer_groups` | 47 421 | 1 729 462 mm | 4.17 s | 380 MB |
+
+Full quality (`full_quality=true`) adds about 1 s on typical and 1.3 s on
+worst. Worst-case RSS (455 MB default) is the closest number to the 512 MB
+deploy limit; the layered path stays lower.
+
+Stroke counts differ between default and `layer_groups` because each layer
+is merged and simplified on its own (no stroke fuses across `buildings` and
+`map`). Pen-down agrees to within 0.1 %.
+
+### Layers and stats
+
+- `layer_groups=true` keeps `buildings` and `map` as their own
+  `<g inkscape:groupmode="layer">` in the result, in document order, next to
+  the `traffic-*` groups. Other groups are not touched.
+- `stats.layers` lists each kept layer: `id`, `strokes`, `pen_down_mm`. The
+  totals in `stats` always cover every layer. `stats.layers` is `null` when no
+  split happened.
+
+### Limits (vector SVG upload)
+
+| Limit | Value | Response |
+|---|---|---|
+| upload size | 25 MB (`PENPLOT_MAX_UPLOAD_BYTES`) | 413 |
+| XML elements | 200 000 | 400 `bad_image` ("SVG is too complex") |
+| nesting depth | 256 | 400 `bad_image` |
+| not well-formed XML / DOCTYPE bomb | - | 400 `bad_image` |
+| no convertible shapes | - | 400 `bad_image` |
+
+The shop's own stroke caps (12 000 paths, 300 000 vertices, 2 mm minimum
+detail) are shop-side and sit well inside these limits; the worst fixture
+(about 110 000 `<path>` elements in 9 MB) is still under the element cap.
+
+### Not yet covered by this change
+
+- Result meta (`GET /v1/results/{file}/meta`) carries `stats.layers` through
+  the stored sidecar, but no test pins it yet.
+- `retain` / token TTL for a blueprint design token (item 4 of issue #144) is
+  unverified.
+- The `upstream_mock` / hermetic shop lane for an SVG upload (item 6) is
+  unchanged.

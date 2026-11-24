@@ -315,6 +315,25 @@ def test_expand_view_to_aspect():
     assert grown[0] <= view[0] and grown[1] >= view[1] and grown[2] <= view[2] and grown[3] >= view[3]
 
 
+def test_crop_view_to_aspect_fills_the_page():
+    """The clamp's residual is cropped on the long axis, centre kept."""
+    ratio = lambda v: (v[3] - v[2]) * math.cos(math.radians((v[0] + v[1]) / 2)) / (v[1] - v[0])
+    day = (LAT - 1.9, LAT + 1.9, LON - 3.6, LON + 3.6)  # the ingest box, ~1.28:1
+    assert ratio(day) < 297 / 210
+    grown = R.expand_view_to_aspect(day, 297 / 210, day)
+    assert grown == day  # nothing to grow into
+    s, n, w, e = R.crop_view_to_aspect(grown, 297 / 210)
+    assert math.isclose(ratio((s, n, w, e)), 297 / 210, rel_tol=1e-9)
+    assert (w, e) == (day[2], day[3]) and day[0] < s < LAT < n < day[1]
+    assert math.isclose((s + n) / 2, LAT)
+    # Too wide: the east-west axis is cropped instead.
+    s, n, w, e = R.crop_view_to_aspect(day, 210 / 297)
+    assert math.isclose(ratio((s, n, w, e)), 210 / 297, rel_tol=1e-9)
+    assert (s, n) == (day[0], day[1]) and day[2] < w < LON < e < day[3]
+    # A matching aspect is returned untouched.
+    assert R.crop_view_to_aspect(day, ratio(day)) == day
+
+
 def test_render_request_framing_knobs():
     """min_path_len_m / viewport_aspect validate like the citymap knobs."""
     r = _req()

@@ -11,6 +11,11 @@
 # would otherwise never fail a build.
 name: frontend-checks
 
+# A run dispatched for a PR is named apart from the `main` gate: both are
+# attached to the head of `main`, and the sweep must tell them apart
+# (.github/scripts/auto-merge-sweep.sh main_gate_state, active_gate_for_pr).
+run-name: "${{ inputs.pr_number && format('frontend-checks [merge-ref #{0}]', inputs.pr_number) || 'frontend-checks' }}"
+
 on:
   push:
     branches: [main]
@@ -30,13 +35,20 @@ on:
     paths: *frontend_paths
   # Manual run, two modes (same contract as backend-tests):
   #   - no input: the checks on the dispatched ref.
-  #   - pr_number=<n>: the checks against `refs/pull/<n>/merge`; the verdict
-  #     is reported as the commit status `automerge/merge-ref/frontend-checks`
-  #     on the head commit of the PR (see docs/auto-merge.md).
+  #   - pr_number=<n> and main_sha=<sha>: the checks against the PR head
+  #     merged with that main commit (GitHub's merge ref is not rebuilt when
+  #     `main` moves); the verdict is reported as the commit status
+  #     `automerge/merge-ref/frontend-checks` on the PR head, described
+  #     `head <head> main <main>` (see docs/auto-merge.md).
   workflow_dispatch:
     inputs:
       pr_number:
-        description: "PR number: test against refs/pull/<n>/merge"
+        description: "PR number: test the PR head merged with main_sha"
+        required: false
+        type: string
+        default: ""
+      main_sha:
+        description: "main commit to merge into the PR head (with pr_number)"
         required: false
         type: string
         default: ""
@@ -48,15 +60,42 @@ permissions:
 
 jobs:
   checks:
+    outputs:
+      tested_head: ${{ steps.merge.outputs.tested_head }}
     # Self-hosted like backend-tests: the hosted runners are unavailable
     # (billing), and a lane that never runs would never turn green.
     runs-on: [self-hosted, linux, ARM64]
     steps:
       - uses: actions/checkout@v7
         with:
-          # A dispatched run with pr_number tests the merge of the PR into
-          # main, the same thing the pull_request event tests.
-          ref: ${{ inputs.pr_number && format('refs/pull/{0}/merge', inputs.pr_number) || '' }}
+          # A dispatched run with pr_number checks out the PR head; the merge
+          # with main is made by the step below. GitHub's refs/pull/<n>/merge
+          # is not used: it is not rebuilt when `main` moves.
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || '' }}
+          fetch-depth: ${{ inputs.pr_number && '0' || '1' }}
+      - name: Merge main into the PR head
+        id: merge
+        if: ${{ inputs.pr_number != '' }}
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MAIN_SHA: ${{ inputs.main_sha }}
+        run: |
+          # Recorded before the merge: the verdict names the PR head, not the
+          # merge commit built here.
+          echo "tested_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if ! [[ "$MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::main_sha must be a full commit SHA (got '$MAIN_SHA')"
+            exit 1
+          fi
+          git cat-file -e "${MAIN_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin main
+          if ! git cat-file -e "${MAIN_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::main commit $MAIN_SHA is not in the repository"
+            exit 1
+          fi
+          if ! git -c user.name="ci" -c user.email="ci@localhost" merge --no-edit "$MAIN_SHA"; then
+            echo "::error::PR #$PR_NUMBER does not merge cleanly with main $MAIN_SHA"
+            exit 1
+          fi
 
       - name: Set up Node 24
         uses: actions/setup-node@v4
@@ -116,19 +155,24 @@ jobs:
           fi
           gh --version
       - name: Report the merge-ref verdict
+        # The sweep reads this status to know that the checks were green for
+        # exactly this PR head and this main. A canceled run reports nothing.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ inputs.pr_number }}
           WORKFLOW: ${{ github.workflow }}
           CHECKS: ${{ needs.checks.result }}
+          TESTED_HEAD: ${{ needs.checks.outputs.tested_head }}
+          MAIN_SHA: ${{ inputs.main_sha }}
         run: |
-          merge_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/pull/$PR_NUMBER/merge" --jq '.object.sha')"
-          head_sha="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+          if [ -z "$TESTED_HEAD" ]; then
+            echo "::error::no PR head was checked out, nothing to report"
+            exit 1
+          fi
           state=success
           if [ "$CHECKS" != success ]; then
             state=failure
           fi
-          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$head_sha" \
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$TESTED_HEAD" \
             -f state="$state" \
             -f context="automerge/merge-ref/$WORKFLOW" \
-            -f description="merge ref $merge_sha"
+            -f description="head $TESTED_HEAD main $MAIN_SHA"

@@ -101,6 +101,8 @@ def resolve_public_base(request: Request) -> str:
 
 async def require_rate_limit(request: Request) -> None:
     """Per-IP fixed-window throttle; 429 + Retry-After when exhausted."""
+    if _settings.disable_ratelimit:
+        return
     client = client_ip(request, trust_forwarded_for=_settings.trust_forwarded_for)
     if client in _settings.rate_limit_whitelist:
         return

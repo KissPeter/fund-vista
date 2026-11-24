@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Monthly refresh of the local OSM extract (CR-010): 1st of the month, 03:00.
+  The script builds into a temp file and swaps it in, so a failed run keeps
+  the previous database. Log: ~/Library/Logs/osm-local-refresh.log
+
+  Install once on the Mac (copy the script so a deploy never replaces a file
+  launchd runs):
+
+    mkdir -p ~/bin ~/Library/LaunchAgents
+    cp ops/osm-local-refresh.sh ~/bin/osm-local-refresh.sh
+    sed "s|HOME_DIR|$HOME|g" ops/osm-local-refresh.plist \
+      > ~/Library/LaunchAgents/hu.linuxadm.osm-local-refresh.plist
+    launchctl bootstrap gui/$(id -u) \
+      ~/Library/LaunchAgents/hu.linuxadm.osm-local-refresh.plist
+
+  Run now: launchctl kickstart gui/$(id -u)/hu.linuxadm.osm-local-refresh
+-->
+<dict>
+  <key>Label</key>
+  <string>hu.linuxadm.osm-local-refresh</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>HOME_DIR/bin/osm-local-refresh.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>HOME_DIR/Library/Logs/osm-local-refresh.log</string>
+  <key>StandardErrorPath</key>
+  <string>HOME_DIR/Library/Logs/osm-local-refresh.log</string>
+</dict>
+</plist>

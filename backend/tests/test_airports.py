@@ -33,6 +33,7 @@ from backend.airports.overpass import (
     split_aeroway,
 )
 from backend.airports.render import render_diagram
+from backend.airports.sources import AirfieldResult
 from backend.penplot import imaging
 
 
@@ -679,13 +680,13 @@ def test_render_endpoint_wires_layers_without_network():
     async def fake_lookup(icao):
         return airport, [], [], [], False
 
-    async def fake_polygons(lat, lon, radius_m, warnings, kind="overpass", **kw):
-        return [], None
+    async def fake_airfield(lat, lon, radius_m, warnings, **kw):
+        return AirfieldResult(), None
 
     async def scenario():
         with (
             patch.object(router_mod, "_lookup", fake_lookup),
-            patch.object(router_mod, "_load_polygons", fake_polygons),
+            patch.object(router_mod, "_load_airfield", fake_airfield),
         ):
             scope = {
                 "type": "http", "headers": [], "query_string": b"",

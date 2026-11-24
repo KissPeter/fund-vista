@@ -86,16 +86,22 @@ feeds straight into import+convert.
 - `POST /v1/airports/render` (rate-limited) — lookup → effective radius
   (`_effective_radius_m`: project runway endpoints via
   `geometry.project`+`runway_endpoints`, expand to farthest+1000 m) →
-  Redis-first Overpass `around` fetch (`_load_polygons`: airfield query
-  `build_airport_query` + optional context query `build_context_query`,
-  5 mirrors, context outage degrades to empty layer +
-  `context_unavailable`) → SVG cache key (icao, radius, minlen, width,
-  sorted layers, zoom, tlabels, renderer content-hash version) → hit:
-  reuse SVG + recompute counts via `split_aeroway/split_context`;
-  miss: `_build_svg` → `split_aeroway` (OSM→7 airfield classes) +
-  `extract_taxiway_refs` + `split_context` → `render_diagram(...)` →
-  cache → `{rotation_deg, path_counts, raw_counts,
-  svg_url:/v1/airports/results/{sha1}, warnings, cache_hit}`.
+  airfield via `sources.load_airfield` (F-008: Redis-first; Overture
+  runway/taxiway/apron/stopways plus a reduced Overpass query for
+  terminal/hangar/stands; full Overpass `build_airport_query` when Overture
+  fails or is empty; Overture skipped for 60 s after a failure) + optional
+  Redis-first context query `build_context_query` (5 mirrors, context outage
+  degrades to empty layer + `context_unavailable`) → SVG cache key (icao,
+  radius, minlen, width, sorted layers, zoom, tlabels, renderer content-hash
+  version, Overture switch, release, source version) → hit: reuse SVG +
+  recompute counts via `split_context`; miss: `_build_svg` (airfield arrives
+  already split and filtered) + `extract_taxiway_refs` + `split_context` →
+  `render_diagram(...)` → cache, unless the airfield is degraded
+  (`overture_unavailable` / `osm_layers_unavailable`: served, not stored) →
+  `{rotation_deg, path_counts, raw_counts, svg_url:/v1/airports/results/{sha1},
+  warnings, cache_hit}`. `raw_counts` for the airfield reports kept polylines
+  under `ways` (`nodes` and `relations` are 0); `context_ways` is added when
+  context is requested.
 - `POST /v1/airports/import` (rate-limited) — same lookup+fetch+build,
   422 when 0 paths and no runways, `imaging.parse_svg_vectors` validation,
   `penplot_store.put_image_bytes` → `{image_id, …}` for stock

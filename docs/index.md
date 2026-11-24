@@ -22,9 +22,10 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 | CR-008 | change request | A `backend/uv.lock` change needs a shop-side licence-inventory regeneration (licence docs §D + PR template) | done | 2026-10-22 |
 | CR-005 | change request | The Mac is the only backend — drop the NAS (script, runbooks, skill, comments) | done | 2026-10-21 |
 | CR-006 | change request | Pydantic-owned input validation + tiny ops tools instead of inline python (issue #64) | done | 2026-10-21 |
-| CR-009 | change request | Mac disk-space guard + read-only-docker recovery runbook (issue #111) | done | 2026-10-26 |
+| CR-009 | change request | Mac disk-space guard + active VM/cache recovery (issue #111) | done | 2026-11-21 |
 | F-006 | feature | Traffic map: country border on the Map layer, paper-fill viewport aspect, Detail (min. path length) | done | 2026-10-27 |
 | F-007 | feature | Gallery sheet compose on the backend (`POST /v1/compose-sheet`) | in progress | 2026-10-30 |
+| CR-010 | change request | Local OSM extract (Hungary, SQLite on the Mac) as first Overpass mirror for citymap | done | 2026-11-17 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
@@ -59,3 +60,4 @@ Doc: `docs/F-005-technical-drawing.md`, CLI manual `docs/img2plot-cli.md`, SVG o
 - `docs/REF-002-large-file-refactor-plan.md` — refactor plan (PLAN, issue #45): >500-line inventory with 21-day churn ranking, per-file findings + lint notes, sequenced phases 1–5 (routers → jobs runner → penplot helpers → dashboard).
 - `docs/REF-003-pr-landing-order.md` — landing order of the open agent PRs + the `docs/index.md` anchor rule (one anchor per branch, one canonical fix per problem, issue #86).
 - `docs/python-service-shop-changes.md` — pen-pixel work-order §§1–8 implementation record.
+- `docs/cache-warmer.md` - daily and post-deploy render-cache warmer replaying the shop warm-up defaults against the NAS (issue #1433).

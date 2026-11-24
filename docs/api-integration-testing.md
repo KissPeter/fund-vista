@@ -1,8 +1,8 @@
-# API integration testing — standards (ported from affilio)
+# API integration testing - standards (ported from affilio)
 
 Ported from affilio's `.claude/rules/testing-integration.md`,
 `.claude/skills/testing-runbook/SKILL.md` and its Schemathesis workflow
-(`run_schemathesis_local.sh`, CircleCI) — adapted to this repo's stack.
+(`run_schemathesis_local.sh`, CircleCI) - adapted to this repo's stack.
 The working summary lives in the `test-design` skill
 (`.opencode/skills/test-design/SKILL.md`); this document is the
 reference the skill summarizes.
@@ -10,7 +10,7 @@ reference the skill summarizes.
 ## Test execution policy
 
 - **MUST** run all tests locally against local services (the in-process /
-  subprocess uvicorn live servers) — **MUST NOT** run tests against
+  subprocess uvicorn live servers) - **MUST NOT** run tests against
   remote/staging/production environments.
 - **MUST** run the full backend integration suite
   (`python -m pytest backend/tests/ -q`) for backend/runtime-affecting
@@ -24,7 +24,7 @@ reference the skill summarizes.
 ## Integration constraints
 
 - **MUST** use real HTTP requests (`httpx`) against a running live server
-  on a real socket — full stack: ASGI server, routing vs. catch-all proxy,
+  on a real socket - full stack: ASGI server, routing vs. catch-all proxy,
   error handlers.
 - **MUST NOT** use `fastapi.testclient.TestClient` for integration
   scenarios (sole documented exception: `backend/tests/test_jobs_contract.py`,
@@ -35,11 +35,11 @@ reference the skill summarizes.
 - Job tests **MUST** poll `GET /v1/jobs/{id}` with a deadline (condition
   wait), never extend helper timeouts to mask flakes.
 
-## Mock services (no real data) — repo standard
+## Mock services (no real data) - repo standard
 
 `FUNDVISTA_UPSTREAM_MODE=mock` (read at import of `backend.main`) swaps the
-network edge: every third-party call — OurAirports CSVs, Overpass (airport +
-citymap), OSM API, Nominatim, GitHub release index/archive — is served from
+network edge: every third-party call - OurAirports CSVs, Overpass (airport +
+citymap), OSM API, Nominatim, GitHub release index/archive - is served from
 deterministic fixtures in `backend/upstream_mock/`, and any request to an
 unmocked host **fails closed** with `UpstreamNotMocked` (a `RuntimeError` so
 `except httpx.HTTPError` handlers cannot swallow it into a quiet 502). See
@@ -53,10 +53,34 @@ unmocked host **fails closed** with `UpstreamNotMocked` (a `RuntimeError` so
   its autouse `_reset` isolation block.
 - Only stub upstream **boundary functions** (e.g.
   `resolve_airport`, `asource_status`, `_load_raw`, `_download_and_extract`)
-  — never patch internals deeper, never spin up ad-hoc mock HTTP servers.
+  - never patch internals deeper, never spin up ad-hoc mock HTTP servers.
 - The catch-all proxy's upstreams (`kh.hu`, `erstemarket`, `frankfurter`)
   intentionally have no mock fixtures: proxy integration tests must swap
   `backend.main.http_client` for an `httpx.MockTransport` client.
+
+### Weather mock (synthetic ERA5 fields)
+
+The weather layer reads ERA5 fields from the ARCO Zarr store on GCS (about
+150 MB per 4D field, 45-60 s). In mock mode it does not: the reader is
+`backend/upstream_mock/weather.py` (`SyntheticEra5Reader`), and the render,
+import and results pipeline runs unchanged on its output.
+
+- The synthetic reader MUST keep the `FieldReader` contract of
+  `backend/weather/fields.py`: the store window grid (lat 33..71 N, lon -35..55 E,
+  0.25 degree, ascending, float32), the plot units (hPa, gpm, deg C, m/s), the
+  same field names, the 500 hPa and 250 hPa levels, and the same time checks
+  (`time_index`, so a fractional or out-of-store hour raises the same `ValueError`).
+- The fields MUST be deterministic and smooth (pressure lows and highs, a 250 hPa
+  jet, a slow eastward drift with time). They MUST NOT use randomness, the wall
+  clock or the network.
+- In mock mode `ArcoEra5Reader` MUST NOT be constructible: its constructor raises
+  `UpstreamNotMocked`. `default_reader()` returns the synthetic reader instead.
+  With the mode off, the GCS reader is used exactly as before.
+- A render or import under the mock SHOULD answer in well under a second (about
+  0.2 s measured); `backend/tests/test_weather_mock.py` asserts it stays under 5 s.
+- The weather refusals (`out_of_range`, `weather_too_long`, `result_not_found`, ...)
+  are declared as `responses` in `backend/weather/router.py`, so the OpenAPI
+  document matches what the schemathesis smoke sees.
 
 ## Boundary + equivalence-partition rules
 
@@ -83,7 +107,7 @@ PENPLOT_DATA_DIR=/tmp/fv-test REDIS_CLOUD_URL=redis://127.0.0.1:1/0 \
 PENPLOT_RATE_LIMIT=100000 PYTHONPATH=. \
 backend/.venv/bin/python -m pytest backend/tests/ -q
 
-# Schemathesis smoke (also what CI runs — starts its own mock-mode server):
+# Schemathesis smoke (also what CI runs - starts its own mock-mode server):
 ops/schemathesis-smoke.sh
 ```
 
@@ -111,5 +135,5 @@ and deterministically.
 
 The smoke is `max-failures`-capped and excludes only the catch-all proxy
 ительства (no mock upstreams by design). It exists to find whole
-request-shape bug classes example-based tests miss — it caught
+request-shape bug classes example-based tests miss - it caught
 `normalize_icao` 500 and the subnormal-speed `inf` 500 on day one.

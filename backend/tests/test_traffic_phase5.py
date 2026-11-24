@@ -14,11 +14,13 @@ import pytest
 
 from backend.traffic.aircraft import CATEGORIES, category_of
 from backend.traffic.classify import (
+    ALT,
     CLASSIFIER_VERSION,
+    GND,
     holding_span_s,
     runway_flow,
 )
-from backend.traffic.filters import Filters
+from backend.traffic.filters import Filters, low_runs
 from backend.traffic.filters import pen as pen_of
 from backend.traffic.schemas import RenderRequest
 from backend.traffic.stats import movement_stats
@@ -190,6 +192,21 @@ def test_pen_altitude_band_boundary():
     base = dict(t_from=999_000, t_to=999_000 + 86_400)
     assert pen_of(_mov(pts=pts), Filters(alt_max_agl_ft=7505, **base), AP) == "arrivals"
     assert pen_of(_mov(pts=pts), Filters(alt_max_agl_ft=7504, **base), AP) is None
+
+
+def test_low_runs_draws_only_the_part_below_the_ceiling():
+    pts = _along(130.0, 30.0, [8000.0, 8000.0, 2000.0, 2000.0, 8000.0, 1000.0, 0])
+    f = Filters(t_from=999_000, t_to=999_000 + 86_400, alt_max_agl_ft=3000)
+    runs = low_runs(pts, f, AP)
+    assert [len(r) for r in runs] == [2, 2]  # two low stretches, the climb-out between is dropped
+    assert all((0.0 if p[GND] else p[ALT] - ELEV) <= 3000 for r in runs for p in r)
+
+
+def test_low_runs_no_ceiling_or_no_airport_keeps_the_whole_track():
+    pts = _along(130.0, 30.0, [8000.0] * 3 + [0])
+    base = dict(t_from=999_000, t_to=999_000 + 86_400)
+    assert low_runs(pts, Filters(**base), AP) == [pts]
+    assert low_runs(pts, Filters(alt_max_agl_ft=3000, **base), ()) == [pts]
 
 
 def test_pen_altitude_band_local_traffic_falls_back():

@@ -12,27 +12,28 @@ import json
 from backend.airports.cache import (
     airports_cache_key,
     cache_get_many,
+    cache_set,
     cache_set_many,
 )
-from backend.airports.overpass import AEROWAY_CLASSES, CONTEXT_CLASSES
+from backend.airports.config import settings
+from backend.airports.overpass import CONTEXT_CLASSES
 from backend.airports.render import render_source_version
 from backend.airports.schemas import RenderRequest
+from backend.airports.sources import OVERTURE_BACKOFF_S, SOURCES_VERSION
 
-# P5: split outputs are cached independently of the render params (width/
-# minlen/zoom/layers/labels all render from the same aeroway/context rings).
-# Keys mirror the Overpass payload key (lat/lon/radius) so a slider change
-# with the same airport reuses the split and skips the per-render CPU. Bump
-# the version when split_aeroway/split_context semantics change.
+# P5: context split outputs are cached independently of the render params
+# (width/minlen/zoom/layers/labels all render from the same context rings).
+# Keys mirror the Overpass payload key (lat/lon/radius). The airfield core
+# is no longer split here: its geometry is cached as an AirfieldResult
+# (see backend.airports.fetching). Bump the version when split_context
+# semantics change.
 SPLIT_VERSION = "split-v1"
 
 
-def _split_keys(lat: float, lon: float, radius_m: float) -> tuple[str, str]:
+def _ctx_split_key(lat: float, lon: float, radius_m: float) -> str:
     center = f"{lat:.5f},{lon:.5f}"
     radius = f"r={radius_m:.0f}"
-    return (
-        airports_cache_key("split-aeroway", center, radius, SPLIT_VERSION),
-        airports_cache_key("split-ctx", center, radius, SPLIT_VERSION),
-    )
+    return airports_cache_key("split-ctx", center, radius, SPLIT_VERSION)
 
 
 def _unjson_geoms(geoms: dict, classes: list[str]) -> dict[str, list[list[tuple[float, float]]]]:
@@ -43,51 +44,31 @@ def _unjson_geoms(geoms: dict, classes: list[str]) -> dict[str, list[list[tuple[
 
 
 async def _load_cached_splits(
-    aer_key: str, ctx_key: str, wants_context: bool, warnings: list[str],
-) -> tuple[dict | None, dict | None, dict | None]:
-    """Cached ``(aeroway geoms, raw_counts, context geoms)`` or None entries."""
-    keys = [aer_key]
-    if wants_context:
-        keys.append(ctx_key)
-    found = await cache_get_many(keys)
-    aer_geoms = raw_counts = ctx_geoms = None
-    aer_json = found.get(aer_key)
-    if aer_json is not None:
-        try:
-            data = json.loads(aer_json)
-            aer_geoms = _unjson_geoms(data["geoms"], AEROWAY_CLASSES)
-            raw_counts = data["raw_counts"]
-        except (ValueError, KeyError, TypeError):
-            aer_geoms = raw_counts = None
-    if aer_geoms is not None:
-        warnings.append("aeroway_split_cache_hit")
-    if wants_context:
-        ctx_json = found.get(ctx_key)
-        if ctx_json is not None:
-            try:
-                ctx_geoms = _unjson_geoms(json.loads(ctx_json)["geoms"], CONTEXT_CLASSES)
-            except (ValueError, KeyError, TypeError):
-                ctx_geoms = None
-        if ctx_geoms is not None:
-            warnings.append("context_split_cache_hit")
-    return aer_geoms, raw_counts, ctx_geoms
+    ctx_key: str, wants_context: bool, warnings: list[str],
+) -> dict | None:
+    """Cached context geoms, or None when absent (or not wanted)."""
+    if not wants_context:
+        return None
+    found = await cache_get_many([ctx_key])
+    ctx_json = found.get(ctx_key)
+    if ctx_json is None:
+        return None
+    try:
+        ctx_geoms = _unjson_geoms(json.loads(ctx_json)["geoms"], CONTEXT_CLASSES)
+    except (ValueError, KeyError, TypeError):
+        return None
+    warnings.append("context_split_cache_hit")
+    return ctx_geoms
 
 
 async def _store_splits(
-    aer_key: str, ctx_key: str,
-    aer: tuple[dict[str, list[list[tuple[float, float]]]], dict[str, int]] | None,
+    ctx_key: str,
     ctx: dict[str, list[list[tuple[float, float]]]] | None,
 ) -> None:
-    items: dict[str, str] = {}
-    if aer is not None:
-        geoms, raw_counts = aer
-        items[aer_key] = json.dumps(
-            {"geoms": geoms, "raw_counts": raw_counts}, separators=(",", ":")
-        )
     if ctx is not None:
-        items[ctx_key] = json.dumps({"geoms": ctx}, separators=(",", ":"))
-    if items:
-        await cache_set_many(items)
+        await cache_set_many({
+            ctx_key: json.dumps({"geoms": ctx}, separators=(",", ":")),
+        })
 
 
 def _render_keys(icao: str, radius_m: float, body: RenderRequest) -> tuple[str, str]:
@@ -97,6 +78,11 @@ def _render_keys(icao: str, radius_m: float, body: RenderRequest) -> tuple[str, 
     reports. Without it an SVG hit had to re-fetch the Overpass payload and
     run a full ``render_diagram`` just to recover ``rotation``, throwing the
     rendered document away — the cache hit cost as much as a miss.
+
+    The airfield source is part of the key: toggling Overture, pinning
+    another release or bumping ``SOURCES_VERSION`` re-keys every diagram.
+    ``render_source_version`` only hashes ``render.py``, so it cannot see
+    those changes on its own.
     """
     parts = (
         icao, f"r={radius_m:.0f}",
@@ -105,6 +91,9 @@ def _render_keys(icao: str, radius_m: float, body: RenderRequest) -> tuple[str, 
         f"zoom={body.zoom}",
         f"tlabels={int(body.taxiway_labels)}",
         f"v={render_source_version()}",
+        f"overture={int(settings.overture_enabled)}",
+        f"release={settings.overture_release}",
+        f"sources={SOURCES_VERSION}",
     )
     return airports_cache_key("svg", *parts), airports_cache_key("meta", *parts)
 
@@ -148,12 +137,24 @@ async def _store_render(
     })
 
 
+async def _store_degraded_svg(svg_key: str, svg_text: str) -> None:
+    """Keep a degraded render's SVG for the ``svg_url`` link, briefly.
+
+    Only the SVG is written, with the Overture backoff as its TTL and no
+    metadata sidecar. ``get_result`` reads just the SVG key, so the link
+    resolves; ``_load_cached_render`` needs both keys, so the next render
+    request rebuilds instead of serving the degraded result as a hit.
+    """
+    await cache_set(svg_key, svg_text, ttl_s=int(OVERTURE_BACKOFF_S))
+
+
 __all__ = [
     "SPLIT_VERSION",
+    "_ctx_split_key",
     "_load_cached_render",
     "_load_cached_splits",
     "_render_keys",
-    "_split_keys",
+    "_store_degraded_svg",
     "_store_render",
     "_store_splits",
     "_unjson_geoms",

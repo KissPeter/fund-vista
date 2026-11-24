@@ -41,7 +41,7 @@ from dataclasses import replace
 from xml.sax.saxutils import escape
 
 from backend.traffic.corridors import corridor_keep
-from backend.traffic.filters import Filters, pen
+from backend.traffic.filters import Filters, low_runs, pen
 from backend.traffic.geo import clip_polyline, rdp
 
 #: Bump when renderer semantics change — part of the L4 SVG cache key so a
@@ -62,7 +62,10 @@ from backend.traffic.geo import clip_polyline, rdp
 #: r6: every pen is black on white (monochrome). Highways is its own layer
 #: switch (motorway + trunk) split off the Map layer, and the Map layer's
 #: water is limited to big lakes / named rivers.
-RENDER_VERSION = "r6"
+#: r7: the airfield basemap comes from the hybrid source (Overture + Overpass),
+#: degraded airfields are not cached and the airfield L3 key carries the
+#: Overture release and switch. Bumped so cached r6 renders expire.
+RENDER_VERSION = "r7"
 
 PENS = {  # layer id -> (label, stroke, width)   widths are in SVG user units of a 1000-wide canvas
     # Black on white only: layers are told apart by stroke width, not hue.
@@ -192,6 +195,34 @@ def expand_view_to_aspect(
     return (s2, n2, w, e)
 
 
+def crop_view_to_aspect(
+    view: tuple[float, float, float, float],
+    aspect: float,
+) -> tuple[float, float, float, float]:
+    """Shrink a view around its centre to ``aspect`` (width/height).
+
+    The counterpart of :func:`expand_view_to_aspect` for the residual its
+    clamp leaves: the day bbox is fixed (about 1.28:1 at mid latitudes), so a
+    wider page cannot be reached by growing. Cropping the long axis makes the
+    drawn data fill the canvas instead of letterboxing it. One axis shrinks:
+    whichever the ratio demands. A matching aspect is returned untouched.
+    """
+    s, n, w, e = view
+    kx = math.cos(math.radians((s + n) / 2))
+    span_x = (e - w) * kx
+    span_y = n - s
+    ratio = span_x / max(span_y, 1e-12)
+    if math.isclose(ratio, aspect, rel_tol=1e-9):
+        return view
+    if ratio < aspect:  # too tall -> keep the width, crop north-south
+        half = span_x / aspect / 2.0
+        mid = (s + n) / 2.0
+        return (mid - half, mid + half, w, e)
+    half = span_y * aspect / kx / 2.0  # too wide -> keep the height, crop east-west
+    mid = (w + e) / 2.0
+    return (s, n, mid - half, mid + half)
+
+
 def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, float, float],
                flt: Filters, airport: dict | None = None, width: float = 1000.0,
                include_map: bool = True, include_airport: bool = True,
@@ -259,12 +290,13 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
             counts[possible] += 1
         if layer is None:
             continue
-        xy = [proj.xy(p[1], p[2]) for p in f["pts"]]
         title = escape(" ".join(x for x in (f.get("flight") or f["hex"], f.get("type") or "") if x))
-        for seg in clip_polyline(rdp(xy, eps_trk), proj.width, proj.height):
-            if path_units(seg) < min_units:
-                continue  # sub-detail stub: invisible ink, real plot time
-            segs_by_layer[layer].append((seg, title))
+        for run in low_runs(f["pts"], flt, ag):
+            xy = [proj.xy(p[1], p[2]) for p in run]
+            for seg in clip_polyline(rdp(xy, eps_trk), proj.width, proj.height):
+                if path_units(seg) < min_units:
+                    continue  # sub-detail stub: invisible ink, real plot time
+                segs_by_layer[layer].append((seg, title))
     if airport and include_airport:  # marker so the airport stays findable at country zoom
         x, y = proj.xy(airport["lat"], airport["lon"])
         if 0 <= x <= proj.width and 0 <= y <= proj.height:
@@ -276,7 +308,7 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
             seg, title = arcs[i]
             layers[k].append('<path d="M%s"><title>%s</title></path>' % (" L".join("%.1f,%.1f" % q for q in seg), title))
     out = ['<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
-           'viewBox="0 0 %.0f %.0f" width="%.0fmm" height="%.0fmm">' % (proj.width, proj.height, proj.width * 0.3, proj.height * 0.3)]
+           'data-kp-fit="fill" viewBox="0 0 %.0f %.0f" width="%.0fmm" height="%.0fmm">' % (proj.width, proj.height, proj.width * 0.3, proj.height * 0.3)]
     for k in ORDER:
         if k in MAP_LAYERS and not include_map:
             continue

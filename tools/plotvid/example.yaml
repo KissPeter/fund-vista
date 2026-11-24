@@ -41,6 +41,8 @@ strokes:
 segment:
   min_s: 3
   max_s: 8
+  first_min_s: 10       # each clip opens with one take of first_min_s..first_max_s: no early cut
+  first_max_s: 14
   lead_short: [2, 3]    # start this many short strokes before a long one
   pre_roll: 0.15        # cut in this long before the first pen event
   post_roll: 0.25       # cut out this long after the closing pen event

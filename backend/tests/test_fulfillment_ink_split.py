@@ -1,4 +1,4 @@
-"""Fulfillment ink-split (fund-vista #147, shop #1079) — two layers.
+"""Fulfillment ink-split (fund-vista #147, shop #1079) - two layers.
 
 Unit (no server): the group-id → ink mapping, shared-color merging,
 empty-layer dropping, byte-preserving re-stroke and determinism, on
@@ -7,7 +7,7 @@ synthetic drafts shaped exactly like the renderer output (traffic r3
 / ``context-*`` / ``taxiway-labels`` groups).
 
 API (in-process uvicorn, per test_traffic_api.py / test_airports_api.py):
-the full fulfillment path over real HTTP — import mints ``image_id`` (=
+the full fulfillment path over real HTTP - import mints ``image_id`` (=
 ``design_id``), the token is signed with the shared test secret, the
 ink-split re-renders through the L4 cache, verifies the digest and
 splits. Traffic stubs its L1 store + basemap (no network); airports runs
@@ -28,7 +28,7 @@ os.environ.setdefault(
     "PENPLOT_DATA_DIR", tempfile.mkdtemp(prefix="penplot-fulfillment-")
 )
 os.environ["REDIS_CLOUD_URL"] = "redis://127.0.0.1:1/0"
-os.environ["PENPLOT_RATE_LIMIT"] = "100000"
+os.environ["DISABLE_RATELIMIT"] = "True"
 
 import httpx
 import pytest
@@ -199,6 +199,119 @@ def test_traffic_go_around_wire_id_maps_to_go_around_suffix():
     assert ink_split.TRAFFIC_WIRE_TO_SUFFIX["goAround"] == "go_around"
 
 
+# --------------------------------------------- unit: weather mapping ----
+
+WEATHER_LAYERS = ("coast", "borders", "streamlines", "isobars", "z500",
+                  "isotherms", "markers", "cities")
+
+
+def weather_draft(layers: tuple[str, ...] = WEATHER_LAYERS) -> str:
+    """A weather-shaped draft (weather/render.py ``_assemble``): one group per
+    layer, ``id`` and ``data-layer`` both the layer id, two paths each."""
+    out = [
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+        'viewBox="0 0 297 210" width="297mm" height="210mm">'
+    ]
+    for n, layer in enumerate(layers):
+        out.append(
+            f'<g id="{layer}" data-layer="{layer}" inkscape:groupmode="layer" '
+            f'inkscape:label="{layer}" fill="none" stroke="#000000" stroke-width="0.25" '
+            f'stroke-linejoin="round" stroke-linecap="round">'
+        )
+        out.append(f'<path d="M{n},0 L{n},10"/>')
+        out.append(f'<path d="M0,{n} L10,{n}"/>')
+        out.append("</g>")
+    out.append("</svg>")
+    return "\n".join(out) + "\n"
+
+
+def _weather_files(inks: dict[str, str] | None, pen: str = "black", draft: str | None = None):
+    def mapper(gid: str):
+        return ink_split.weather_group_ink(gid, pen, inks)
+
+    return ink_split.split_by_ink(draft or weather_draft(), mapper)
+
+
+def _path_lines(svg: str) -> list[str]:
+    import re
+
+    return re.findall(r'<path d="[^"]*"/>', svg)
+
+
+def test_weather_data_layers_take_their_own_ink():
+    files = _inks_of(_weather_files({
+        "streamlines": "red", "isobars": "blue", "isotherms": "red", "markers": "blue",
+    }))
+    assert sorted(files) == ["black", "blue", "red"]
+    assert sorted(files["red"].layers) == ["isotherms", "streamlines"]
+    assert sorted(files["blue"].layers) == ["isobars", "markers"]
+
+
+def test_weather_basemap_and_cities_always_ride_the_pen():
+    # Even when the buyer names an ink for them, coast/borders/cities stay Pen.
+    files = _inks_of(_weather_files({
+        "coast": "red", "borders": "red", "cities": "red", "streamlines": "blue",
+    }))
+    assert sorted(files) == ["black", "blue"]
+    # Unpicked data layers (isobars, z500, isotherms, markers) ride the Pen too.
+    assert sorted(files["black"].layers) == sorted(
+        ["borders", "cities", "coast", "isobars", "z500", "isotherms", "markers"])
+    assert files["blue"].layers == ["streamlines"]
+
+
+def test_weather_auto_resolves_to_the_pen_ink():
+    files = _inks_of(_weather_files({"z500": "auto", "isobars": "red"}, pen="blue"))
+    assert sorted(files) == ["blue", "red"]
+    assert "z500" in files["blue"].layers
+    assert files["red"].layers == ["isobars"]
+
+
+def test_weather_single_ink_gives_one_file():
+    files = _weather_files(None, pen="black")
+    assert len(files) == 1 and files[0].ink == "black"
+    assert files[0].layers == list(WEATHER_LAYERS)
+
+
+def test_weather_all_layers_on_one_chosen_ink_gives_one_file():
+    files = _weather_files({layer: "red" for layer in WEATHER_LAYERS if layer not in
+                            {"coast", "borders", "cities"}}, pen="red")
+    assert [f.ink for f in files] == ["red"]
+    assert len(files[0].layers) == len(WEATHER_LAYERS)
+
+
+def test_weather_layers_are_never_lost_or_duplicated():
+    """The union of the pass paths equals the input paths, each exactly once."""
+    draft = weather_draft()
+    files = _weather_files({
+        "streamlines": "red", "isobars": "blue", "z500": "green", "markers": "red",
+    })
+    union = sorted(line for f in files for line in _path_lines(f.svg))
+    assert union == sorted(_path_lines(draft))
+    layers = sorted(layer for f in files for layer in f.layers)
+    assert layers == sorted(WEATHER_LAYERS)
+
+
+def test_weather_passes_keep_the_sheet_viewbox_and_have_no_text_or_image():
+    for f in _weather_files({"streamlines": "red"}):
+        assert 'viewBox="0 0 297 210"' in f.svg
+        assert "<text" not in f.svg and "<image" not in f.svg
+
+
+def test_weather_unknown_layer_and_unknown_ink_are_refused_by_the_schema():
+    from pydantic import ValidationError
+
+    from backend.fulfillment.schemas import InkAssignment
+
+    with pytest.raises(ValidationError):
+        InkAssignment(pen="black", weather_layer_colors={"aurora": "red"})
+    with pytest.raises(ValidationError):
+        InkAssignment(pen="black", weather_layer_colors={"streamlines": "purple"})
+    with pytest.raises(ValidationError):
+        InkAssignment(pen="black", weather_layer_colors={"streamlines": "red"},
+                      unexpected=1)  # extra="forbid"
+
+
 # ---------------------------------------------- unit: split mechanics -------
 
 
@@ -299,7 +412,7 @@ def live():
 
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch, tmp_path):
-    """Mock edge, HMAC secret, caches — per test (shared module server)."""
+    """Mock edge, HMAC secret, caches - per test (shared module server)."""
     from backend import upstream_mock
     from backend.airports import cache as airports_cache
     from backend.fulfillment import router as fulfillment_router
@@ -308,7 +421,13 @@ def _reset(monkeypatch, tmp_path):
     from backend.traffic.store import FileSliceStore
     import backend.traffic.store as traffic_store
 
+    from backend.airports import sources
+
     upstream_mock.install()
+    # The Overture reader is replaced by a deterministic fake (no S3, no
+    # DuckDB); the outage window is cleared before and after every test.
+    monkeypatch.setattr(sources, "read_overture_airfield", lambda *a: [])
+    sources.reset_overture_state()
     # Settings is frozen: swap the module attribute for a copy with the
     # shared test secret (the subprocess conftest env does the same for the
     # session server).
@@ -322,6 +441,7 @@ def _reset(monkeypatch, tmp_path):
     monkeypatch.setattr(traffic_store, "default_store",
                         lambda: FileSliceStore(tmp_path / "traffic"))
     yield
+    sources.reset_overture_state()
     upstream_mock.uninstall()
 
 
@@ -617,7 +737,7 @@ def test_green_is_an_accepted_ink_everywhere():
 
 def test_ink_split_of_an_all_empty_draft_serves_no_files(live, monkeypatch):
     """Every layer unticked + nothing drawn: the split is an honest empty
-    list (200), not an error — there is nothing to plot."""
+    list (200), not an error - there is nothing to plot."""
     from backend.fulfillment.ink_split import design_id_for
 
     empty_layers = "\n".join([
@@ -638,3 +758,319 @@ def test_ink_split_of_an_all_empty_draft_serves_no_files(live, monkeypatch):
     })
     assert resp.status_code == 200, resp.text
     assert resp.json()["files"] == []
+
+
+# ------------------------------------------- stored design first (fallback) --
+#
+# The purchased design's own bytes are read from the image store before any
+# re-render. These tests pin that order: a re-render that would raise must not
+# run while the stored copy is intact, and every failure of the stored copy
+# falls back to the unchanged re-render path.
+
+STORED_MARK = "fulfilled_from_stored_design"
+
+
+def _no_rerender(monkeypatch):
+    """Any re-render is a loud failure: the stored path must never call it."""
+    async def _boom(*args, **kwargs):
+        raise AssertionError("render_document ran although the stored design is intact")
+
+    monkeypatch.setattr("backend.traffic.router.render_document", _boom)
+    monkeypatch.setattr("backend.airports.router.render_document", _boom)
+    monkeypatch.setattr("backend.weather.service.render", _boom)
+
+
+WEATHER_BODY = {"date": "2005-05-20", "time": 12, "layers": list(WEATHER_LAYERS)}
+
+
+def _stub_weather(monkeypatch):
+    """Offline weather: the fixture field reader and geography (no network)."""
+    from backend.tests.weather_render_fixtures import FakeReader, fixture_geo
+    from backend.weather import cache as weather_cache
+    from backend.weather import service
+    from backend.weather.fields import load_subset as real_load_subset
+
+    reader = FakeReader()
+
+    async def fake_load_subset(when, region, _reader, fields):
+        return await real_load_subset(when, region, reader, fields)
+
+    monkeypatch.setattr(service, "load_subset", fake_load_subset)
+    monkeypatch.setattr(service, "load_geography", lambda: fixture_geo())
+    weather_cache.configure_weather_redis(None)
+
+
+def _order(live, monkeypatch, tmp_path, kind: str) -> tuple[str, dict]:
+    """Import one design of ``kind``; return (design_id, ink-split request)."""
+    import datetime as _dt
+
+    if kind == "traffic":
+        day = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).date().isoformat()
+        _seed_l1(str(tmp_path / "traffic"), day)
+        _stub_traffic(monkeypatch)
+        params = _traffic_params(day)
+        imported = live.post("/v1/traffic/import", json=params)
+        request = {
+            "kind": "traffic", "params": {"kind": "traffic", **params},
+            "inks": {"pen": "black", "layer_colors": {"departures": "red"}},
+        }
+    elif kind == "weather":
+        _stub_weather(monkeypatch)
+        imported = live.post("/v1/weather/import", json=WEATHER_BODY)
+        request = {
+            "kind": "weather", "params": {"kind": "weather", **WEATHER_BODY},
+            "inks": {"pen": "black", "weather_layer_colors": {
+                "streamlines": "red", "isobars": "blue", "isotherms": "auto",
+            }},
+        }
+    else:
+        imported = live.post("/v1/airports/import", json={"icao": "LHBP"})
+        request = {
+            "kind": "airport", "params": {"icao": "LHBP"},
+            "inks": {"pen": "black", "runway": "red"},
+        }
+    assert imported.status_code == 200, imported.text
+    design_id = imported.json()["image_id"]
+    return design_id, {"design": _mint(design_id), **request}
+
+
+def _stored_path(design_id: str) -> str:
+    from backend.penplot.router import store as penplot_store
+
+    path = penplot_store.find_image(design_id)
+    assert path is not None, "the import should have stored the design"
+    return path
+
+
+KINDS = ["traffic", "airport", "weather"]
+#: Kinds whose missing or damaged stored copy may be re-rendered. Weather never
+#: re-renders (ERA5T values are revised after purchase): see the weather tests.
+RERENDER_KINDS = ["traffic", "airport"]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_stored_design_is_split_without_rerendering(live, monkeypatch, tmp_path, kind):
+    """(a) The intact stored design is split; no renderer or upstream runs."""
+    design_id, request = _order(live, monkeypatch, tmp_path, kind)
+    _no_rerender(monkeypatch)
+
+    resp = live.post("/v1/fulfill/ink-split", json=request)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["design_id"] == design_id and body["kind"] == kind
+    assert body["cache_hit"] is True
+    assert body["warnings"] == [STORED_MARK]
+    assert body["files"], "the stored design has drawn layers"
+    assert all(f["svg"].startswith("<svg") for f in body["files"])
+    expected = {"traffic": "adsb.lol", "airport": "OpenStreetMap"}.get(kind, "")
+    if kind == "weather":
+        from backend.weather.config import ATTRIBUTION as WEATHER_ATTRIBUTION
+
+        assert body["attribution"] == WEATHER_ATTRIBUTION
+    else:
+        assert expected in body["attribution"]
+
+
+@pytest.mark.parametrize("kind", RERENDER_KINDS)
+@pytest.mark.parametrize("corruption", ["other_svg", "not_utf8"])
+def test_corrupt_stored_design_falls_back_to_rerender(
+        live, monkeypatch, tmp_path, kind, corruption):
+    """(b) A stored file whose bytes fail the hash check (or are not UTF-8)
+    is ignored: the re-render serves the order, without the stored marker."""
+    design_id, request = _order(live, monkeypatch, tmp_path, kind)
+    path = _stored_path(design_id)
+    with open(path, "rb") as fh:
+        original = fh.read()
+    corrupt = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>'
+        if corruption == "other_svg" else b"\xff\xfe\x00 not text"
+    )
+    try:
+        with open(path, "wb") as fh:
+            fh.write(corrupt)
+        resp = live.post("/v1/fulfill/ink-split", json=request)
+    finally:
+        # The store is content-addressed: restore the bytes for later tests.
+        with open(path, "wb") as fh:
+            fh.write(original)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert STORED_MARK not in body["warnings"]
+    assert body["files"]
+
+
+def _read(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _write(path: str, data: bytes) -> None:
+    with open(path, "wb") as fh:
+        fh.write(data)
+
+
+@pytest.mark.parametrize("kind", RERENDER_KINDS)
+def test_no_stored_design_rerenders_and_mismatch_is_still_409(
+        live, monkeypatch, tmp_path, kind):
+    """(c) With no stored copy the re-render path runs as before; a draft that
+    does not hash to the design_id is still refused with 409 design_mismatch."""
+    design_id, request = _order(live, monkeypatch, tmp_path, kind)
+    path = _stored_path(design_id)
+    original = _read(path)
+    try:
+        os.remove(path)
+        resp = live.post("/v1/fulfill/ink-split", json=request)
+        mismatch = live.post("/v1/fulfill/ink-split", json={
+            **request, "design": _mint("b" * 64),
+        })
+    finally:
+        # Shared, content-addressed store: put the purchased bytes back.
+        _write(path, original)
+    assert resp.status_code == 200, resp.text
+    assert STORED_MARK not in resp.json()["warnings"]
+    assert resp.json()["files"]
+    assert mismatch.status_code == 409, mismatch.text
+    assert mismatch.json()["error"]["code"] == "design_mismatch"
+
+
+@pytest.mark.parametrize("kind", RERENDER_KINDS)
+def test_non_svg_stored_design_falls_back(live, monkeypatch, tmp_path, kind):
+    """(d) A stored copy that is not an SVG file is never used, even when its
+    bytes would hash back to the design: the re-render serves the order."""
+    design_id, request = _order(live, monkeypatch, tmp_path, kind)
+    path = _stored_path(design_id)
+    png = path[: -len(".svg")] + ".png"
+    os.replace(path, png)
+    try:
+        resp = live.post("/v1/fulfill/ink-split", json=request)
+    finally:
+        os.replace(png, path)
+    assert resp.status_code == 200, resp.text
+    assert STORED_MARK not in resp.json()["warnings"]
+    assert resp.json()["files"]
+
+
+def test_stored_design_name_is_not_trusted(live, monkeypatch, tmp_path):
+    """The file name only selects a candidate. Real swap: the airport design's
+    file is renamed onto the traffic design's id. The digest check refuses it
+    and the traffic order is re-rendered; the renamed file is not used."""
+    from backend.fulfillment import router as fulfillment_router
+
+    airport_id, _ = _order(live, monkeypatch, tmp_path, "airport")
+    traffic_id, traffic_req = _order(live, monkeypatch, tmp_path, "traffic")
+    a_path, b_path = _stored_path(airport_id), _stored_path(traffic_id)
+    a_bytes, b_bytes = _read(a_path), _read(b_path)
+    assert a_bytes != b_bytes
+    try:
+        os.replace(a_path, b_path)  # airport bytes now sit under the traffic id
+        assert fulfillment_router._stored_design_svg(traffic_id) is None
+        resp = live.post("/v1/fulfill/ink-split", json=traffic_req)
+    finally:
+        _write(a_path, a_bytes)
+        _write(b_path, b_bytes)
+    assert resp.status_code == 200, resp.text
+    assert STORED_MARK not in resp.json()["warnings"]
+    assert resp.json()["files"]
+
+
+def test_stored_design_is_served_despite_schema_drift(live, monkeypatch, tmp_path):
+    """Stored design + persisted params that no longer match the render schema
+    -> still 200 from the intact stored design (no re-render, no 422)."""
+    design_id, request = _order(live, monkeypatch, tmp_path, "airport")
+    _no_rerender(monkeypatch)
+    request["params"] = {"icao": "LHBP", "retired_field": 1}
+    resp = live.post("/v1/fulfill/ink-split", json=request)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["warnings"] == [STORED_MARK]
+    assert resp.json()["design_id"] == design_id
+
+
+def test_no_stored_design_and_bad_params_is_422(live):
+    """Without a stored copy the params are validated as before: 422."""
+    resp = live.post("/v1/fulfill/ink-split", json={
+        "design": _mint("a" * 64), "kind": "airport",
+        "params": {"icao": "LHBP", "retired_field": 1},
+        "inks": {"pen": "black"},
+    })
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "invalid_params"
+
+
+def test_weather_ink_split_over_http(live, monkeypatch, tmp_path):
+    """Import → token → split: one file per distinct ink, sha256 = design_id."""
+    design_id, request = _order(live, monkeypatch, tmp_path, "weather")
+    resp = live.post("/v1/fulfill/ink-split", json=request)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["design_id"] == design_id and body["kind"] == "weather"
+    assert _digest_of(_stored_path(design_id)) == design_id
+    inks = {f["ink"]: f for f in body["files"]}
+    assert sorted(inks) == ["black", "blue", "red"]
+    assert "streamlines" in inks["red"]["layers"]
+    assert "isobars" in inks["blue"]["layers"]
+    assert "coast" in inks["black"]["layers"]
+    assert all("<text" not in f["svg"] and "<image" not in f["svg"] for f in body["files"])
+
+
+def _digest_of(path: str) -> str:
+    return ink_split.design_id_for(_read(path).decode("utf-8"))
+
+
+def test_weather_unknown_ink_and_layer_are_422_over_http(live):
+    base = {"design": _mint("a" * 64), "kind": "weather", "params": WEATHER_BODY}
+    unknown_ink = live.post("/v1/fulfill/ink-split", json={
+        **base, "inks": {"pen": "black", "weather_layer_colors": {"streamlines": "purple"}},
+    })
+    unknown_layer = live.post("/v1/fulfill/ink-split", json={
+        **base, "inks": {"pen": "black", "weather_layer_colors": {"aurora": "red"}},
+    })
+    assert unknown_ink.status_code == 422, unknown_ink.text
+    assert unknown_layer.status_code == 422, unknown_layer.text
+
+
+@pytest.mark.parametrize("damage", ["missing", "other_svg"])
+def test_weather_never_rerenders_without_an_intact_copy(live, monkeypatch, tmp_path, damage):
+    """A paid weather order whose retained copy is gone answers 410 and never
+    re-renders: a re-render hashes differently after ERA5T revisions."""
+    design_id, request = _order(live, monkeypatch, tmp_path, "weather")
+    _no_rerender(monkeypatch)
+    path = _stored_path(design_id)
+    original = _read(path)
+    try:
+        if damage == "missing":
+            os.remove(path)
+        else:
+            _write(path, b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>')
+        resp = live.post("/v1/fulfill/ink-split", json=request)
+    finally:
+        _write(path, original)
+    assert resp.status_code == 410, resp.text
+    assert resp.json()["error"]["code"] == "weather_design_unavailable"
+
+
+def test_weather_import_is_retained_for_the_order_window(live, monkeypatch, tmp_path):
+    """The weather import promotes its copy to the retained TTL (90 days)."""
+    from backend.penplot.router import store as penplot_store
+
+    design_id, _ = _order(live, monkeypatch, tmp_path, "weather")
+    assert penplot_store.is_retained(_stored_path(design_id))
+
+
+def test_weather_pen_only_layer_key_is_422_over_http(live):
+    resp = live.post("/v1/fulfill/ink-split", json={
+        "design": _mint("a" * 64), "kind": "weather", "params": WEATHER_BODY,
+        "inks": {"pen": "black", "weather_layer_colors": {"coast": "red"}},
+    })
+    assert resp.status_code == 422, resp.text
+
+
+def test_weather_pen_only_layer_key_is_refused_by_the_schema():
+    from pydantic import ValidationError
+
+    from backend.fulfillment.schemas import InkAssignment
+
+    for layer in ("coast", "borders", "cities"):
+        with pytest.raises(ValidationError):
+            InkAssignment(pen="black", weather_layer_colors={layer: "red"})
+    InkAssignment(pen="black", weather_layer_colors={"streamlines": "red"})  # allowed
+

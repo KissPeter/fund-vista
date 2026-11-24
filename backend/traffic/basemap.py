@@ -13,15 +13,18 @@ the caller records which layers failed and answers with a
 
 from __future__ import annotations
 
+import contextvars
 import json
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from backend.airports.overpass import (
     AirportOverpassError,
-    build_airport_query,
     fetch_airport_polygons,
-    split_aeroway,
 )
+from backend.airports.config import settings as airports_settings
+from backend.airports.sources import SOURCES_VERSION, is_degraded, load_airfield
 from backend.traffic import cache as _cache
 
 LAYERS = ("country", "motorways", "waterways", "water", "airfield")
@@ -149,26 +152,80 @@ def polylines(elements: list[dict]) -> list[list[list[float]]]:
 
 
 def layer_key(layer: str, view: BBox) -> str:
-    """L3 cache key for one basemap layer over a quantised view."""
-    return _cache.traffic_cache_key("osm2", layer, "%.3f,%.3f,%.3f,%.3f" % quantise(view))
+    """L3 cache key for one basemap layer over a quantised view.
+
+    The airfield layer also keys on the Overture switch, the pinned release
+    and the source version, so a toggle or a release bump re-keys it. The
+    other layers do not depend on the airfield source and keep their keys.
+    """
+    parts = ["%.3f,%.3f,%.3f,%.3f" % quantise(view)]
+    if layer == "airfield":
+        parts += [
+            f"overture={int(airports_settings.overture_enabled)}",
+            f"release={airports_settings.overture_release}",
+            f"sources={SOURCES_VERSION}",
+        ]
+    return _cache.traffic_cache_key("osm3", layer, *parts)
+
+
+async def _fetch_layer_checked(
+    layer: str, view: BBox, lat: float, lon: float,
+) -> tuple[list, bool]:
+    """One layer's polylines, and whether they may be written to L3.
+
+    A degraded airfield (Overture or the terminal/hangar layers missing) is
+    returned for this render only and is not cached.
+    """
+    if layer == "country":
+        return polylines(await fetch_airport_polygons(country_query(view))), True
+    if layer == "motorways":
+        return polylines(await fetch_airport_polygons(motorway_query(view))), True
+    if layer == "waterways":
+        return polylines(await fetch_airport_polygons(waterway_query(view))), True
+    if layer == "water":
+        return polylines(big_water(await fetch_airport_polygons(water_query(view)))), True
+    airfield = await load_airfield(lat, lon, AIRFIELD_RADIUS_M)
+    # runways/taxiways/aprons/terminals only (stands, hangars and stopways
+    # are poster clutter at traffic-map scale — POC decision, kept).
+    lines = [[list(p) for p in ring] for cls in ("runway", "taxiway", "apron", "terminal")
+             for ring in airfield.geoms.get(cls, [])]
+    return lines, not is_degraded(airfield.warnings)
 
 
 async def _fetch_layer(layer: str, view: BBox, lat: float, lon: float) -> list:
-    if layer == "country":
-        return polylines(await fetch_airport_polygons(country_query(view)))
-    if layer == "motorways":
-        return polylines(await fetch_airport_polygons(motorway_query(view)))
-    if layer == "waterways":
-        return polylines(await fetch_airport_polygons(waterway_query(view)))
-    if layer == "water":
-        return polylines(big_water(await fetch_airport_polygons(water_query(view))))
-    geoms, _counts = split_aeroway(
-        await fetch_airport_polygons(build_airport_query(lat, lon, AIRFIELD_RADIUS_M))
-    )
-    # runways/taxiways/aprons/terminals only (stands, hangars and stopways
-    # are poster clutter at traffic-map scale — POC decision, kept).
-    return [[list(p) for p in ring] for cls in ("runway", "taxiway", "apron", "terminal")
-            for ring in geoms.get(cls, [])]
+    lines, _cacheable = await _fetch_layer_checked(layer, view, lat, lon)
+    return lines
+
+
+#: Request-scoped sink for airfield layers that were served or failed but not
+#: cached in this render. ``load_basemap`` appends to it; a caller opens one
+#: with :func:`collect_uncached_layers` and reads it after the load. Kept off
+#: the return value so ``load_basemap`` keeps its ``(base, failed)`` shape.
+_uncached_layers: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "basemap_uncached_layers", default=None)
+
+
+@contextmanager
+def collect_uncached_layers() -> Iterator[list[str]]:
+    """Yield the list that receives the layers ``load_basemap`` did not cache."""
+    sink: list[str] = []
+    token = _uncached_layers.set(sink)
+    try:
+        yield sink
+    finally:
+        _uncached_layers.reset(token)
+
+
+def _mark_uncached(layer: str) -> None:
+    """Note an airfield layer that this render uses but must not cache.
+
+    Only the airfield matters to the caller: its SVG depends on the airfield
+    source, which may be degraded (Overture or the terminal/hangar layers
+    missing) or down. The other layers keep the existing store behaviour.
+    """
+    sink = _uncached_layers.get()
+    if sink is not None and layer == "airfield":
+        sink.append(layer)
 
 
 async def load_basemap(view: BBox, lat: float, lon: float,
@@ -177,7 +234,9 @@ async def load_basemap(view: BBox, lat: float, lon: float,
 
     L3-first per layer; misses fetch from Overpass (mirror failover inside)
     and populate the cache. A failed layer comes back empty and is named in
-    ``failed`` — the caller warns, never fails the render.
+    ``failed`` — the caller warns, never fails the render. A degraded airfield
+    is returned for this render only; it is reported through
+    :func:`collect_uncached_layers`, not through ``failed``.
     """
     base: dict[str, list] = {k: [] for k in LAYERS}
     failed: list[str] = []
@@ -196,14 +255,19 @@ async def load_basemap(view: BBox, lat: float, lon: float,
         todo[k] = keys[k]
     for k, key in todo.items():
         try:
-            lines = await _fetch_layer(k, quantise(view), lat, lon)
+            lines, cacheable = await _fetch_layer_checked(k, quantise(view), lat, lon)
         except AirportOverpassError:
             failed.append(k)
+            _mark_uncached(k)
             continue
         except Exception:
             failed.append(k)
+            _mark_uncached(k)
             continue
         base[k] = lines
+        if not cacheable:
+            _mark_uncached(k)
+            continue
         try:
             await _cache.cache_set(key, json.dumps(lines, separators=(",", ":")))
         except Exception:
@@ -217,6 +281,7 @@ __all__ = [
     "SNAP_DEG",
     "WATER_MIN_KM2",
     "big_water",
+    "collect_uncached_layers",
     "water_area_km2",
     "country_query",
     "layer_key",

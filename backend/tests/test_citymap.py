@@ -445,7 +445,7 @@ def test_load_raw_falls_back_to_osm_api_on_overpass_outage():
     from backend.citymap.overpass import OverpassError
 
     async def scenario():
-        async def boom(_query, _client=None):
+        async def boom(_query, _client=None, **_kw):
             raise OverpassError("mirror1 504; mirror2 504")
 
         async def fallback(_bbox, _client=None):
@@ -486,7 +486,7 @@ def test_load_raw_502_when_both_upstreams_fail():
     from backend.citymap.overpass import OverpassError
 
     async def scenario():
-        async def boom(_query, _client=None):
+        async def boom(_query, _client=None, **_kw):
             raise OverpassError("all mirrors 504")
 
         async def bust(_bbox, _client=None):

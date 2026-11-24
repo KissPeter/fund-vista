@@ -35,7 +35,7 @@ import time
 
 os.environ.setdefault("PENPLOT_DATA_DIR", tempfile.mkdtemp(prefix="penplot-orphan-"))
 os.environ["REDIS_CLOUD_URL"] = "redis://127.0.0.1:1/0"
-os.environ["PENPLOT_RATE_LIMIT"] = "100000"
+os.environ["DISABLE_RATELIMIT"] = "True"
 
 import pytest
 from fastapi.testclient import TestClient

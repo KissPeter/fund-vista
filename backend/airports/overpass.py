@@ -274,7 +274,16 @@ async def fetch_airport_polygons(
     citymap (failover, 429 parking, retries, logging) with airports
     settings and the same ``overpass_max_concurrent`` cap. Raises
     :class:`AirportOverpassError` when every mirror fails.
+
+    The local extract (``backend.osm_local``, the one citymap uses) answers
+    first when it can do so faithfully: an ``around`` query inside its
+    coverage. Anything else goes to the mirrors unchanged.
     """
+    from backend.osm_local.service import fetch_local_geom
+
+    local = await fetch_local_geom(query)
+    if local is not None:
+        return local
     cfg = OverpassConfig(
         urls=tuple(settings.overpass_urls),
         user_agent=settings.user_agent,

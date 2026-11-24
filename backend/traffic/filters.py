@@ -106,3 +106,28 @@ def _low_enough(f: dict, flt: Filters, airport: tuple[float, float, float]) -> b
     if not pool:
         return True  # point-less movement draws nothing either way; don't hide it for altitude
     return min(0.0 if p[GND] else p[ALT] - elev for p in pool) <= flt.alt_max_agl_ft
+
+
+def low_runs(pts: list, flt: Filters, airport: tuple[float, float, float]) -> list[list]:
+    """Altitude ceiling, drawn: the runs of ``pts`` at or below the band.
+
+    ``pen`` only keeps or drops whole movements, so a 3000 ft ceiling drew
+    every approach and departure in full and looked like a no-op. With a
+    ceiling set, only the low part of each track is drawn (the noise map the
+    control promises); a movement that rises above the band and comes back
+    yields several runs. No ceiling, or no field elevation: the whole track.
+    """
+    if flt.alt_max_agl_ft is None or len(airport) != 3:
+        return [pts]
+    elev = airport[2]
+    runs: list[list] = []
+    cur: list = []
+    for p in pts:
+        if (0.0 if p[GND] else p[ALT] - elev) <= flt.alt_max_agl_ft:
+            cur.append(p)
+        elif cur:
+            runs.append(cur)
+            cur = []
+    if cur:
+        runs.append(cur)
+    return runs

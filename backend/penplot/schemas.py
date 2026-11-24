@@ -29,7 +29,7 @@ Orientation = Literal["portrait", "landscape"]
 
 # Display-only pen color (physical pen). Allowlist enforced by
 # backgrounds.LINE_COLORS at render time; any value here must be a key there.
-LineColorName = Literal["black", "white", "red", "blue", "green"]
+LineColorName = Literal["black", "white", "red", "blue", "green", "pink"]
 # Display-only page background (paper texture preview). Vendored files in
 # backend/penplot/backgrounds/ (white e-commerce frames pre-trimmed);
 # "none" is plain paper. Independent of line_color - any combination works.
@@ -41,7 +41,7 @@ class PageParams(BaseModel):
 
     size: PageSizeName = "A4"
     orientation: Orientation = "portrait"
-    margin_mm: float = Field(default=10.0, ge=0.0, le=50.0)
+    margin_mm: float = Field(default=10.0, ge=10.0, le=30.0)
     padding_mm: float = Field(
         default=5.0, ge=0.0, le=20.0,
         description="Internal padding inside the margin/frame; artwork never touches the border.",
@@ -60,10 +60,12 @@ class PageParams(BaseModel):
     )
 
 
-LabelAlign = Literal["left", "right", "fill"]
+LabelAlign = Literal["left", "center", "right", "fill"]
 #: Where the title sits: ``inside`` the border (band, default) or outside it,
 #: ``below`` or ``above`` the page (frame gives up the strip, sheet stays A4).
 LabelPlacement = Literal["inside", "below", "above"]
+#: Wire cap per ``label.lines`` entry; matches the shop's page-title budget.
+MAX_LABEL_LINE_CHARS = 52
 LabelFont = Literal[
     "znikoslsvginot", "futural", "futuram", "simplex",
     "excalifont", "comic-shanns", "nunito",
@@ -104,9 +106,9 @@ class LabelParams(BaseModel):
     lines: list[str] | None = Field(
         default=None,
         description=(
-            "Title, then optional subtitle (at most two lines, 41 characters "
-            "each). When set it replaces ``text``; the subtitle is drawn smaller "
-            "outside the border and after ' - ' inside it."
+            f"Title, then optional subtitle (at most two lines, {MAX_LABEL_LINE_CHARS} "
+            "characters each). When set it replaces ``text``; the subtitle is "
+            "drawn smaller outside the border and after ' - ' inside it."
         ),
     )
     border: bool = Field(
@@ -132,8 +134,10 @@ class LabelParams(BaseModel):
         if len(value) > 2:
             raise ValueError("at most two lines (title, subtitle)")
         for line in value:
-            if len(line) > 41:
-                raise ValueError("a label line is at most 41 characters")
+            if len(line) > MAX_LABEL_LINE_CHARS:
+                raise ValueError(
+                    f"a label line is at most {MAX_LABEL_LINE_CHARS} characters"
+                )
             if _CONTROL_CHARS.search(line):
                 raise ValueError("control characters are not allowed in label lines")
         return value
@@ -392,6 +396,31 @@ class ConvertParams(BaseModel):
             "supersampled long side stays within the server's pixel cap."
         ),
     )
+    runway_ink_group: bool = Field(
+        default=False,
+        description=(
+            "Vector SVG inputs only (plain contour): keep the artwork of the "
+            "airport draft's runway layer groups (runways, osm-runways, runway) "
+            "in a second <g id=\"runway-ink\"> of the result, so a client can "
+            "recolour the runway without guessing it back from geometry. The "
+            "other ink stays in the first group; geometry and layout are "
+            "unchanged. Ignored for other inputs and methods."
+        ),
+    )
+    layer_groups: bool = Field(
+        default=False,
+        description=(
+            "Vector SVG inputs only (plain contour): keep each of the "
+            "artwork's renderer layer groups (``<g id=\"traffic-...\">``: "
+            "arrivals, departures, holding, go_around, map layers) as its own "
+            "``<g id=\"traffic-...\" inkscape:groupmode=\"layer\">`` of the "
+            "result instead of merging everything into one group. Geometry "
+            "and layout are unchanged; page furniture stays in the first "
+            "group. The shop's 3D city view groups ``buildings`` and ``map`` are "
+            "kept the same way. Ignored for other inputs and methods, and when "
+            "runway_ink_group is set."
+        ),
+    )
     strip_frame: bool = Field(
         default=False,
         description=(
@@ -501,6 +530,15 @@ class SegmentsStats(BaseModel):
     after: int
 
 
+class LayerStats(BaseModel):
+    """One kept layer group of a convert (``layer_groups``): its own strokes
+    and pen-down length, so a client can price or report each layer."""
+
+    id: str
+    strokes: int
+    pen_down_mm: float
+
+
 class ConvertStats(BaseModel):
     points: PointsStats
     segments: SegmentsStats
@@ -508,6 +546,9 @@ class ConvertStats(BaseModel):
     pen_down_mm: float
     pen_up_mm: float
     estimated_time_s: float
+    #: Per kept layer group, in document order; ``None`` unless ``layer_groups``
+    #: split the result (the totals above always cover every layer).
+    layers: list[LayerStats] | None = None
 
 
 class ConvertResponse(BaseModel):
@@ -649,11 +690,48 @@ class ComposeSheetRequest(BaseModel):
     )
     ink_hex: str = Field(default="#1a1a1a", pattern=r"^#[0-9a-fA-F]{6}$")
     layout: ComposeLayout = Field(default_factory=ComposeLayout)
-    lines: list[Annotated[str, StringConstraints(max_length=41)]] = Field(
+    lines: list[Annotated[str, StringConstraints(max_length=MAX_LABEL_LINE_CHARS)]] = Field(
         default_factory=list, max_length=2,
         description="Title then subtitle. Blank entries are dropped.",
     )
     context_table: ComposeContextTable = Field(default_factory=ComposeContextTable)
+    artwork: Literal["image", "inline"] = Field(
+        default="image",
+        description=(
+            "How the artwork is embedded. image: one base64 <image> (the preview). "
+            "inline: the artwork's own vector markup in one transformed <g>, "
+            "plottable; the sheet then carries no <image> and no <text>. Refused "
+            "(422): script, style, animation, external or escaped url(), "
+            "clip-path, mask, markers, and artwork that reaches past its box."
+        ),
+    )
+    preview: Literal["svg", "png"] = Field(
+        default="svg",
+        description=(
+            "Output format. svg: the composed sheet (default, unchanged). png: the "
+            "same sheet rasterized at a server-fixed size (fitted in 3840 x 2160, aspect "
+            "kept); the response is image/png with an X-Preview-Url header. The "
+            "order file never uses png."
+        ),
+    )
+    pen: str | None = Field(
+        default=None, pattern=r"^#[0-9a-fA-F]{6}$",
+        description=(
+            "Pen colour. Baked into the artwork's solid paint and the sheet's "
+            "furniture; absent keeps ink_hex for the furniture and the artwork's own paint."
+        ),
+    )
+    paper: str | None = Field(
+        default=None, pattern=r"^#[0-9a-fA-F]{6}$",
+        description="Paper colour, the PNG canvas background (default #ffffff). Ignored by svg.",
+    )
+    runway: str | None = Field(
+        default=None, pattern=r"^#[0-9a-fA-F]{6}$",
+        description=(
+            "Runway colour, baked into the artwork elements whose id contains "
+            "'runway'. Absent: those elements take pen."
+        ),
+    )
 
     @model_validator(mode="after")
     def _no_control_chars(self) -> ComposeSheetRequest:

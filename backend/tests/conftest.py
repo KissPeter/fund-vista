@@ -1,9 +1,9 @@
 """Live-server fixtures: REAL HTTP over a socket, no FastAPI TestClient.
 
 A separate uvicorn *subprocess* is spawned per test session on an ephemeral
-port and driven with httpx over 127.0.0.1. This exercises the full stack —
+port and driven with httpx over 127.0.0.1. This exercises the full stack -
 ASGI server, multipart parsing, routing order vs. the catch-all proxy,
-error handlers — exactly as production serves it.
+error handlers - exactly as production serves it.
 
 Point PENPLOT_DATA_DIR at a tmp dir so tests never touch real data.
 """
@@ -70,10 +70,10 @@ def live_server(tmp_path_factory: pytest.TempPathFactory):
     # rate limiter onto its in-process fallback so windows can't leak between
     # test runs.
     env["REDIS_CLOUD_URL"] = "redis://127.0.0.1:1/0"
-    # The full suite makes well under 100k requests/min; force the limiter
-    # off so tests never trip 429 accidentally (see test_penplot_ratelimit.py
+    # Rate limiting genuinely off (affilio's DISABLE_RATELIMIT switch) so
+    # tests never trip 429 accidentally (see test_penplot_ratelimit.py
     # for a dedicated low-limit server exercising the 429 path).
-    env["PENPLOT_RATE_LIMIT"] = "100000"
+    env["DISABLE_RATELIMIT"] = "True"
     # Shop bridge signing key so token endpoints exercise the real HMAC path
     # (see backend/tests/helpers.py TEST_HMAC_SECRET).
     env["PENPIXEL_HMAC_SECRET"] = TEST_HMAC_SECRET
@@ -113,3 +113,30 @@ def _reset_overpass_mirror_parks():
     overpass_mirrors.reset()
     yield
     overpass_mirrors.reset()
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-perf", action="store_true", default=False,
+        help="Run performance-budget tests (skipped by default on the shared CI runner).",
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "perf: performance-budget tests (run with --run-perf)")
+    config.addinivalue_line(
+        "markers", "network: live call to an external store; skipped unless selected with -m network"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip perf budgets unless --run-perf, and network tests unless -m network."""
+    if not config.getoption("--run-perf"):
+        skip_perf = pytest.mark.skip(reason="performance-budget test; run with --run-perf")
+        for item in items:
+            if "perf" in item.keywords:
+                item.add_marker(skip_perf)
+    if "network" not in (config.getoption("-m") or ""):
+        skip_network = pytest.mark.skip(reason="live network test; run with -m network")
+        for item in items:
+            if "network" in item.keywords:
+                item.add_marker(skip_network)

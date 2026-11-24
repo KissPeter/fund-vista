@@ -357,7 +357,13 @@ def _walk_children(
     out: list[list[tuple[float, float]]],
     id_map: dict[str, ET.Element], use_stack: tuple[str, ...],
     warnings: list[str],
+    tag_ids: frozenset[str] | None = None,
+    tagged: list[list[tuple[float, float]]] | None = None,
+    layer_prefix: str | None = None,
+    layers: dict[str, list[list[tuple[float, float]]]] | None = None,
 ) -> None:
+    """Walk ``parent``; a ``<g>`` whose id is in ``tag_ids`` is drawn into
+    ``tagged`` instead of ``out`` (its descendants are all tagged)."""
     for el in parent:
         if not isinstance(el.tag, str):
             continue
@@ -375,7 +381,18 @@ def _walk_children(
             continue
         local = _mmul(ctm, _parse_transform(el.attrib.get("transform")))
         if t in ("g", "a", "switch", "symbol"):
-            _walk_children(el, local, out, id_map, use_stack, warnings)
+            gid = el.attrib.get("id") or ""
+            if layers is not None and layer_prefix and (
+                    gid.startswith(layer_prefix) or gid in CITY_LAYER_GROUP_IDS):
+                # A renderer layer group: its descendants land in their own
+                # bucket (keyed by the group id), in document order.
+                _walk_children(el, local, layers.setdefault(gid, []), id_map,
+                               use_stack, warnings)
+            elif tag_ids and tagged is not None and gid in tag_ids:
+                _walk_children(el, local, tagged, id_map, use_stack, warnings)
+            else:
+                _walk_children(el, local, out, id_map, use_stack, warnings,
+                               tag_ids, tagged, layer_prefix, layers)
         elif t == "svg":  # nested svg: x/y shift + optional own viewport
             nx = _parse_length(el.attrib.get("x"), 0.0)
             ny = _parse_length(el.attrib.get("y"), 0.0)
@@ -388,7 +405,8 @@ def _walk_children(
                     sub,
                     _viewbox_ctm(*nvb, nw, nh, el.attrib.get("preserveAspectRatio")),
                 )
-            _walk_children(el, sub, out, id_map, use_stack, warnings)
+            _walk_children(el, sub, out, id_map, use_stack, warnings,
+                           tag_ids, tagged, layer_prefix, layers)
         elif t == "use":
             ref = el.attrib.get("href") or el.attrib.get(_XLINK_HREF) or ""
             m = re.match(r"\s*#(.+?)\s*$", ref)
@@ -414,14 +432,74 @@ def _walk_children(
             _render_shape(el, t, local, out)
 
 
+#: Airport draft groups that make up the runway layer - the same set the
+#: fulfilment ink split (``AIRPORT_RUNWAY_GROUPS``) and the shop tint use.
+#: ``runway-marks`` is lettering, not the runway layer.
+RUNWAY_INK_GROUPS: tuple[str, ...] = ("runways", "osm-runways", "runway")
+
+#: Id prefix of the traffic renderer's layer groups (``traffic-arrivals``, ...):
+#: ``layer_groups`` keeps each as its own ``<g>`` of the convert result.
+LAYER_GROUP_PREFIX = "traffic-"
+
+#: Exact ids of the shop's 3D city view groups (``<g id="buildings">`` and
+#: ``<g id="map">``): with ``layer_groups`` each is kept as its own layer too,
+#: so the buildings ink can be told apart from the map ink after convert.
+CITY_LAYER_GROUP_IDS: tuple[str, ...] = ("buildings", "map")
+
+
 def parse_svg_vectors(data: bytes) -> tuple[list[list[tuple[float, float]]], float, float, list[str]]:
     """Extract plottable polylines from an SVG (viewport-px space).
 
-    Returns ``(polylines, width_px, height_px, warnings)``. Raises
-    PenPlotError(400) when the XML is malformed, contains forbidden entity /
-    external references, exceeds the structural caps, or nothing convertible
-    is found, so the router reports bad_image instead of a 500.
+    See :func:`parse_svg_vectors_tagged` for the variant that also splits out
+    the polylines of selected ``<g id>`` groups.
     """
+    polylines, _tagged, vp_w, vp_h, warnings = parse_svg_vectors_tagged(data, ())
+    return polylines, vp_w, vp_h, warnings
+
+
+def parse_svg_vectors_tagged(
+    data: bytes, tag_ids: "tuple[str, ...] | frozenset[str]",
+) -> tuple[
+    list[list[tuple[float, float]]], list[list[tuple[float, float]]],
+    float, float, list[str],
+]:
+    """Like :func:`parse_svg_vectors`, but polylines under a ``<g>`` whose id
+    is in ``tag_ids`` come back separately.
+
+    Returns ``(polylines, tagged_polylines, width_px, height_px, warnings)``;
+    ``polylines`` excludes the tagged ones. Both share one coordinate space.
+    """
+    polylines, tagged, _layers, vp_w, vp_h, warnings = _parse_root(
+        data, frozenset(tag_ids), None)
+    return polylines, tagged, vp_w, vp_h, warnings
+
+
+def parse_svg_vectors_layers(
+    data: bytes, layer_prefix: str,
+) -> tuple[
+    list[list[tuple[float, float]]],
+    dict[str, list[list[tuple[float, float]]]],
+    float, float, list[str],
+]:
+    """Like :func:`parse_svg_vectors`, but every ``<g>`` whose id starts with
+    ``layer_prefix`` (the renderer's layer groups) comes back as its own
+    polyline list, keyed by the group id, in document order.
+
+    Returns ``(loose_polylines, layers, width_px, height_px, warnings)``; the
+    loose list is everything outside a layer group. One coordinate space.
+    """
+    polylines, _tagged, layers, vp_w, vp_h, warnings = _parse_root(
+        data, frozenset(), layer_prefix)
+    return polylines, layers, vp_w, vp_h, warnings
+
+
+def _parse_root(
+    data: bytes, ids: frozenset[str], layer_prefix: str | None,
+) -> tuple[
+    list[list[tuple[float, float]]], list[list[tuple[float, float]]],
+    dict[str, list[list[tuple[float, float]]]], float, float, list[str],
+]:
+    """Shared parse: malformed XML / caps raise PenPlotError(400)."""
     try:
         # defusedxml (review D.3.3): raises on DOCTYPE entity/external-ref
         # bombs that the stdlib parser would expand (billion-laughs).
@@ -467,15 +545,19 @@ def parse_svg_vectors(data: bytes) -> tuple[list[list[tuple[float, float]]], flo
                             root.attrib.get("preserveAspectRatio")) if vb else _IDENTITY
 
     polylines: list[list[tuple[float, float]]] = []
+    tagged: list[list[tuple[float, float]]] = []
+    layers: dict[str, list[list[tuple[float, float]]]] = {}
     warnings: list[str] = []
-    _walk_children(root, base_ctm, polylines, id_map, (), warnings)
+    _walk_children(root, base_ctm, polylines, id_map, (), warnings,
+                   ids or None, tagged if ids else None,
+                   layer_prefix, layers if layer_prefix else None)
 
-    if not polylines:
+    if not polylines and not tagged and not any(layers.values()):
         raise PenPlotError(
             status=400, code=ErrorCode.BAD_IMAGE,
             message="SVG contains no convertible paths/shapes/text.",
         )
-    return polylines, vp_w, vp_h, list(dict.fromkeys(warnings))
+    return polylines, tagged, layers, vp_w, vp_h, list(dict.fromkeys(warnings))
 
 
 # -- path data: full command set -----------------------------------------------
@@ -950,5 +1032,10 @@ __all__ = [
     "WARNING_EMBEDDED_RASTERS_IGNORED",
     "Matrix",
     "dist2",
+    "RUNWAY_INK_GROUPS",
+    "LAYER_GROUP_PREFIX",
+    "CITY_LAYER_GROUP_IDS",
     "parse_svg_vectors",
+    "parse_svg_vectors_tagged",
+    "parse_svg_vectors_layers",
 ]
