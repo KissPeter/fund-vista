@@ -8,6 +8,7 @@ import pytest
 
 from backend.airports import overpass as ap
 from backend.airports.sources import build_reduced_airport_query
+from backend.citymap.overpass import build_overpass_query
 from backend.osm_local import coverage as cov
 from backend.osm_local import ql
 from backend.osm_local.selectors import (
@@ -57,6 +58,7 @@ def _seed(path, sels=None):
     way(18, {"natural": "water", "name": "Pond", "water": "pond"},
         [(7.8, 2.0), (7.8, 2.2), (7.9, 2.2), (7.8, 2.0)])              # not lake/reservoir
     way(19, {}, [(7.95, 1.0), (7.95, 1.2), (7.99, 1.2), (7.95, 1.0)], keep=True)
+    way(20, {"highway": "motorway"}, [(12.0, 1.0), (12.0, 3.0)])  # outside coverage rectangle
     water_rel = {"type": "multipolygon", "natural": "water", "name": "Reservoir", "water": "reservoir"}
     w.add_relation(901, selector_mask("relation", water_rel, sels), water_rel, [(19, "outer")])
     w.finish(cov.parse_poly(SQUARE), "2026-11-16T00:00:00Z", "test.pbf")
@@ -327,3 +329,50 @@ def test_traffic_basemap_fetch_uses_the_extract_only_for_supported_layers(local,
     monkeypatch.setattr(ap.OverpassClient, "fetch", mirror)
     out = asyncio.run(ap.fetch_airport_polygons(bm.country_query(VIEW)))
     assert called and out == [{"type": "relation", "id": 999}]
+
+
+# ---- oversized traffic views are clipped, not declined ------------------------
+
+OVERSIZED = (-50.0, 50.0, -40.0, 40.0)  # traffic BBox: south, north, west, east
+OVERSIZED_BBOX = (OVERSIZED[0], OVERSIZED[2], OVERSIZED[1], OVERSIZED[3])
+
+
+def test_clip_bbox_intersects_the_coverage_but_covers_stays_strict(local):
+    assert not local.covers(OVERSIZED_BBOX)
+    assert local.clip_bbox(OVERSIZED_BBOX) == (0.0, 0.0, 10.0, 10.0)
+    assert local.clip_bbox((20.0, 20.0, 21.0, 21.0)) is None
+    assert cov.clip_bbox(local.rings, (10.0, 0.0, 12.0, 10.0)) is None  # edge touch
+
+
+def test_oversized_traffic_queries_are_answered_from_the_covered_part(local):
+    from backend.osm_local import service
+
+    motorways = service.answer(bm.motorway_query(OVERSIZED))
+    assert motorways is not None
+    assert _ids(motorways["elements"], "way") == {10, 12}
+    assert _ids(service.answer(bm.waterway_query(OVERSIZED))["elements"], "way") == {13}
+    water = service.answer(bm.water_query(OVERSIZED))
+    assert _ids(water["elements"], "way") == {16}
+    assert _ids(water["elements"], "relation") == {901}
+    # Clipping removed the out-of-coverage way that an unclipped query would see.
+    unclipped = local.run_geom(ql.parse_geom(bm.motorway_query(OVERSIZED)))
+    assert 20 in _ids(unclipped["elements"], "way")
+    assert 20 not in _ids(motorways["elements"], "way")
+
+
+def test_citymap_and_around_keep_full_coverage_with_the_geom_path(local):
+    from backend.osm_local import service
+
+    assert service.answer(build_overpass_query(OVERSIZED_BBOX, ["highways"])) is None
+    assert service.answer(ap.build_airport_query(5.0, 5.0, 600_000)) is None
+    assert service.answer(bm.motorway_query(OVERSIZED)) is not None
+
+
+def test_traffic_basemap_fetch_handles_the_real_oversized_view(local, monkeypatch):
+    async def boom(*a, **k):
+        raise AssertionError("mirror must not be called")
+
+    monkeypatch.setattr(ap.OverpassClient, "fetch", boom)
+    for query in (bm.motorway_query(OVERSIZED), bm.waterway_query(OVERSIZED),
+                  bm.water_query(OVERSIZED)):
+        assert asyncio.run(ap.fetch_airport_polygons(query))

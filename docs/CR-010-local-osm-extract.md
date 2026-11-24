@@ -92,12 +92,21 @@ the same shape.
 
 The country-scale traffic basemap uses the same entry point. Traffic's bbox
 `out geom` queries are parsed by `ql.parse_geom` (single way or union) and
-answered by `Store.run_geom` via `selectors.BBOX_FILTERS` when the quantised
-bbox is entirely inside the extract and every filter has a stored selector:
+answered by `Store.run_geom` via `selectors.BBOX_FILTERS` when every filter has
+a stored selector:
 
 - motorways: `way["highway"~"^(motorway|trunk)$"]`;
 - waterways: `way["waterway"="river"]["name"]`;
 - water: `way`/`relation["natural"="water"]["name"]["water"~"^(lake|reservoir)$"]`.
+
+A traffic day-slice bbox is much larger than Hungary, so these queries do
+**not** use citymap's full-coverage check. `coverage.clip_bbox` (exposed as
+`Store.clip_bbox`) intersects the requested bbox with the extract coverage
+rectangle and `answer()` queries only that part. An empty intersection (or an
+unsupported filter, or a stale store) still falls through to the mirrors; citymap
+and `around` queries keep their strict full-coverage contract. Clipped answers
+are complete only inside the covered area - the traffic map is Hungary-only,
+so that is the intended behaviour.
 
 The stored selector bits are wider than these filters, so `run_geom`
 re-checks each candidate's tags: primary roads, streams, unnamed rivers and

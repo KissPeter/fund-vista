@@ -218,6 +218,9 @@ class Store:
     def covers(self, bbox: BBox) -> bool:
         return cov.covers(self.rings, bbox)
 
+    def clip_bbox(self, bbox: BBox) -> BBox | None:
+        return cov.clip_bbox(self.rings, bbox)
+
     def supports(self, member: Member) -> bool:
         return (member.kind, member.filter) in self._bit
 

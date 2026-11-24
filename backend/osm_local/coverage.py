@@ -106,6 +106,24 @@ def covers(rings: list[dict], bbox: BBox) -> bool:
     return True
 
 
+def clip_bbox(rings: list[dict], bbox: BBox) -> BBox | None:
+    """Intersect ``bbox`` with the coverage rectangle, or ``None`` if disjoint.
+
+    Unlike :func:`covers`, this never requires the whole request to fit: an
+    oversized view (a traffic day-slice can be far larger than Hungary) is
+    answered from the part the extract holds. The result is a rectangle, so
+    callers must treat it as complete only inside the covered area; touching
+    the rectangle at an edge only counts as an empty intersection.
+    """
+    if not rings:
+        return None
+    south, west, north, east = bbox
+    bs, bw, bn, be = poly_bounds(rings)
+    clipped = (max(south, bs), max(west, bw), min(north, bn), min(east, be))
+    s, w, n, e = clipped
+    return clipped if s < n and w < e else None
+
+
 def rect_ring(bbox: BBox) -> list[dict]:
     """A rectangle as coverage (when no ``.poly`` is supplied)."""
     s, w, n, e = bbox

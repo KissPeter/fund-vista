@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 from backend.osm_local import ql
@@ -99,9 +100,18 @@ def answer(query: str, min_len_m: float = 0.0, compact: bool = False) -> dict | 
         geom = ql.parse_geom(query)
     except ql.QueryError:
         return None
-    if not all(store.supports_geom(m) and store.covers(m.bbox) for m in geom):
-        return None
-    return store.run_geom(geom)
+    # Unlike citymap/around, an oversized bbox is clipped to the extract's
+    # coverage rectangle instead of declined: a traffic day-slice is wider
+    # than Hungary. The answer is complete only inside the covered area.
+    clipped: list[ql.Member] = []
+    for m in geom:
+        if not store.supports_geom(m):
+            return None
+        box = store.clip_bbox(m.bbox)
+        if box is None:
+            return None
+        clipped.append(replace(m, bbox=box))
+    return store.run_geom(clipped)
 
 
 async def fetch_local(query: str, min_len_m: float = 0.0) -> list[dict] | None:
@@ -121,7 +131,10 @@ async def fetch_local_geom(query: str) -> list[dict] | None:
     """``out geom`` elements for an ``around`` or bbox query, else ``None``.
 
     Same extract, same per-worker cap and same fall-through rules as
-    :func:`fetch_local`; this is the entry airports and traffic use.
+    :func:`fetch_local`; this is the entry airports and traffic use. Bbox
+    answers are clipped to the extract coverage rectangle, so they are
+    complete only inside the covered area (Hungary); ``around`` keeps the
+    strict full-coverage rule.
     """
     if not _db_path():
         return None
