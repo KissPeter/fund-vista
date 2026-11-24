@@ -844,6 +844,8 @@ class ComposeSheetRequest(BaseModel):
         has_artworks = bool(self.artworks)
         if has_svg == has_artworks:
             raise ValueError("exactly one of svg or artworks is required")
+        if self.store and not has_artworks:
+            raise ValueError("store=true requires artworks")
         if self.store and (self.artwork != "inline" or self.preview != "svg"):
             raise ValueError("store=true requires artwork='inline' and preview='svg'")
         return self

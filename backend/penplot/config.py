@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # STL three-view generator caps (docs/stl-custom-design-plan.md). The API
@@ -54,13 +54,25 @@ class Settings(BaseSettings):
     # Dedicated STL upload cap (shop plan: 10 MiB), independent of the larger
     # raster cap; the endpoint enforces min(this, max_upload_bytes).
     stl_max_upload_bytes: int = Field(default=STL_MAX_UPLOAD_BYTES, ge=1)
-    stl_min_slices: int = Field(default=STL_MIN_SLICES, ge=1)
-    stl_max_slices: int = Field(default=STL_MAX_SLICES, ge=STL_MIN_SLICES)
-    stl_min_fit_mm: float = Field(default=STL_MIN_FIT_MM, gt=0.0)
-    stl_max_fit_mm: float = Field(default=STL_MAX_FIT_MM, ge=STL_MIN_FIT_MM)
+    stl_min_slices: int = Field(
+        default=STL_MIN_SLICES, ge=STL_MIN_SLICES, le=STL_MAX_SLICES
+    )
+    stl_max_slices: int = Field(
+        default=STL_MAX_SLICES, ge=STL_MIN_SLICES, le=STL_MAX_SLICES
+    )
+    stl_min_fit_mm: float = Field(
+        default=STL_MIN_FIT_MM, gt=0.0, le=STL_MAX_FIT_MM
+    )
+    stl_max_fit_mm: float = Field(
+        default=STL_MAX_FIT_MM, ge=STL_MIN_FIT_MM, le=STL_MAX_FIT_MM
+    )
     stl_max_margin_mm: float = Field(default=STL_MAX_MARGIN_MM, ge=0.0)
-    stl_min_stroke_mm: float = Field(default=STL_MIN_STROKE_MM, gt=0.0)
-    stl_max_stroke_mm: float = Field(default=STL_MAX_STROKE_MM, ge=STL_MIN_STROKE_MM)
+    stl_min_stroke_mm: float = Field(
+        default=STL_MIN_STROKE_MM, gt=0.0, le=STL_MAX_STROKE_MM
+    )
+    stl_max_stroke_mm: float = Field(
+        default=STL_MAX_STROKE_MM, ge=STL_MIN_STROKE_MM, le=STL_MAX_STROKE_MM
+    )
     data_dir: str = os.path.join(
         os.path.dirname(os.path.dirname(__file__)), ".data"
     )
@@ -205,6 +217,35 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [ip.strip() for ip in value.split(",") if ip.strip()]
         return value
+
+    @model_validator(mode="after")
+    def _check_stl_ranges(self) -> Settings:
+        # The individual fields cap values at the hard safety constants; this
+        # cross-check keeps an env override from inverting a min/max pair.
+        if self.stl_min_slices > self.stl_max_slices:
+            raise ValueError("PENPLOT_STL_MIN_SLICES exceeds PENPLOT_STL_MAX_SLICES")
+        if self.stl_min_fit_mm > self.stl_max_fit_mm:
+            raise ValueError("PENPLOT_STL_MIN_FIT_MM exceeds PENPLOT_STL_MAX_FIT_MM")
+        if self.stl_min_stroke_mm > self.stl_max_stroke_mm:
+            raise ValueError(
+                "PENPLOT_STL_MIN_STROKE_MM exceeds PENPLOT_STL_MAX_STROKE_MM"
+            )
+        return self
+
+    def stl_bounds(self) -> dict[str, tuple[float, float]]:
+        """Effective server-enforced ranges for ``POST /v1/stl/views``.
+
+        The PENPLOT_* fields are the single source of truth. Their values are
+        already capped at the hard safety constants by the field validators,
+        so an operator may narrow a range but cannot widen it past the
+        advertised wire schema.
+        """
+        return {
+            "slices": (self.stl_min_slices, self.stl_max_slices),
+            "fit_mm": (self.stl_min_fit_mm, self.stl_max_fit_mm),
+            "margin_mm": (0.0, self.stl_max_margin_mm),
+            "stroke_mm": (self.stl_min_stroke_mm, self.stl_max_stroke_mm),
+        }
 
     @property
     def images_dir(self) -> str:

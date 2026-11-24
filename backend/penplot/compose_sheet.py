@@ -1038,7 +1038,8 @@ def _store_stl_sheet(
     ``_stlsheet`` output may be fulfilled. The sidecar carries the summed
     server-side stats the shop prices from, plus the provenance of every panel.
     """
-    assert body.artworks  # store=true cannot be set without artworks
+    if not body.artworks:
+        raise invalid_params("store=true requires artworks")
     expected = ("image_id", "generator_version", "params_hash")
     values = [tuple(meta.get(key) for key in expected) for meta in metas]
     if not metas or any(value != values[0] for value in values) or not all(values[0]):

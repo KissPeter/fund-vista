@@ -250,10 +250,28 @@ def _stl_view_stats(svg: str) -> ConvertStats:
 
 
 def _stl_params_hash(params: StlViewParams) -> str:
+    # Views are part of the cache key (one result per view), not of the render
+    # parameters: asking for an extra view later MUST reuse earlier results.
     payload = json.dumps(
-        params.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+        params.model_dump(mode="json", exclude={"views"}),
+        sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _stl_bounds_error(params: StlViewParams) -> str | None:
+    """Enforce the operator-configured STL ranges after wire validation."""
+    bounds = _settings.stl_bounds()
+    for name, value in (
+        ("slices", params.slices),
+        ("fit_mm", params.fit_mm),
+        ("margin_mm", params.margin_mm),
+        ("stroke_mm", params.stroke_mm),
+    ):
+        low, high = bounds[name]
+        if not low <= value <= high:
+            return f"{name} must be between {low} and {high}"
+    return None
 
 
 def _stl_result_id(
@@ -409,9 +427,11 @@ async def import_stl(
             415, ErrorCode.UNSUPPORTED_MEDIA_TYPE,
             "Unsupported format. Upload an ASCII or binary .stl file.",
         )
-    data = await file.read()
     cap = min(STL_MAX_UPLOAD_BYTES, _settings.stl_max_upload_bytes,
               _settings.max_upload_bytes)
+    # Read one byte past the cap: an oversized upload is rejected before the
+    # whole body is held in memory (review follow-up).
+    data = await file.read(cap + 1)
     if len(data) > cap:
         return error_response(
             HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -466,9 +486,10 @@ async def stl_views_endpoint(
 ) -> StlViewsResponse | JSONResponse:
     """Render cached artwork-only views with server-computed stats.
 
-    Cache key: ``(image_id, view, generator_version, params_hash)``. A hit is
-    rebuilt from the SVG/JSON sidecars with zero geometry work. Raw view SVGs
-    are artworks only — they are never order files (compose-sheet is).
+    Cache key: ``(image_id, view, generator_version, params_hash)``. The
+    params hash excludes the requested ``views`` list, so adding a view later
+    reuses the views already rendered. Only missing views are re-rendered.
+    Raw view SVGs are artworks only — they are never order files.
     """
     image_id = body.image_id.lower()
     path = store.find_image(image_id)
@@ -480,11 +501,15 @@ async def stl_views_endpoint(
         return error_response(
             422, ErrorCode.STL_INVALID, "The stored design is not an STL upload."
         )
+    bounds_error = _stl_bounds_error(body.params)
+    if bounds_error is not None:
+        return error_response(422, ErrorCode.INVALID_PARAMS, bounds_error)
+
     data = await asyncio.to_thread(_read_bytes, path)
     params_hash = _stl_params_hash(body.params)
     base = resolve_public_base(request)
-    results: list[StlViewResult] = []
-    cache_hit = bool(body.params.views)
+    cached: dict[str, StlViewResult] = {}
+    missing: list[str] = []
     for view in body.params.views:
         result_id = _stl_result_id(image_id, view, params_hash)
         filename = f"{result_id}_{view}_stlview.svg"
@@ -498,18 +523,20 @@ async def stl_views_endpoint(
             except (KeyError, TypeError, ValueError):
                 stats = None
         if stats is None:
-            cache_hit = False
+            missing.append(view)
             continue
-        results.append(StlViewResult(
+        cached[view] = StlViewResult(
             view=view, result_id=result_id,
             svg_url=f"{base}/v1/results/{filename}",
             meta_url=f"{base}/v1/results/{filename}/meta",
             stats=stats,
-        ))
-    if not cache_hit:
+        )
+
+    hit_count = len(cached)
+    if missing:
         try:
             rendered = await asyncio.to_thread(
-                _render_stl_views, data, body.params.views, body.params,
+                _render_stl_views, data, missing, body.params,
             )
             stats_by_view = {view: _stl_view_stats(svg) for view, svg in rendered.items()}
         except stl_views.StlFormatError as exc:
@@ -520,8 +547,7 @@ async def stl_views_endpoint(
             return error_response(toolchain_exc.status, toolchain_exc.code, toolchain_exc.message)
         except ValueError as exc:
             return error_response(422, ErrorCode.INVALID_PARAMS, str(exc))
-        results = []
-        for view in body.params.views:
+        for view in missing:
             result_id = _stl_result_id(image_id, view, params_hash)
             filename = f"{result_id}_{view}_stlview.svg"
             svg = rendered[view]
@@ -535,15 +561,18 @@ async def stl_views_endpoint(
                 "generator_version": stl_views.GENERATOR_VERSION,
                 "params_hash": params_hash,
             })
-            results.append(StlViewResult(
+            cached[view] = StlViewResult(
                 view=view, result_id=result_id,
                 svg_url=f"{base}/v1/results/{filename}",
                 meta_url=f"{base}/v1/results/{filename}/meta",
                 stats=stats,
-            ))
+            )
+
+    results = [cached[view] for view in body.params.views]
+    cache_state = "hit" if not missing else ("partial" if hit_count else "miss")
     log.info(
         "stl.views id=%s views=%s cache=%s",
-        image_id[:12], list(body.params.views), "hit" if cache_hit else "miss",
+        image_id[:12], list(body.params.views), cache_state,
     )
     return StlViewsResponse(
         image_id=image_id,
@@ -687,6 +716,13 @@ async def get_result(
     if not _result_filename_allowed(filename):
         return error_response(
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
+        )
+    # Raw STL views are artworks, not deliverables. They stay previewable via
+    # plain GET, but must never be handed out as an attachment/order file.
+    if download and filename.endswith("_stlview.svg"):
+        return error_response(
+            409, ErrorCode.INVALID_PARAMS,
+            "Raw STL view artworks cannot be downloaded as order files.",
         )
     path = store.result_path(filename)
     try:

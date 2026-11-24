@@ -91,6 +91,12 @@ def load_stl(path: Path | str) -> trimesh.Trimesh:
     _require_libs()
     try:
         mesh = slice3d.load_mesh(str(Path(path)))
+    except ImportError as exc:
+        # A toolchain import failure is a server fault, never a bad-mesh 422.
+        raise RuntimeError(
+            "stl2plot needs slice3d and trimesh; install with "
+            "python3 -m pip install --user slice3d 'trimesh[easy]'"
+        ) from exc
     except Exception as exc:  # noqa: BLE001 - library-specific parse errors
         raise StlFormatError(f"cannot load {path}: {exc}") from exc
     if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0:

@@ -80,7 +80,11 @@ only). `/v1/images/{image_id}/retain` MUST promote derived STL files and sidecar
 ## Config caps
 
 `stl_max_faces` 250000, `slices` 2–16, `fit_mm` 20–400, `margin_mm` <= 20,
-`stroke_mm` 0.1–1.0, all with `PENPLOT_*` env overrides. Reuse `max_upload_bytes`.
+`stroke_mm` 0.1–1.0. The `Settings` fields are the single enforcement source:
+`PENPLOT_*` values MAY narrow a range but MUST NOT widen it past these hard
+safety ceilings. `POST /v1/stl/views` validates against those effective bounds
+after wire-schema validation. STL uploads use the dedicated 10 MiB cap (also
+narrowable by `PENPLOT_*`), read only up to cap+1 bytes.
 
 ## Tasks (dependency order)
 
@@ -120,3 +124,17 @@ Production deployment is deferred; the named install owner is Péter Kiss
 `docs/B-003-stl-toolchain-runtime-install.md` (status `todo`). `backend/uv.lock`
 MUST stay unchanged, and sample STL rights (Knipex XS, crescent pair) MUST stay
 blocked before sale while shop ticket S15 is open.
+
+## Review follow-up triage
+
+Owner for every item below: Péter Kiss (peter.kiss@pepperstone.com).
+
+- Fixed in the follow-up commit: settings-derived parameter bounds, view-free
+  params hash with partial-cache reuse, `store=true` artwork requirement,
+  raw `_stlview` attachment refusal, cap+1 streaming upload read, retained
+  markers for views/sheets created after `retain`, sidecar-only derived-file
+  ownership, and toolchain `ImportError` mapping.
+- Accepted nit: `ConvertStats.points.before == points.after` for STL views.
+  The geometry stage already simplifies the projected polylines, so no second
+  simplification pass exists; reporting both counts as equal is truthful and
+  MUST NOT be changed to fake a reduction.

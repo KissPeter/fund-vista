@@ -19,7 +19,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +80,26 @@ class ImageStore:
     def _retained_marker(path: str) -> str:
         return path + ".retained"
 
+    def _image_is_retained(self, image_id: str) -> bool:
+        marker_prefix = image_id + "."
+        try:
+            names = os.listdir(self.images_dir)
+        except OSError:
+            return False
+        return any(
+            name.startswith(marker_prefix) and name.endswith(".retained")
+            for name in names
+        )
+
+    def _mark_retained(self, path: str, stamp: str) -> bool:
+        """Write one TTL promotion marker; return True when newly created."""
+        marker = self._retained_marker(path)
+        if os.path.exists(marker):
+            return False
+        with open(marker, "w", encoding="utf-8") as fh:
+            fh.write(stamp)
+        return True
+
     def _ttl_for(self, path: str) -> timedelta:
         if os.path.exists(self._retained_marker(path)):
             return self.retained_ttl
@@ -100,10 +120,10 @@ class ImageStore:
             "_stlview.svg.json", "_stlsheet.svg.json",
         )):
             return False
-        if name.startswith(image_id + "_"):
-            return True
         # Both view and combined-sheet results are content-addressed, so the
-        # source design is recorded in the sidecar the backend writes.
+        # source design is recorded in the sidecar the backend writes. The
+        # sidecar image_id is the only ownership signal (never a filename
+        # prefix), because result ids are SHA-256 of image + params + view.
         meta_file = name if name.endswith(".json") else name + ".json"
         path = os.path.join(self.results_dir, meta_file)
         try:
@@ -126,10 +146,7 @@ class ImageStore:
             return None
         with self._lock:
             stamp = datetime.now(tz=timezone.utc).isoformat()
-            marker = self._retained_marker(path)
-            if not os.path.exists(marker):
-                with open(marker, "w", encoding="utf-8") as fh:
-                    fh.write(stamp)
+            if self._mark_retained(path, stamp):
                 log.info("image %s retained", image_id[:12])
             # Marker names are the exact paths the lazy TTL checks: the SVG
             # itself and its `.json` sidecar both need one.
@@ -139,11 +156,7 @@ class ImageStore:
                 names = []
             for name in names:
                 if self._is_derived_stl_result(name, image_id):
-                    derived = os.path.join(self.results_dir, name)
-                    derived_marker = self._retained_marker(derived)
-                    if not os.path.exists(derived_marker):
-                        with open(derived_marker, "w", encoding="utf-8") as fh:
-                            fh.write(stamp)
+                    self._mark_retained(os.path.join(self.results_dir, name), stamp)
         return path, self.expires_at_for(path)
 
     def put_image_bytes(self, data: bytes, ext: str) -> str:
@@ -230,12 +243,24 @@ class ImageStore:
         """Persist the sidecar; the SVG itself must already be stored."""
         path = self.result_meta_path(filename)
         payload = json.dumps(meta, sort_keys=True, separators=(",", ":"))
+        source_id = meta.get("image_id")
+        source_retained = (
+            filename.endswith(("_stlview.svg", "_stlsheet.svg"))
+            and isinstance(source_id, str)
+            and self._image_is_retained(source_id)
+        )
+        stamp = datetime.now(tz=UTC).isoformat()
         with self._lock:
             os.makedirs(self.results_dir, exist_ok=True)
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
                 fh.write(payload)
             os.replace(tmp, path)
+            # A view/sheet generated *after* retain inherits the ordered 90 d
+            # TTL; otherwise newly selected views would vanish at 24 h.
+            if source_retained:
+                self._mark_retained(path, stamp)
+                self._mark_retained(path[:-5], stamp)  # the SVG path
         return path
 
     def get_result_meta(self, filename: str) -> dict | None:

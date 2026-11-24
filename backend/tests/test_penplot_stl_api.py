@@ -28,6 +28,7 @@ import uvicorn
 
 from backend.penplot.config import STL_MAX_FACES, STL_MAX_UPLOAD_BYTES, Settings
 from backend.penplot.errors import ErrorCode
+from backend.penplot.ratelimit import RateLimiter
 from backend.penplot.stl_views import GENERATOR_VERSION
 from backend.tests.helpers import TEST_HMAC_SECRET, png_bytes
 
@@ -38,6 +39,28 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _start_uvicorn(app, port: int, base_url: str):
+    """Start one in-process live server and wait for /healthz."""
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="warning", lifespan="off",
+    )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if not thread.is_alive():
+            break
+        try:
+            if httpx.get(f"{base_url}/healthz", timeout=1.0).status_code == 200:
+                return server, thread
+        except httpx.HTTPError:
+            time.sleep(0.1)
+    server.should_exit = True
+    thread.join(timeout=5)
+    raise RuntimeError("STL API uvicorn thread never became healthy")
 
 
 def _view_svg(view: str) -> str:
@@ -60,6 +83,7 @@ class _Boundary:
     watertight: bool = True
     mode: str = "ok"
     render_calls: int = 0
+    rendered_views: list[str] = field(default_factory=list)
 
     class _Mesh:
         def __init__(self, faces: int, extents: np.ndarray, watertight: bool) -> None:
@@ -70,6 +94,7 @@ class _Boundary:
     def reset(self) -> None:
         self.faces, self.extents, self.watertight = 12, np.array([4.0, 2.0, 1.0]), True
         self.mode, self.render_calls = "ok", 0
+        self.rendered_views.clear()
 
     def load(self, data: bytes):
         if self.mode == "missing":
@@ -88,6 +113,7 @@ class _Boundary:
 
             raise StlFormatError("stub: bad mesh")
         self.render_calls += 1
+        self.rendered_views.extend(views)
         return {view: _view_svg(view) for view in views}
 
 
@@ -160,6 +186,104 @@ def api(tmp_path_factory):
     server.should_exit = True
     thread.join(timeout=10)
     patch.undo()
+
+
+@pytest.fixture
+def configured_api(tmp_path, monkeypatch):
+    """Live server whose STL bounds come from PENPLOT_* env overrides."""
+    data_dir = str(tmp_path / "configured-data")
+    port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
+    for key, value in {
+        "PENPLOT_DATA_DIR": data_dir,
+        "PENPLOT_STL_MIN_SLICES": "3",
+        "PENPLOT_STL_MAX_SLICES": "4",
+        "PENPLOT_STL_MIN_FIT_MM": "30",
+        "PENPLOT_STL_MAX_FIT_MM": "100",
+        "PENPLOT_STL_MAX_MARGIN_MM": "2",
+        "PENPLOT_STL_MIN_STROKE_MM": "0.2",
+        "PENPLOT_STL_MAX_STROKE_MM": "0.4",
+        "REDIS_CLOUD_URL": "redis://127.0.0.1:1/0",
+        "DISABLE_RATELIMIT": "True",
+        "PENPIXEL_HMAC_SECRET": TEST_HMAC_SECRET,
+        "LOG_LEVEL": "WARNING",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    router = importlib.import_module("backend.penplot.router")
+    compose = importlib.import_module("backend.penplot.compose_sheet")
+    app_module = importlib.import_module("backend.main")
+    from backend.penplot.store import ImageStore
+
+    settings = Settings()
+    store = ImageStore(
+        images_dir=settings.images_dir,
+        results_dir=settings.results_dir,
+        ttl_hours=settings.image_ttl_hours,
+        retained_ttl_hours=settings.retained_ttl_hours,
+        stl_result_ttl_hours=settings.stl_result_ttl_hours,
+    )
+    boundary = _Boundary()
+    monkeypatch.setattr(router, "_settings", settings, raising=False)
+    monkeypatch.setattr(router, "store", store, raising=False)
+    monkeypatch.setattr(router, "_load_stl_bytes", boundary.load, raising=False)
+    monkeypatch.setattr(router, "_render_stl_views", boundary.render, raising=False)
+    monkeypatch.setattr(compose, "store", store, raising=False)
+
+    server, thread = _start_uvicorn(app_module.app, port, base_url)
+    with httpx.Client(base_url=base_url, timeout=60.0) as client:
+        yield SimpleNamespace(
+            client=client, base_url=base_url, store=store, settings=settings,
+            router=router, compose=compose, boundary=boundary,
+        )
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+@pytest.fixture
+def limited_api(tmp_path, monkeypatch):
+    """Live server with a one-request window (rate-limit 429 coverage)."""
+    data_dir = str(tmp_path / "limited-data")
+    port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
+    monkeypatch.delenv("DISABLE_RATELIMIT", raising=False)
+    for key, value in {
+        "PENPLOT_DATA_DIR": data_dir,
+        "PENPLOT_RATE_LIMIT": "1",
+        "PENPLOT_RATE_LIMIT_WINDOW_S": "60",
+        "REDIS_CLOUD_URL": "redis://127.0.0.1:1/0",
+        "PENPIXEL_HMAC_SECRET": TEST_HMAC_SECRET,
+        "LOG_LEVEL": "WARNING",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    router = importlib.import_module("backend.penplot.router")
+    app_module = importlib.import_module("backend.main")
+    from backend.penplot.store import ImageStore
+
+    settings = Settings().model_copy(update={"disable_ratelimit": False})
+    store = ImageStore(
+        images_dir=settings.images_dir,
+        results_dir=settings.results_dir,
+        ttl_hours=settings.image_ttl_hours,
+        retained_ttl_hours=settings.retained_ttl_hours,
+        stl_result_ttl_hours=settings.stl_result_ttl_hours,
+    )
+    boundary = _Boundary()
+    monkeypatch.setattr(router, "_settings", settings, raising=False)
+    monkeypatch.setattr(router, "_limiter", RateLimiter(1, 60), raising=False)
+    monkeypatch.setattr(router, "store", store, raising=False)
+    monkeypatch.setattr(router, "_load_stl_bytes", boundary.load, raising=False)
+    monkeypatch.setattr(router, "_render_stl_views", boundary.render, raising=False)
+
+    server, thread = _start_uvicorn(app_module.app, port, base_url)
+    with httpx.Client(base_url=base_url, timeout=60.0) as client:
+        yield SimpleNamespace(
+            client=client, base_url=base_url, store=store, settings=settings,
+            router=router, boundary=boundary,
+        )
+    server.should_exit = True
+    thread.join(timeout=10)
 
 
 @pytest.fixture(autouse=True)
@@ -300,6 +424,36 @@ def test_views_canonical_order_stats_sidecars_and_cache(api):
     assert api.boundary.render_calls == 1  # cache hit: no geometry work
 
 
+def test_views_partial_cache_reuses_earlier_view(api):
+    image_id = _import_id(api, _stl_bytes("partial-cache"))
+    first = _views(api, image_id, {"views": ["broad"]})
+    assert first.status_code == 200, first.text
+    broad = first.json()["views"][0]
+    assert api.boundary.render_calls == 1
+    assert api.boundary.rendered_views == ["broad"]
+
+    all_views = _views(api, image_id, {"views": ["end", "broad", "edge"]})
+    assert all_views.status_code == 200, all_views.text
+    body = all_views.json()
+    by_name = {item["view"]: item for item in body["views"]}
+    assert by_name["broad"]["result_id"] == broad["result_id"]
+    assert by_name["broad"]["svg_url"] == broad["svg_url"]
+    # Only the two previously unseen views reach the toolchain boundary.
+    assert api.boundary.render_calls == 2
+    assert api.boundary.rendered_views == ["broad", "edge", "end"]
+    hashes = {
+        api.store.get_result_meta(_filename(item["svg_url"]))["params_hash"]
+        for item in body["views"]
+    }
+    assert len(hashes) == 1
+
+    artworks = _artworks(api, body, ("broad", "edge", "end"))
+    sheet = api.client.post("/v1/compose-sheet", json={
+        "artworks": artworks, "artwork": "inline", "store": True,
+    })
+    assert sheet.status_code == 200, sheet.text
+
+
 @pytest.mark.parametrize(
     "params",
     [
@@ -344,6 +498,37 @@ def test_views_accepts_cap_boundaries(api, key, value):
     assert len(resp.json()["views"]) == 1
 
 
+def test_views_enforce_settings_bounds_from_env(configured_api):
+    image_id = _import_id(configured_api)
+    minimum = _views(configured_api, image_id, {
+        "views": ["broad"], "slices": 3, "fit_mm": 30.0,
+        "margin_mm": 2.0, "stroke_mm": 0.2,
+    })
+    assert minimum.status_code == 200, minimum.text
+    maximum = _views(configured_api, image_id, {
+        "views": ["broad"], "slices": 4, "fit_mm": 100.0,
+        "margin_mm": 2.0, "stroke_mm": 0.4,
+    })
+    assert maximum.status_code == 200, maximum.text
+
+    base = {
+        "views": ["broad"], "slices": 3, "fit_mm": 30.0,
+        "margin_mm": 2.0, "stroke_mm": 0.2,
+    }
+    cases = [
+        ("slices", 2), ("slices", 5),
+        ("fit_mm", 25.0), ("fit_mm", 150.0),
+        ("margin_mm", 3.0),
+        ("stroke_mm", 0.1), ("stroke_mm", 0.5),
+    ]
+    for key, value in cases:
+        blocked = _views(configured_api, image_id, {**base, key: value})
+        assert blocked.status_code == 422, (key, value, blocked.text)
+        body = blocked.json()["error"]
+        assert body["code"] == ErrorCode.INVALID_PARAMS
+        assert key in body["message"]
+
+
 def test_views_rejects_unknown_and_non_stl_images(api):
     unknown = _views(api, "0" * 64)
     assert unknown.status_code == 404
@@ -363,6 +548,22 @@ def test_views_missing_toolchain_envelope(api):
     assert resp.status_code == 503
     assert resp.json()["error"]["code"] == ErrorCode.STL_TOOLCHAIN_UNAVAILABLE
     assert "ModuleNotFoundError" not in resp.text and "Traceback" not in resp.text
+
+
+def test_stl_import_rate_limited(limited_api):
+    assert _import(limited_api).status_code == 200
+    blocked = _import(limited_api)
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == ErrorCode.RATE_LIMITED
+    assert int(blocked.headers["Retry-After"]) >= 1
+
+
+def test_stl_views_rate_limited(limited_api):
+    image_id = _import_id(limited_api)
+    blocked = _views(limited_api, image_id, {"views": ["broad"]})
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == ErrorCode.RATE_LIMITED
+    assert int(blocked.headers["Retry-After"]) >= 1
 
 
 # -- compose-sheet extension ---------------------------------------------------
@@ -425,6 +626,7 @@ def test_compose_source_validation(api):
         {"artworks": []},
         {"artworks": [art] * 4},
         {"svg": art["svg"], "store": True},
+        {"svg": art["svg"], "artwork": "inline", "store": True},
         {"artworks": [art], "artwork": "inline", "store": True, "preview": "png"},
         {"artworks": [{**art, "result_id": "A" * 64}]},
         {"artworks": [{**art, "svg": "<svg/>"}]},
@@ -461,6 +663,24 @@ def test_compose_store_writes_orderable_sheet_with_summed_stats(api):
     assert served.status_code == 200 and served.json()["stats"] == meta["stats"]
 
 
+def test_unordered_stl_results_expire_at_24_hours(api):
+    _image_id, views = _three_views(api, _stl_bytes("expiry"))
+    artworks = _artworks(api, views, ("broad", "edge"))
+    sheet = api.client.post("/v1/compose-sheet", json={
+        "artworks": artworks, "artwork": "inline", "store": True,
+    })
+    assert sheet.status_code == 200
+    view_file = _filename(views["views"][0]["svg_url"])
+    sheet_file = f"{sheet.headers['X-Result-Sha256']}_stlsheet.svg"
+
+    old = time.time() - 25 * 3600
+    for name in (view_file, sheet_file):
+        os.utime(api.store.result_path(name), (old, old))
+    for name in (view_file, sheet_file):
+        assert api.client.get(f"/v1/results/{name}").status_code == 404
+        assert api.client.get(f"/v1/results/{name}/meta").status_code == 404
+
+
 # -- result gates and retention ------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -487,10 +707,22 @@ def test_generated_stlview_and_stlsheet_names_are_served(api):
         "artworks": [art], "artwork": "inline", "store": True,
     })
     assert sheet.status_code == 200
-    for filename in (_filename(views["views"][0]["svg_url"]),
-                     f"{sheet.headers['X-Result-Sha256']}_stlsheet.svg"):
-        assert api.client.get(f"/v1/results/{filename}").status_code == 200
-        assert api.client.get(f"/v1/results/{filename}/meta").status_code == 200
+    view_file = _filename(views["views"][0]["svg_url"])
+    sheet_file = f"{sheet.headers['X-Result-Sha256']}_stlsheet.svg"
+
+    assert api.client.get(f"/v1/results/{view_file}").status_code == 200
+    assert api.client.get(f"/v1/results/{view_file}/meta").status_code == 200
+    blocked = api.client.get(f"/v1/results/{view_file}?download=1")
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == ErrorCode.INVALID_PARAMS
+    assert "content-disposition" not in blocked.headers
+
+    deliverable = api.client.get(f"/v1/results/{sheet_file}?download=1")
+    assert deliverable.status_code == 200
+    assert deliverable.headers["content-disposition"] == (
+        f'attachment; filename="{sheet_file}"'
+    )
+    assert api.client.get(f"/v1/results/{sheet_file}/meta").status_code == 200
 
 
 def test_retain_promotes_derived_files_and_ttl_edges(api):
@@ -511,6 +743,24 @@ def test_retain_promotes_derived_files_and_ttl_edges(api):
     for filename in (view_file, f"{view_file}.json", sheet_file, f"{sheet_file}.json"):
         path = api.store.result_path(filename)
         assert os.path.exists(path + ".retained"), filename
+
+    # A view/sheet generated after retain inherits the same 90 d marker.
+    later = _views(api, image_id, {"views": ["broad"], "slices": 9})
+    assert later.status_code == 200, later.text
+    later_file = _filename(later.json()["views"][0]["svg_url"])
+    later_artworks = _artworks(api, later.json(), ("broad",))
+    later_sheet = api.client.post("/v1/compose-sheet", json={
+        "artworks": later_artworks, "artwork": "inline", "store": True,
+    })
+    assert later_sheet.status_code == 200, later_sheet.text
+    later_sheet_file = f"{later_sheet.headers['X-Result-Sha256']}_stlsheet.svg"
+    for filename in (
+        later_file, f"{later_file}.json",
+        later_sheet_file, f"{later_sheet_file}.json",
+    ):
+        assert os.path.exists(
+            api.store.result_path(filename) + ".retained"
+        ), filename
 
     # Unrelated unordered result expires at 24 h; promoted files stay past it.
     other = _three_views(api, _stl_bytes("unordered"))[1]
