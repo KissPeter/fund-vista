@@ -22,7 +22,13 @@ from typing import Iterable
 from backend.citymap.shortways import drop_short_ways, polyline_length_m
 from backend.osm_local import coverage as cov
 from backend.osm_local.ql import AroundMember, BBox, Member
-from backend.osm_local.selectors import AROUND_FILTERS, Selector, registry, tags_match
+from backend.osm_local.selectors import (
+    AROUND_FILTERS,
+    BBOX_FILTERS,
+    Selector,
+    registry,
+    tags_match,
+)
 
 SCHEMA_VERSION = "2"
 _READABLE_SCHEMAS = ("1", "2")  # 1 has no ways.len_m: filtered after the query
@@ -212,12 +218,85 @@ class Store:
     def covers(self, bbox: BBox) -> bool:
         return cov.covers(self.rings, bbox)
 
+    def clip_bbox(self, bbox: BBox) -> BBox | None:
+        return cov.clip_bbox(self.rings, bbox)
+
     def supports(self, member: Member) -> bool:
         return (member.kind, member.filter) in self._bit
 
     def supports_around(self, member: AroundMember) -> bool:
         srcs = AROUND_FILTERS.get((member.kind, member.filter))
         return bool(srcs) and all(src in self._bit for src in srcs)
+
+    def supports_geom(self, member: Member) -> bool:
+        srcs = BBOX_FILTERS.get((member.kind, member.filter))
+        return bool(srcs) and all(src in self._bit for src in srcs)
+
+    def run_geom(self, members: list[Member]) -> dict:
+        """Overpass ``out geom`` JSON for the union of bbox ``members``.
+
+        The R-tree + selector bitmask is only a candidate filter: the wider
+        stored selectors also hold primary roads, streams, unnamed rivers and
+        other water. Each candidate is re-checked against the caller's exact
+        filter, and ways/relations are de-duplicated across union members.
+        """
+        db = self._conn()
+        ways: dict[int, tuple[dict, array]] = {}
+        rels: dict[int, tuple[dict, list]] = {}
+        for m in members:
+            mask = 0
+            for src in BBOX_FILTERS[(m.kind, m.filter)]:
+                mask |= 1 << self._bit[src]
+            south, west, north, east = m.bbox
+            args = (north, south, east, west, mask)
+            if m.kind == "way":
+                for wid, tags_json, coords in db.execute(
+                    "SELECT w.id, w.tags, w.coords FROM way_idx i JOIN ways w ON w.id = i.id "
+                    "WHERE i.min_lat <= ? AND i.max_lat >= ? AND i.min_lon <= ? "
+                    "AND i.max_lon >= ? AND (w.sel & ?) != 0", args,
+                ):
+                    if wid in ways:
+                        continue
+                    tags = json.loads(tags_json)
+                    if tags_match(m.filter, tags):
+                        ways[wid] = (tags, _unpack("i", coords))
+            else:
+                for rid, tags_json, members_json in db.execute(
+                    "SELECT r.id, r.tags, r.members FROM rel_idx i JOIN relations r ON r.id = i.id "
+                    "WHERE i.min_lat <= ? AND i.max_lat >= ? AND i.min_lon <= ? "
+                    "AND i.max_lon >= ? AND (r.sel & ?) != 0", args,
+                ):
+                    if rid in rels:
+                        continue
+                    tags = json.loads(tags_json)
+                    if tags_match(m.filter, tags):
+                        rels[rid] = (tags, json.loads(members_json))
+        need = sorted({ref for _tags, mem in rels.values() for ref, _role in mem})
+        geoms: dict[int, array] = {}
+        for i in range(0, len(need), _CHUNK):
+            part = need[i : i + _CHUNK]
+            marks = ",".join("?" * len(part))
+            for wid, coords in db.execute(f"SELECT id, coords FROM ways WHERE id IN ({marks})", part):
+                geoms[wid] = _unpack("i", coords)
+        elements: list[dict] = []
+        for wid, (tags, flat) in ways.items():
+            elements.append({"type": "way", "id": wid, "tags": tags, "geometry": _geometry(flat)})
+        for rid, (tags, mem) in rels.items():
+            if not any(ref in geoms for ref, _role in mem):
+                continue
+            elements.append({
+                "type": "relation", "id": rid, "tags": tags,
+                "members": [
+                    {"type": "way", "ref": ref, "role": role, "geometry": _geometry(geoms[ref])}
+                    for ref, role in mem if ref in geoms
+                ],
+            })
+        return {
+            "version": 0.6,
+            "generator": "fund-vista-osm-local",
+            "osm3s": {"timestamp_osm_base": self.meta.get("osm_timestamp", "")},
+            "elements": elements,
+        }
 
     def run_around(self, members: list[AroundMember]) -> dict:
         """Overpass ``out geom`` JSON for the union of ``around`` members."""

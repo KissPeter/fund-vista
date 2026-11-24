@@ -1,4 +1,4 @@
-"""Airports and airport traffic use the same local extract as citymap (``around`` + ``out geom``)."""
+"""Airports, airport traffic and the traffic basemap use the same extract (``around`` / bbox + ``out geom``)."""
 
 from __future__ import annotations
 
@@ -8,10 +8,18 @@ import pytest
 
 from backend.airports import overpass as ap
 from backend.airports.sources import build_reduced_airport_query
+from backend.citymap.overpass import build_overpass_query
 from backend.osm_local import coverage as cov
 from backend.osm_local import ql
-from backend.osm_local.selectors import AROUND_FILTERS, registry, selector_mask
+from backend.osm_local.selectors import (
+    AROUND_FILTERS,
+    BBOX_FILTERS,
+    registry,
+    selector_mask,
+    tags_match,
+)
 from backend.osm_local.store import Store, Writer
+from backend.traffic import basemap as bm
 
 SQUARE = "sq\n1\n 0.0 0.0\n 10.0 0.0\n 10.0 10.0\n 0.0 10.0\nEND\nEND\n"
 # ~1.11 km per 0.01 deg lat at lat 5; the airport centre is (5.0, 5.0).
@@ -36,6 +44,23 @@ def _seed(path, sels=None):
     way(7, {}, [(5.003, 5.003), (5.003, 5.004), (5.004, 5.004), (5.003, 5.003)], keep=True)
     rel = {"type": "multipolygon", "aeroway": "apron"}
     w.add_relation(900, selector_mask("relation", rel, sels), rel, [(7, "outer")])
+    # Traffic basemap features, far from the airport centre (lat/lon 5.0).
+    way(10, {"highway": "motorway"}, [(7.0, 1.0), (7.0, 3.0)])
+    way(11, {"highway": "primary"}, [(7.1, 1.0), (7.1, 3.0)])          # wider stored bit
+    way(12, {"highway": "trunk"}, [(8.0, 1.0), (8.0, 3.0)])            # outside a small bbox
+    way(13, {"waterway": "river", "name": "Duna"}, [(7.3, 1.0), (7.3, 3.0)])
+    way(14, {"waterway": "stream", "name": "X"}, [(7.4, 1.0), (7.4, 3.0)])
+    way(15, {"waterway": "river"}, [(7.5, 1.0), (7.5, 3.0)])           # unnamed
+    way(16, {"natural": "water", "name": "Lake", "water": "lake"},
+        [(7.6, 1.0), (7.6, 1.2), (7.7, 1.2), (7.6, 1.0)])
+    way(17, {"natural": "water", "water": "lake"},
+        [(7.8, 1.0), (7.8, 1.2), (7.9, 1.2), (7.8, 1.0)])              # unnamed
+    way(18, {"natural": "water", "name": "Pond", "water": "pond"},
+        [(7.8, 2.0), (7.8, 2.2), (7.9, 2.2), (7.8, 2.0)])              # not lake/reservoir
+    way(19, {}, [(7.95, 1.0), (7.95, 1.2), (7.99, 1.2), (7.95, 1.0)], keep=True)
+    way(20, {"highway": "motorway"}, [(12.0, 1.0), (12.0, 3.0)])  # outside coverage rectangle
+    water_rel = {"type": "multipolygon", "natural": "water", "name": "Reservoir", "water": "reservoir"}
+    w.add_relation(901, selector_mask("relation", water_rel, sels), water_rel, [(19, "outer")])
     w.finish(cov.parse_poly(SQUARE), "2026-11-16T00:00:00Z", "test.pbf")
 
 
@@ -143,7 +168,7 @@ def test_fetch_airport_polygons_prefers_local_then_mirrors(local, monkeypatch):
     assert out == [{"type": "way", "id": 99}] and called
     # a query shape the local extract does not know -> mirrors
     called.clear()
-    asyncio.run(ap.fetch_airport_polygons('[out:json][timeout:90];\nway["highway"~"^(motorway|trunk)$"](1,2,3,4);\nout geom;'))
+    asyncio.run(ap.fetch_airport_polygons('[out:json][timeout:90];\nnode["highway"="motorway"](1,2,3,4);\nout geom;'))
     assert called
 
 
@@ -165,3 +190,189 @@ def test_database_built_before_the_extra_selector_stays_fresh_but_declines_relat
     members = ql.parse_around(ap.build_airport_query(LAT, LON, 3000))
     assert not all(store.supports_around(m) for m in members)   # relation member unsupported -> mirrors
     assert store.supports_around(members[0])                    # ways still known
+
+
+# ---- traffic basemap: bbox + out geom -----------------------------------------
+
+VIEW = (0.5, 9.5, 0.5, 9.5)  # traffic BBox order: south, north, west, east
+BBOX = (VIEW[0], VIEW[2], VIEW[1], VIEW[3])  # parser order: south, west, north, east
+
+
+def test_the_four_traffic_basemap_queries_parse_and_resolve_their_filters():
+    builders = {
+        "country": bm.country_query,
+        "motorways": bm.motorway_query,
+        "waterways": bm.waterway_query,
+        "water": bm.water_query,
+    }
+    for name, build in builders.items():
+        members = ql.parse_geom(build(VIEW))
+        assert members, name
+        assert all(m.bbox == BBOX for m in members)
+        known = [(m.kind, m.filter) in BBOX_FILTERS for m in members]
+        # The country border has no stored selector: it must stay with Overpass.
+        assert all(known) is (name != "country"), name
+    reg = set(registry())
+    assert all(src in reg for srcs in BBOX_FILTERS.values() for src in srcs)
+    # Single member (motorway, river) and union (country, water) are both valid.
+    assert len(ql.parse_geom(bm.motorway_query(VIEW))) == 1
+    assert len(ql.parse_geom(bm.water_query(VIEW))) == 2
+
+
+@pytest.mark.parametrize("bad", [
+    "[out:json][timeout:25];(way[\"a\"](0,0,1,1););out body;>;out skel qt;",
+    "[out:json][timeout:25];(way[\"a\"](0,0,1,1););out geom; drop",
+    "[out:json][timeout:25];node(0,0,1,1);out geom;",
+    "[out:json][timeout:25];way[\"a\"](around:100,5,5);out geom;",
+    "[out:json][timeout:25];way[\"a\"](0,0,1,1);relation[\"b\"](around:10,1,2);out geom;",
+    "[out:json][timeout:25];(way[\"a\"](0,0,1,1);out geom;",
+    "[out:json][timeout:25];(way[\"a\"](0,0,1,1););way[\"b\"](0,0,1,1);out geom;",
+    "[out:json];way[\"a\"](0,0,1,1);out geom;",
+    ap.build_airport_query(LAT, LON, 3000),
+])
+def test_bbox_geom_parser_rejects_everything_else(bad):
+    with pytest.raises(ql.QueryError):
+        ql.parse_geom(bad)
+
+
+def test_the_citymap_and_around_parsers_still_decline_the_bbox_shape():
+    q = bm.motorway_query(VIEW)
+    assert ql.parse_geom(q)
+    with pytest.raises(ql.QueryError):
+        ql.parse(q)
+    with pytest.raises(ql.QueryError):
+        ql.parse_around(q)
+
+
+def test_bbox_filters_recheck_the_exact_tags():
+    cases = [
+        ('["highway"~"^(motorway|trunk)$"]', {"highway": "trunk"}, True),
+        ('["highway"~"^(motorway|trunk)$"]', {"highway": "primary"}, False),
+        ('["highway"~"^(motorway|trunk)$"]', {"highway": "motorway_link"}, False),
+        ('["waterway"="river"]["name"]', {"waterway": "river", "name": "Duna"}, True),
+        ('["waterway"="river"]["name"]', {"waterway": "stream", "name": "X"}, False),
+        ('["waterway"="river"]["name"]', {"waterway": "river"}, False),
+        ('["natural"="water"]["name"]["water"~"^(lake|reservoir)$"]',
+         {"natural": "water", "name": "Lake", "water": "reservoir"}, True),
+        ('["natural"="water"]["name"]["water"~"^(lake|reservoir)$"]',
+         {"natural": "water", "water": "lake"}, False),
+        ('["natural"="water"]["name"]["water"~"^(lake|reservoir)$"]',
+         {"natural": "water", "name": "Pond", "water": "pond"}, False),
+    ]
+    for text, tags, want in cases:
+        assert tags_match(text, tags) is want, (text, tags)
+
+
+def test_run_geom_answers_the_traffic_layers_and_excludes_non_matches(local):
+    motorways = local.run_geom(ql.parse_geom(bm.motorway_query(VIEW)))
+    assert _ids(motorways["elements"], "way") == {10, 12}
+    w10 = next(e for e in motorways["elements"] if e["id"] == 10)
+    assert w10["geometry"][0] == {"lat": 7.0, "lon": 1.0}
+    assert "nodes" not in w10
+    assert motorways["osm3s"]["timestamp_osm_base"] == "2026-11-16T00:00:00Z"
+
+    waterways = local.run_geom(ql.parse_geom(bm.waterway_query(VIEW)))
+    assert _ids(waterways["elements"], "way") == {13}  # not the stream or unnamed river
+
+    water = local.run_geom(ql.parse_geom(bm.water_query(VIEW)))
+    assert _ids(water["elements"], "way") == {16}      # not unnamed / pond
+    assert _ids(water["elements"], "relation") == {901}
+    rel = next(e for e in water["elements"] if e["type"] == "relation")
+    assert rel["members"][0]["geometry"][0] == {"lat": 7.95, "lon": 1.0}
+    assert all(e["type"] != "node" for e in water["elements"])
+
+
+def test_run_geom_limits_to_the_bbox_and_dedupes_union_members(local):
+    small = (6.5, 7.05, 0.5, 3.5)  # lat 7.0 motorway in, lat 8.0 trunk out
+    assert _ids(local.run_geom(ql.parse_geom(bm.motorway_query(small)))["elements"], "way") == {10}
+    q = (
+        '[out:json][timeout:25];\n(\n'
+        '  way["highway"~"^(motorway|trunk)$"](0.5,0.5,9.5,9.5);\n'
+        '  way["highway"~"^(motorway|trunk)$"](0.5,0.5,9.5,9.5);\n'
+        ');\nout geom;'
+    )
+    ids = [e["id"] for e in local.run_geom(ql.parse_geom(q))["elements"]]
+    assert sorted(ids) == [10, 12]
+
+
+def test_bbox_geom_falls_through_when_uncovered_unsupported_or_stale(local, monkeypatch):
+    from backend.osm_local import service
+
+    q = bm.motorway_query(VIEW)
+    assert service.answer(q) is not None
+    assert service.answer(bm.motorway_query((20.0, 21.0, 20.0, 21.0))) is None
+    assert service.answer(bm.country_query(VIEW)) is None
+    assert service.answer(
+        '[out:json][timeout:25];\nway["highway"="cycleway"](0.5,0.5,9.5,9.5);\nout geom;'
+    ) is None
+    monkeypatch.setattr("backend.osm_local.store.registry", lambda: [("way", '["nothing"]')])
+    service.reset()
+    assert service.answer(q) is None
+
+
+def test_traffic_basemap_fetch_uses_the_extract_only_for_supported_layers(local, monkeypatch):
+    got = asyncio.run(ap.fetch_airport_polygons(bm.motorway_query(VIEW)))
+    assert _ids(got, "way") == {10, 12}
+
+    async def boom(*a, **k):
+        raise AssertionError("mirror must not be called")
+
+    monkeypatch.setattr(ap.OverpassClient, "fetch", boom)
+    asyncio.run(ap.fetch_airport_polygons(bm.waterway_query(VIEW)))  # still local
+
+    called = []
+
+    async def mirror(self, query):
+        called.append(query)
+        return [{"type": "relation", "id": 999}]
+
+    monkeypatch.setattr(ap.OverpassClient, "fetch", mirror)
+    out = asyncio.run(ap.fetch_airport_polygons(bm.country_query(VIEW)))
+    assert called and out == [{"type": "relation", "id": 999}]
+
+
+# ---- oversized traffic views are clipped, not declined ------------------------
+
+OVERSIZED = (-50.0, 50.0, -40.0, 40.0)  # traffic BBox: south, north, west, east
+OVERSIZED_BBOX = (OVERSIZED[0], OVERSIZED[2], OVERSIZED[1], OVERSIZED[3])
+
+
+def test_clip_bbox_intersects_the_coverage_but_covers_stays_strict(local):
+    assert not local.covers(OVERSIZED_BBOX)
+    assert local.clip_bbox(OVERSIZED_BBOX) == (0.0, 0.0, 10.0, 10.0)
+    assert local.clip_bbox((20.0, 20.0, 21.0, 21.0)) is None
+    assert cov.clip_bbox(local.rings, (10.0, 0.0, 12.0, 10.0)) is None  # edge touch
+
+
+def test_oversized_traffic_queries_are_answered_from_the_covered_part(local):
+    from backend.osm_local import service
+
+    motorways = service.answer(bm.motorway_query(OVERSIZED))
+    assert motorways is not None
+    assert _ids(motorways["elements"], "way") == {10, 12}
+    assert _ids(service.answer(bm.waterway_query(OVERSIZED))["elements"], "way") == {13}
+    water = service.answer(bm.water_query(OVERSIZED))
+    assert _ids(water["elements"], "way") == {16}
+    assert _ids(water["elements"], "relation") == {901}
+    # Clipping removed the out-of-coverage way that an unclipped query would see.
+    unclipped = local.run_geom(ql.parse_geom(bm.motorway_query(OVERSIZED)))
+    assert 20 in _ids(unclipped["elements"], "way")
+    assert 20 not in _ids(motorways["elements"], "way")
+
+
+def test_citymap_and_around_keep_full_coverage_with_the_geom_path(local):
+    from backend.osm_local import service
+
+    assert service.answer(build_overpass_query(OVERSIZED_BBOX, ["highways"])) is None
+    assert service.answer(ap.build_airport_query(5.0, 5.0, 600_000)) is None
+    assert service.answer(bm.motorway_query(OVERSIZED)) is not None
+
+
+def test_traffic_basemap_fetch_handles_the_real_oversized_view(local, monkeypatch):
+    async def boom(*a, **k):
+        raise AssertionError("mirror must not be called")
+
+    monkeypatch.setattr(ap.OverpassClient, "fetch", boom)
+    for query in (bm.motorway_query(OVERSIZED), bm.waterway_query(OVERSIZED),
+                  bm.water_query(OVERSIZED)):
+        assert asyncio.run(ap.fetch_airport_polygons(query))
