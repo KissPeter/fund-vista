@@ -12,7 +12,10 @@ triggers:
 ## Settings
 
 Both triggers MUST stay disabled unless both URLs are set. With neither set,
-no background task is created and tests are unaffected.
+no background task is created and tests are unaffected. The Mac deploy
+candidate (`fundvista-next`) MUST run with both URLs explicitly empty: it is
+removed right after smoke, and would otherwise claim the startup replay and
+leave the real container without a post-deploy warm-up.
 
 | Env var | Meaning |
 | --- | --- |
