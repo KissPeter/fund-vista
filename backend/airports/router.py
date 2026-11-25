@@ -1,4 +1,4 @@
-"""Thin HTTP glue for /v1/airports. No diagram math lives here — only:
+"""Thin HTTP glue for /v1/airports. No diagram math lives here - only:
 
 lookup (OurAirports) -> Redis cache -> Overpass -> geometry/render ->
 schema out, with all failures mapped to the ``{"error": {"code",
@@ -57,8 +57,9 @@ from backend.cancel import (
 )
 from backend.http import error_response, fnum
 from backend.penplot import imaging
+from backend.penplot.public_result import RESULT_RESPONSES, result_response
 from backend.penplot.errors import ErrorCode, PenPlotError
-from backend.penplot.router import require_rate_limit, resolve_public_base
+from backend.penplot.router import get_settings, require_rate_limit, resolve_public_base
 from backend.penplot.router import store as penplot_store
 
 log = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ router = APIRouter(prefix="/v1/airports", tags=["airports-v1"])
 def render_diagram_version() -> str:
     """Layout version baked into the SVG cache key (kills stale renders).
 
-    Content hash of the renderer source — automatic on every change."""
+    Content hash of the renderer source - automatic on every change."""
     return render_source_version()
 
 
@@ -368,8 +369,8 @@ def crop_svg_to_content(svg_text: str) -> str:
 async def import_diagram(body: RenderRequest, request: Request) -> ImportResponse | JSONResponse:
     """Render an airport diagram and register it as a penplot image.
 
-    Returns ``image_id`` — convert it with ``POST /v1/convert`` exactly
-    like an uploaded SVG (vector branch: every method applies — Contour
+    Returns ``image_id`` - convert it with ``POST /v1/convert`` exactly
+    like an uploaded SVG (vector branch: every method applies - Contour
     traces directly, Centerline/Hatch/Flow rasterize first so threshold
     and tone shape them; pen/page/label/display all apply).
 
@@ -388,7 +389,7 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
     if sum(path_counts.values()) == 0 and not runway_rows:
         return error_response(
             422, ErrorCode.INVALID_PARAMS,
-            f"No diagram features found for '{icao}' — "
+            f"No diagram features found for '{icao}' - "
             "unknown field or empty OSM coverage.",
         )
     try:
@@ -417,15 +418,15 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
     )
 
 
-@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)])
+@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)], responses=RESULT_RESPONSES)
 async def get_result(token: str) -> Response:
-    """Serve a cached rendered SVG (sha1 token from ``svg_url``)."""
+    """Serve a cached result: PNG publicly, SVG only on the internal instance."""
     if len(token) != 40 or any(c not in "0123456789abcdef" for c in token.lower()):
         return error_response(404, "result_not_found", "Unknown diagram result.")
     svg_text = await cache_get(f"{KEY_PREFIX}:svg:{token.lower()}")
     if svg_text is None:
         return error_response(
             404, "result_not_found",
-            "Diagram result expired or unknown — re-run POST /v1/airports/render.",
+            "Diagram result expired or unknown - re-run POST /v1/airports/render.",
         )
-    return Response(content=svg_text, media_type="image/svg+xml")
+    return await result_response(svg_text, get_settings())

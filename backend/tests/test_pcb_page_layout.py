@@ -229,8 +229,8 @@ def test_ink_split_replots_a_lost_sheet_with_the_layout(monkeypatch):
     from backend.penplot.config import Settings
 
     monkeypatch.setenv("PENPIXEL_HMAC_SECRET", TEST_HMAC_SECRET)
-    monkeypatch.setattr(pcb_router, "_settings", Settings())
-    monkeypatch.setattr(fulfill_router, "_settings", Settings())
+    monkeypatch.setattr(pcb_router, "_settings", Settings(allow_svg=True))
+    monkeypatch.setattr(fulfill_router, "_settings", Settings(allow_svg=True))
     params = _params(layout={"page": PAGE_LANDSCAPE, "label": _label("below")},
                      lines=["Main board", "rev 2"])
     with TestClient(app) as client:

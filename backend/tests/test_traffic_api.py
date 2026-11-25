@@ -1069,3 +1069,26 @@ def test_degraded_airfield_render_is_not_stored_in_l4(live, monkeypatch, tmp_pat
     assert healthy.json()["cache_hit"] is False
     again = live.post("/v1/traffic/render", json=_render_body(day))
     assert again.json()["cache_hit"] is True
+
+
+def test_public_results_route_serves_png(public_http_client):
+    public = public_http_client
+    day = _yesterday_iso()
+    ingest = public.post(
+        "/v1/jobs",
+        json={
+            "type": "traffic_ingest",
+            "request": {"icao": "LHBP", "date": day},
+            "cancel_previous": False,
+        },
+    )
+    assert ingest.status_code == 202, ingest.text
+    final = _wait_done(public, ingest.json()["job_id"])
+    assert final["status"] == "done", final
+    rendered = public.post("/v1/traffic/render", json=_render_body(day))
+    assert rendered.status_code == 200, rendered.text
+    result_url = rendered.json()["svg_url"]
+    result = public.get(result_url)
+    assert result.status_code == 200, result.text
+    assert result.headers["content-type"].startswith("image/png")
+    assert result.content.startswith(b"\x89PNG")

@@ -16,6 +16,9 @@ import subprocess
 import sys
 import time
 
+# The default test instance is locked (PENPLOT_ALLOW_SVG unset). Only the
+# explicit internal_* fixtures below start a subprocess with allow_svg on.
+
 import httpx
 import pytest
 
@@ -57,15 +60,19 @@ def _wait_for_health(base_url: str, proc: subprocess.Popen, timeout_s: float = 3
     )
 
 
-@pytest.fixture(scope="session")
-def live_server(tmp_path_factory: pytest.TempPathFactory):
-    """Yield the base URL of a real uvicorn subprocess."""
-    data_dir = str(tmp_path_factory.mktemp("penplot-data"))
+def _start_live_server(tmp_path_factory: pytest.TempPathFactory, name: str, *, allow_svg: bool):
+    """Start one hermetic uvicorn subprocess; public and internal differ by env."""
+    data_dir = str(tmp_path_factory.mktemp(name))
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
     env = dict(os.environ)
     env["PENPLOT_DATA_DIR"] = data_dir
     env["LOG_LEVEL"] = "WARNING"
+    # Phase 6: inherited env MUST NOT turn a public test server into an SVG one.
+    env["PENPLOT_ALLOW_SVG"] = "1" if allow_svg else "0"
+    # Hermetic: both loopback twins MUST use the fixture upstream, regardless
+    # of which test first creates the session-scoped client.
+    env["FUNDVISTA_UPSTREAM_MODE"] = "mock"
     # Hermetic: never touch a developer's real Redis, and force the penplot
     # rate limiter onto its in-process fallback so windows can't leak between
     # test runs.
@@ -99,9 +106,34 @@ def live_server(tmp_path_factory: pytest.TempPathFactory):
 
 
 @pytest.fixture(scope="session")
+def live_server(tmp_path_factory: pytest.TempPathFactory):
+    """Yield the loopback-only, SVG-capable test server used by vector tests."""
+    yield from _start_live_server(tmp_path_factory, "penplot-internal", allow_svg=True)
+
+
+@pytest.fixture(scope="session")
+def public_live_server(tmp_path_factory: pytest.TempPathFactory):
+    """Yield the public, browser-reachable test server (PNG only)."""
+    yield from _start_live_server(tmp_path_factory, "penplot-public", allow_svg=False)
+
+
+@pytest.fixture(scope="session")
 def http_client(live_server: str):
-    """Plain httpx client pointed at the live server (60s for flow method)."""
+    """Client pointed at the internal server (60s for flow method)."""
     with httpx.Client(base_url=live_server, timeout=60.0) as client:
+        yield client
+
+
+@pytest.fixture(scope="session")
+def internal_http_client(http_client: httpx.Client):
+    """Explicit alias for tests that exercise the SVG-capable server."""
+    yield http_client
+
+
+@pytest.fixture(scope="session")
+def public_http_client(public_live_server: str):
+    """Client pointed at the browser-reachable server; MUST see PNG only."""
+    with httpx.Client(base_url=public_live_server, timeout=60.0) as client:
         yield client
 
 
@@ -113,6 +145,33 @@ def _reset_overpass_mirror_parks():
     overpass_mirrors.reset()
     yield
     overpass_mirrors.reset()
+
+
+@pytest.fixture(autouse=True)
+def _internal_svg_capable_services(request, monkeypatch):
+    """Keep in-process tests on the internal SVG-capable settings.
+
+    The public HTTP fixtures start their own locked subprocess and MUST NOT be
+    affected. No environment variable is set here, so a bare ``Settings()``
+    still observes the locked production default.
+    """
+    if any(
+        name in request.fixturenames
+        for name in ("public_http_client", "public_live_server")
+    ):
+        return
+
+    from backend.fulfillment import router as fulfillment_router
+    from backend.pcb import router as pcb_router
+    from backend.penplot import router as penplot_router
+
+    for module in (penplot_router, fulfillment_router, pcb_router):
+        monkeypatch.setattr(
+            module,
+            "_settings",
+            module._settings.model_copy(update={"allow_svg": True}),
+        )
+
 
 def pytest_addoption(parser):
     parser.addoption(

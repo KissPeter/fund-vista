@@ -19,6 +19,7 @@ class ErrorCode:
     INVALID_PARAMS = "invalid_params"
     PROCESSING_FAILED = "processing_failed"
     PAYLOAD_TOO_LARGE = "payload_too_large"
+    SVG_LOCKED = "svg_locked"
     UNSUPPORTED_MEDIA_TYPE = "unsupported_media_type"
     BAD_IMAGE = "bad_image"
     IMAGE_TOO_LARGE = "image_too_large"
@@ -69,6 +70,14 @@ def image_not_found(image_id: str) -> PenPlotError:
 def invalid_params(message: str) -> PenPlotError:
     return PenPlotError(
         status=422, code=ErrorCode.INVALID_PARAMS, message=message
+    )
+
+
+def svg_locked() -> PenPlotError:
+    return PenPlotError(
+        status=404,
+        code=ErrorCode.SVG_LOCKED,
+        message="SVG is not served on public routes.",
     )
 
 

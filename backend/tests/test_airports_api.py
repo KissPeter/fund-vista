@@ -523,3 +523,14 @@ def test_airport_import_convert_runway_band_spans_the_strip(live: httpx.Client):
         # every interior leg reaches (almost) the stroke's own ends
         assert min(legs[1:-1] or legs) > 0.97 * extent, (extent, sorted(legs)[:3])
     assert bands >= 1, "runway band missing from the final"
+
+
+def test_public_results_route_serves_png(public_http_client):
+    public = public_http_client
+    rendered = public.post("/v1/airports/render", json={"icao": "LHBP"})
+    assert rendered.status_code == 200, rendered.text
+    result_url = rendered.json()["svg_url"]
+    result = public.get(result_url)
+    assert result.status_code == 200, result.text
+    assert result.headers["content-type"].startswith("image/png")
+    assert result.content.startswith(b"\x89PNG")

@@ -58,7 +58,7 @@ from backend.pcb.schemas import PcbRenderParams
 from backend.pcb.sheet import sheet_from_source
 from backend.http import error_response
 from backend.penplot import imaging
-from backend.penplot.errors import PenPlotError
+from backend.penplot.errors import PenPlotError, svg_locked
 from backend.penplot import tokens as design_tokens
 from backend.penplot.config import Settings
 from backend.penplot.pipeline import run_convert
@@ -173,6 +173,10 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
     sharing an ink merge into one file, empty layers produce nothing.
     """
     started = time.monotonic()
+    # Phase 6: plotter SVG leaves the backend only for the shop server's
+    # internal channel (which then hands it to the WordPress bridge).
+    if not _settings.allow_svg:
+        raise svg_locked()
     refused = _verify(body)
     if refused is not None:
         return refused

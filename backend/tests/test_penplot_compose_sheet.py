@@ -388,8 +388,8 @@ def _post(http_client, body):
     return http_client.post("/v1/compose-sheet", json=body)
 
 
-def test_http_returns_svg_and_markers(http_client):
-    resp = _post(http_client, VALID)
+def test_internal_http_returns_svg_and_markers(internal_http_client):
+    resp = _post(internal_http_client, VALID)
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("image/svg+xml")
     root = _root(resp.text)
@@ -399,15 +399,22 @@ def test_http_returns_svg_and_markers(http_client):
         assert _marked(root, marker), marker
 
 
-def test_http_is_byte_identical_for_the_same_request(http_client):
-    first = _post(http_client, VALID)
-    second = _post(http_client, VALID)
+def test_public_http_refuses_svg(public_http_client):
+    resp = _post(public_http_client, VALID)
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["error"]["code"] == "svg_locked"
+    assert not resp.headers["content-type"].startswith("image/svg+xml")
+
+
+def test_internal_http_is_byte_identical_for_the_same_request(internal_http_client):
+    first = _post(internal_http_client, VALID)
+    second = _post(internal_http_client, VALID)
     assert first.status_code == second.status_code == 200
     assert first.content == second.content
 
 
-def test_http_minimal_request_uses_defaults(http_client):
-    resp = _post(http_client, {"svg": ART.decode()})
+def test_internal_http_minimal_request_uses_defaults(internal_http_client):
+    resp = _post(internal_http_client, {"svg": ART.decode()})
     assert resp.status_code == 200, resp.text
     assert _marked(_root(resp.text), "data-kp-label") == []
 
@@ -446,21 +453,21 @@ def test_http_accepts_a_full_length_label_line(http_client):
         lambda b: b["context_table"]["pads"].update(left=21),
     ],
 )
-def test_http_invalid_input_is_422(http_client, mutate):
+def test_http_invalid_input_is_422(internal_http_client, mutate):
     body = {**VALID, "layout": {k: dict(v) for k, v in VALID["layout"].items()},
             "context_table": {**VALID["context_table"],
                               "rows": [dict(r) for r in VALID["context_table"]["rows"]],
                               "pads": dict(VALID["context_table"]["pads"])}}
     mutate(body)
-    resp = _post(http_client, body)
+    resp = _post(internal_http_client, body)
     assert resp.status_code == 422, resp.text
     assert resp.json()["error"]["code"] in ("invalid_params", "unsupported_media_type", "bad_image")
 
 
-def test_http_oversize_is_413(http_client):
+def test_http_oversize_is_413(internal_http_client):
     pad = "<!-- " + "x" * (26 * 1024 * 1024) + " -->"
     svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{pad}</svg>'
-    resp = _post(http_client, {"svg": svg})
+    resp = _post(internal_http_client, {"svg": svg})
     assert resp.status_code == 413, resp.text
     assert resp.json()["error"]["code"] == "payload_too_large"
 

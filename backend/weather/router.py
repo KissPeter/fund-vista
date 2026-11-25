@@ -14,8 +14,9 @@ from fastapi.responses import JSONResponse
 
 from backend.http.errors import error_response
 from backend.penplot import imaging
+from backend.penplot.public_result import RESULT_RESPONSES, result_response
 from backend.penplot.errors import PenPlotError
-from backend.penplot.router import require_rate_limit, resolve_public_base
+from backend.penplot.router import get_settings, require_rate_limit, resolve_public_base
 from backend.penplot.router import store as penplot_store
 from backend.weather import availability as _avail
 from backend.weather.config import WEATHER_RETAIN_HOURS
@@ -128,11 +129,11 @@ async def import_artwork(body: RenderRequest) -> ImportResponse | JSONResponse:
     )
 
 
-@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)], responses=_RESULT_REFUSALS)
+@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)], responses={**_RESULT_REFUSALS, **RESULT_RESPONSES})
 async def get_result(token: str) -> Response:
-    """Serve a cached weather SVG (sha1 token from ``svg_url``)."""
+    """Serve a cached weather result: PNG publicly, SVG only on the internal instance."""
     svg_text = await service.load_result_svg(token)
     if svg_text is None:
         return error_response(404, "result_not_found",
                               "Weather result expired or unknown - re-run POST /v1/weather/render.")
-    return Response(content=svg_text, media_type="image/svg+xml")
+    return await result_response(svg_text, get_settings())

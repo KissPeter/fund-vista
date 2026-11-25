@@ -453,3 +453,17 @@ def test_render_overpass_remark_caches_no_tiles(live, monkeypatch):
     resp = live.post("/v1/citymap/render", json=_bbox_body(BBOX_RENDER, ["roads"]))
     assert resp.status_code == 502, resp.text
     assert not redis_harness.cached_values("fund-vista:citymap:v1:tile:")
+
+
+def test_public_results_route_serves_png(public_http_client):
+    public = public_http_client
+    rendered = public.post(
+        "/v1/citymap/render",
+        json=_bbox_body(BBOX_RENDER, ["roads"]),
+    )
+    assert rendered.status_code == 200, rendered.text
+    result_url = rendered.json()["svg_url"]
+    result = public.get(result_url)
+    assert result.status_code == 200, result.text
+    assert result.headers["content-type"].startswith("image/png")
+    assert result.content.startswith(b"\x89PNG")

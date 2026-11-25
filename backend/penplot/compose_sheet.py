@@ -70,6 +70,7 @@ from backend.penplot.errors import (
     PenPlotError,
     invalid_params,
     sheet_not_plottable,
+    svg_locked,
 )
 from backend.penplot.methods import Polyline
 from backend.penplot.raster import looks_like_svg
@@ -102,7 +103,7 @@ router = APIRouter(prefix="/v1", tags=["penplot-v1"])
 
 #: Version of the preview render recipe. Bump it when the raster changes so
 #: cached PNGs made by an older recipe are not served.
-PREVIEW_RENDER_VERSION = 1
+PREVIEW_RENDER_VERSION = 2
 #: Paper colour of the PNG when the request names none.
 DEFAULT_PAPER = "#ffffff"
 #: Immutable: the file name is the content hash of the request.
@@ -1022,10 +1023,47 @@ def _write_file_atomic(path: str, data: bytes) -> None:
     os.replace(tmp, path)
 
 
+def _table_verdict_headers(sheet: str) -> dict[str, str]:
+    """The root's table verdict, in headers a raster answer can carry too."""
+    tag = sheet[: sheet.find(">") + 1]
+    overlap = re.search(r'\sdata-kp-art-overlap="([01])"', tag)
+    if overlap is None:
+        return {}
+    fixes = re.search(r'\sdata-kp-table-fixes="([^"]*)"', tag)
+    headers = {"X-Table-Overlap": overlap.group(1)}
+    if fixes is not None:
+        headers["X-Table-Fixes"] = fixes.group(1)
+    return headers
+
+
+def _verdict_path(filename: str) -> str:
+    """Sidecar of one cached preview PNG, so a cache hit keeps its verdict."""
+    return store.result_path(f"{filename}.verdict.json")
+
+
+def _read_verdict(filename: str) -> dict[str, str]:
+    try:
+        with open(_verdict_path(filename), "r", encoding="utf-8") as fh:
+            value = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, str)}
+
+
 def _render_preview(body: ComposeSheetRequest, settings) -> bytes:
     """Compose the sheet (the one composer) and rasterize it at the fixed size."""
+    return _render_preview_with_verdict(body, settings)[0]
+
+
+def _render_preview_with_verdict(
+    body: ComposeSheetRequest, settings
+) -> tuple[bytes, dict[str, str]]:
+    """The PNG bytes and the root verdict the raster answer must carry."""
     started = time.perf_counter()
     sheet = compose_sheet_svg(body, max_svg_bytes=settings.max_upload_bytes)
+    verdict = _table_verdict_headers(sheet)
     width_mm, height_mm = _sheet_mm(sheet)
     width_px, height_px = raster_out.preview_size(
         width_mm, height_mm, settings.preview_png_box_w_px, settings.preview_png_box_h_px,
@@ -1036,7 +1074,7 @@ def _render_preview(body: ComposeSheetRequest, settings) -> bytes:
         len(data), width_px, height_px, int((time.perf_counter() - started) * 1000),
         raster_out.RENDERER,
     )
-    return data
+    return data, verdict
 
 
 def _png_size(data: bytes) -> tuple[int, int]:
@@ -1090,8 +1128,9 @@ def _store_stl_sheet(
     responses={
         200: {
             "content": {"image/svg+xml": {}, "image/png": {}},
-            "description": "Composed A4 sheet (svg, default) or its preview (png).",
+            "description": "Composed A4 sheet. SVG is internal-only; public instances answer PNG.",
         },
+        404: {"description": "Full-resolution SVG is locked on public instances (svg_locked)."},
     },
     dependencies=[Depends(require_rate_limit)],
 )
@@ -1102,6 +1141,8 @@ async def compose_sheet_endpoint(body: ComposeSheetRequest, request: Request) ->
     the same sheet as PNG and names its cached GET URL in ``X-Preview-Url``.
     """
     settings = get_settings()
+    if body.preview == "svg" and not settings.allow_svg:
+        raise svg_locked()
     # Stored ids are checked at the store boundary; the pure composer below
     # keeps its keyword-only signature and never reads the filesystem.
     metas = (
@@ -1112,23 +1153,27 @@ async def compose_sheet_endpoint(body: ComposeSheetRequest, request: Request) ->
         key = _preview_key(body, settings)
         filename = f"{key}_preview.png"
         path = store.result_path(filename)
-        if os.path.exists(path):
+        # A cached PNG without its verdict sidecar is stale: the sidecar
+        # recipe arrived after the first immutable cache files. Recompute
+        # both together so a cache hit never loses the table headers.
+        if os.path.exists(path) and os.path.exists(_verdict_path(filename)):
             data = await asyncio.to_thread(_read_file, path)
+            verdict = await asyncio.to_thread(_read_verdict, filename)
         else:
-            data = await asyncio.to_thread(_render_preview, body, settings)
+            data, verdict = await asyncio.to_thread(_render_preview_with_verdict, body, settings)
             await asyncio.to_thread(_write_file_atomic, path, data)
+            await asyncio.to_thread(_write_file_atomic, _verdict_path(filename),
+                                    json.dumps(verdict).encode("utf-8"))
         width_px, height_px = _png_size(data)
-        return Response(
-            content=data,
-            media_type="image/png",
-            headers={
-                "ETag": f'"{key}"',
-                "Cache-Control": PREVIEW_CACHE_CONTROL,
-                "X-Preview-Url": f"{resolve_public_base(request)}/v1/previews/{filename}",
-                "X-Preview-Width": str(width_px),
-                "X-Preview-Height": str(height_px),
-            },
-        )
+        headers = {
+            "ETag": f'"{key}"',
+            "Cache-Control": PREVIEW_CACHE_CONTROL,
+            "X-Preview-Url": f"{resolve_public_base(request)}/v1/previews/{filename}",
+            "X-Preview-Width": str(width_px),
+            "X-Preview-Height": str(height_px),
+        }
+        headers.update(verdict)
+        return Response(content=data, media_type="image/png", headers=headers)
     svg = await asyncio.to_thread(
         compose_sheet_svg, body, max_svg_bytes=settings.max_upload_bytes,
     )

@@ -1,4 +1,4 @@
-"""Thin HTTP glue for /v1/wordmark. No wordmark math lives here — only:
+"""Thin HTTP glue for /v1/wordmark. No wordmark math lives here - only:
 
 text -> font outlines -> boolean dot cuts -> schema out, with all failures
 mapped to the ``{"error": {"code", "message"}}`` envelope (the globally
@@ -9,7 +9,7 @@ Expensive endpoints (render/import/results) share the penplot per-IP
 rate-limit bucket. Rendering is local CPU (no upstream), so the only
 failure modes are validation (422) and processing (500-class, via the
 shared handlers). The build runs off the event loop; abort checkpoints
-mirror the airports pair (validation+cache, pre/post build) — there is no
+mirror the airports pair (validation+cache, pre/post build) - there is no
 long upstream fetch or pollable CPU loop here, so no disconnect watcher.
 """
 
@@ -38,8 +38,9 @@ from backend.wordmark.schemas import (
     RenderResponse,
 )
 from backend.penplot import imaging
+from backend.penplot.public_result import RESULT_RESPONSES, result_response
 from backend.penplot.errors import ErrorCode, PenPlotError
-from backend.penplot.router import require_rate_limit
+from backend.penplot.router import get_settings, require_rate_limit
 from backend.penplot.router import resolve_public_base
 from backend.penplot.router import store as penplot_store
 
@@ -197,8 +198,8 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse:
 async def import_wordmark(body: RenderRequest, request: Request) -> ImportResponse | JSONResponse:
     """Render a wordmark and register it as a penplot image.
 
-    Returns ``image_id`` — convert it with ``POST /v1/convert`` exactly
-    like an uploaded SVG (vector branch: every method applies — Contour
+    Returns ``image_id`` - convert it with ``POST /v1/convert`` exactly
+    like an uploaded SVG (vector branch: every method applies - Contour
     traces directly, Centerline/Hatch/Flow rasterize first so threshold
     and tone shape them; pen/page/label/display all apply).
     """
@@ -229,15 +230,15 @@ async def import_wordmark(body: RenderRequest, request: Request) -> ImportRespon
     )
 
 
-@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)])
+@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)], responses=RESULT_RESPONSES)
 async def get_result(token: str) -> Response:
-    """Serve a cached rendered SVG (sha1 token from ``svg_url``)."""
+    """Serve a cached result: PNG publicly, SVG only on the internal instance."""
     if len(token) != 40 or any(c not in "0123456789abcdef" for c in token.lower()):
         return _error(404, "result_not_found", "Unknown wordmark result.")
     svg_text = await cache_get(f"{KEY_PREFIX}:svg:{token.lower()}")
     if svg_text is None:
         return _error(
             404, "result_not_found",
-            "Wordmark result expired or unknown — re-run POST /v1/wordmark/render.",
+            "Wordmark result expired or unknown - re-run POST /v1/wordmark/render.",
         )
-    return Response(content=svg_text, media_type="image/svg+xml")
+    return await result_response(svg_text, get_settings())

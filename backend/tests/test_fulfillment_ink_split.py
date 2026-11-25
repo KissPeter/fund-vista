@@ -498,6 +498,20 @@ def _traffic_params(day: str, **kw) -> dict:
     return body
 
 
+def test_public_ink_split_refuses_svg_json(public_http_client):
+    resp = public_http_client.post(
+        "/v1/fulfill/ink-split",
+        json={
+            "design": {"design_id": "0" * 64, "exp": 4102444800, "sig": "0" * 64},
+            "kind": "airport",
+            "params": {"icao": "LHBP"},
+            "inks": {"pen": "black"},
+        },
+    )
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["error"]["code"] == "svg_locked"
+
+
 def test_ink_split_traffic_three_passes_over_http(live, monkeypatch, tmp_path):
     """The #1079/#147 acceptance case end to end: import → token → split."""
     import datetime as _dt

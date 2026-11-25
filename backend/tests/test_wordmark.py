@@ -198,3 +198,14 @@ def test_render_rejects_bad_input(http_client):
     # Unknown field: extra="forbid" gate.
     resp = http_client.post("/v1/wordmark/render", json={"text": "AB", "nope": 1})
     assert resp.status_code == 422
+
+
+def test_public_result_route_serves_png(public_http_client):
+    public = public_http_client
+    rendered = public.post("/v1/wordmark/render", json={"text": "AB"})
+    assert rendered.status_code == 200, rendered.text
+    result_url = rendered.json()["svg_url"]
+    result = public.get(result_url)
+    assert result.status_code == 200, result.text
+    assert result.headers["content-type"].startswith("image/png")
+    assert result.content.startswith(b"\x89PNG")

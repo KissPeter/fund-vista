@@ -20,6 +20,11 @@ dist/
 # treats a symlink as a file - `backend/.venv/` would not match it.
 .venv
 
+# Local generated test results are not committed; tracked fixtures stay tracked.
+/backend/.data/images/*.svg
+/backend/.data/images/*.svg.retained
+test-results/
+
 # plotvid: raw plotter recordings and render output (local only).
 /video/
 tools/plotvid/out/

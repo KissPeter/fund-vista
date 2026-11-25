@@ -8,11 +8,13 @@ already-stamped bytes through unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 import defusedxml.ElementTree as ET
 
-from backend.penplot import imaging, svgmeta
+from backend.penplot import imaging, public_result, svgmeta
+from backend.penplot import router as penplot_router
 from backend.penplot.config import Settings
 from backend.tests.helpers import default_params, png_bytes, upload
 
@@ -176,3 +178,56 @@ def test_results_download_404s_match_preview(http_client):
         "/v1/results/does_not_exist_optimized.svg?download=1").status_code == 404
     assert http_client.get(
         "/v1/results/does_not_exist_optimized.svg?credit=1").status_code == 404
+
+
+def test_public_results_route_answers_png_only(public_http_client):
+    body = _convert_ok(public_http_client)
+    path = body["svg_url"].split("/v1", 1)[1]
+    resp = public_http_client.get("/v1" + path)
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("image/png")
+    assert resp.content.startswith(b"\x89PNG")
+    assert resp.headers["cache-control"] == f"public, max-age={public_result.PUBLIC_PNG_TTL_SECONDS}"
+    download = public_http_client.get("/v1" + path + "?download=1")
+    assert download.status_code == 200
+    assert download.headers["content-type"].startswith("image/png")
+    assert download.content == resp.content
+    assert download.headers["content-disposition"].startswith("attachment;")
+    assert '.png"' in download.headers["content-disposition"]
+
+
+def test_locked_public_download_stamps_before_rasterization(tmp_path, monkeypatch):
+    settings = Settings(
+        data_dir=str(tmp_path),
+        allow_svg=False,
+        svg_attribution_url="https://pen-pixel.hu/shop",
+    )
+    monkeypatch.setattr(penplot_router, "_settings", settings)
+    filename = "a" * 64 + "_hash_optimized.svg"
+    (tmp_path / filename).write_text(SVG, encoding="utf-8")
+    monkeypatch.setattr(
+        penplot_router.store, "result_path", lambda name: str(tmp_path / name)
+    )
+
+    seen: list[str] = []
+
+    def _fake_png(svg_text, _settings, _paper=None):
+        seen.append(svg_text)
+        return b"PNG", "etag"
+
+    monkeypatch.setattr(public_result, "public_result_png", _fake_png)
+
+    plain = asyncio.run(penplot_router.get_result(filename))
+    download = asyncio.run(penplot_router.get_result(filename, download=True))
+    credit = asyncio.run(penplot_router.get_result(filename, credit=True))
+
+    stamped = svgmeta.stamp_download(SVG, settings)
+    assert seen == [SVG, stamped, stamped]
+    for response in (plain, download, credit):
+        assert response.media_type == "image/png"
+        assert response.body == b"PNG"
+    assert "content-disposition" not in plain.headers
+    assert download.headers["content-disposition"] == (
+        f'attachment; filename="{filename[:-4]}.png"'
+    )
+    assert "content-disposition" not in credit.headers
