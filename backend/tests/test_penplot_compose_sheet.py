@@ -818,9 +818,9 @@ def test_overlap_lists_the_table_fixes_in_the_documented_order():
         {"kind": "removeRows", "n": 1, "corner": "bottom-left"},
         {"kind": "orientation", "orientation": "portrait"},
         {"kind": "margins"},
-        # Moving the title outside no longer clears this worst case: the
-        # artwork keeps the page padding from the inset frame, so its right
-        # edge comes within the table's 2 mm clearance.
+        # An outside title cannot clear this full-page worst case: the artwork
+        # keeps the page padding from the inset frame. A smaller table still
+        # gets this fix, covered by test_label_outside_fix_still_clears_a_smaller_table.
         {"kind": "disableTable"},
     ]
     ranks = [FIX_ORDER.index(f["kind"]) for f in fixes]
@@ -837,6 +837,23 @@ def test_each_listed_table_fix_clears_the_overlap_when_applied():
             continue
         assert _placement(root)["data-kp-art-overlap"] == "0", fix
         _assert_drawn_ink_clears_table(root, WIDE_INK)
+
+
+def test_label_outside_fix_still_clears_a_smaller_table():
+    # The documented fix producer stays live: with a short table in the
+    # bottom-left corner, moving the title below the frame still clears it.
+    req = copy.deepcopy(OVERLAP_REQ)
+    req["context_table"]["position"] = "bottom-left"
+    req["context_table"]["rows"] = LONG_ROWS[:4]
+    req["context_table"]["pads"] = {"left": 0, "right": 0, "top": 0, "bottom": 0}
+    root = _compose_dict(req)
+    assert _placement(root)["data-kp-art-overlap"] == "1"
+    fixes = json.loads(root.attrib["data-kp-table-fixes"])
+    fix = {"kind": "labelOutside", "placement": "below"}
+    assert fix in fixes
+    cleared = _compose_dict(_apply_fix(req, fix))
+    assert _placement(cleared)["data-kp-art-overlap"] == "0"
+    _assert_drawn_ink_clears_table(cleared, WIDE_INK)
 
 
 #: A row whose characters the table font cannot draw (U+2603 is not in the
