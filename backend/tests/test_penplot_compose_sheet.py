@@ -533,10 +533,39 @@ def test_outside_artwork_and_sheet_have_no_band_and_keep_clear(placement):
     assert _marked(root, "data-kp-title-block") == []
     art = _marked(root, "data-kp-artwork")[0]
     y, height = float(art.attrib["y"]), float(art.attrib["height"])
+    pad = ComposePageParams().padding_mm
     if placement == "below":
-        assert y + height <= H - MARGIN - _strip() - labels.LABEL_ARTWORK_GAP_MM + TOL
+        assert y + height <= H - MARGIN - _strip() - pad + TOL
     else:
-        assert y >= MARGIN + _strip() + labels.LABEL_ARTWORK_GAP_MM - TOL
+        assert y >= MARGIN + _strip() + pad - TOL
+
+
+@pytest.mark.parametrize("placement", ["below", "above"])
+def test_outside_artwork_keeps_the_page_padding_from_the_inset_frame(placement):
+    # An artwork matching the free area's aspect fills it exactly, so the
+    # four gaps between frame and artwork can be asserted, not just bounded.
+    pad = ComposePageParams().padding_mm
+    strip = _strip()
+    art_w = W - 2 * (MARGIN + pad)
+    art_h = H - 2 * MARGIN - strip - 2 * pad
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{art_w:g}" '
+        f'height="{art_h:g}" viewBox="0 0 {art_w:g} {art_h:g}">'
+        f'<rect x="0" y="0" width="{art_w:g}" height="{art_h:g}" fill="#ff0000"/></svg>'
+    )
+    layout = {"page": {"frame": True}, "label": {"placement": placement}}
+    root = _root(_compose(svg=svg, layout=layout, lines=[TITLE, SUB]))
+    frame = _marked(root, "data-kp-frame")[0]
+    art = _marked(root, "data-kp-artwork")[0]
+    fx0, fy0, fx1, fy1 = _bounds(_xy(frame))
+    x, y = float(art.attrib["x"]), float(art.attrib["y"])
+    width, height = float(art.attrib["width"]), float(art.attrib["height"])
+    assert abs(x - (fx0 + pad)) < TOL
+    assert abs((x + width) - (fx1 - pad)) < TOL
+    if placement == "below":
+        assert abs((y + height) - (fy1 - pad)) < TOL
+    else:
+        assert abs(y - (fy0 + pad)) < TOL
 
 
 def test_outside_sheet_is_deterministic():
@@ -789,7 +818,9 @@ def test_overlap_lists_the_table_fixes_in_the_documented_order():
         {"kind": "removeRows", "n": 1, "corner": "bottom-left"},
         {"kind": "orientation", "orientation": "portrait"},
         {"kind": "margins"},
-        {"kind": "labelOutside", "placement": "below"},
+        # Moving the title outside no longer clears this worst case: the
+        # artwork keeps the page padding from the inset frame, so its right
+        # edge comes within the table's 2 mm clearance.
         {"kind": "disableTable"},
     ]
     ranks = [FIX_ORDER.index(f["kind"]) for f in fixes]
