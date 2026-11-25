@@ -568,6 +568,35 @@ def test_outside_artwork_keeps_the_page_padding_from_the_inset_frame(placement):
         assert abs(y - (fy0 + pad)) < TOL
 
 
+@pytest.mark.parametrize("placement", ["below", "above"])
+def test_outside_artwork_keeps_padding_with_a_table_present(placement):
+    # The table reserve uses LABEL_ARTWORK_GAP_MM, the artwork reserve uses
+    # page padding. A table that does not touch the ink must not blur that.
+    pad = ComposePageParams().padding_mm
+    strip = _strip()
+    art_w = W - 2 * (MARGIN + pad)
+    art_h = H - 2 * MARGIN - strip - 2 * pad
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{art_w:g}" '
+        f'height="{art_h:g}" viewBox="0 0 {art_w:g} {art_h:g}">'
+        f'<rect x="0" y="{art_h - 10:g}" width="10" height="10" fill="#000"/></svg>'
+    )
+    layout = {"page": {"frame": True}, "label": {"placement": placement}}
+    root = _root(_compose(
+        svg=svg, layout=layout, lines=[TITLE, SUB], context_table=TABLE_TOP_RIGHT,
+    ))
+    assert _placement(root)["data-kp-art-overlap"] == "0"
+    frame = _marked(root, "data-kp-frame")[0]
+    art = _marked(root, "data-kp-artwork")[0]
+    fx0, fy0, fx1, fy1 = _bounds(_xy(frame))
+    x, y = float(art.attrib["x"]), float(art.attrib["y"])
+    width, height = float(art.attrib["width"]), float(art.attrib["height"])
+    assert abs(x - (fx0 + pad)) < TOL
+    assert abs((x + width) - (fx1 - pad)) < TOL
+    assert abs(y - (fy0 + pad)) < TOL
+    assert abs((y + height) - (fy1 - pad)) < TOL
+
+
 def test_outside_sheet_is_deterministic():
     assert _outside("below", [TITLE, SUB]) == _outside("below", [TITLE, SUB])
     assert _outside("above", [TITLE]) == _outside("above", [TITLE])
