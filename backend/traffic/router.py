@@ -35,8 +35,7 @@ from backend.traffic import store as _store
 from backend.traffic.basemap import LAYERS, collect_uncached_layers, load_basemap
 from backend.traffic.classify import classify_day
 from backend.traffic.config import settings as traffic_settings
-from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
-from backend.traffic.hungary import is_hungarian_icao, row_is_hungarian
+
 from backend.traffic.render import AIRPORT_LAYERS, HIGHWAY_LAYERS, MAP_LAYERS, crop_view_to_aspect, expand_view_to_aspect, render_svg
 from backend.traffic.render_cache import (
     _load_cached_render,
@@ -87,8 +86,6 @@ async def availability(icao: str = "", date: str = ""):
     except ValidationError as exc:
         return error_response(422, "invalid_params", _first_error(exc))
     want = icao_q.icao
-    if not is_hungarian_icao(want):
-        return error_response(422, "unsupported_airport", _HU_MESSAGE)
     try:
         day_q = DayQuery(date=date)
     except ValidationError as exc:
@@ -100,9 +97,7 @@ async def availability(icao: str = "", date: str = ""):
         return error_response(404, "airport_not_found", f"No airport found for ICAO '{want}'.")
     except Exception as exc:  # OurAirports upstream down → 502 like the airports tab
         return error_response(502, "ourairports_unavailable", f"Airport lookup failed: {exc}")
-    if not row_is_hungarian(airport_row):
-        return error_response(422, "unsupported_airport", _HU_MESSAGE)
-    key = _store.day_key(day.isoformat(), want)
+    key = _store.day_key(day.isoformat(), (airport_row.get("ident") or want).strip().upper())
     try:
         hit = _store.default_store().exists(key)
     except Exception:
@@ -157,8 +152,6 @@ async def render_document(
         return error_response(404, "airport_not_found", f"No airport found for ICAO '{body.icao}'.")
     except Exception as exc:
         return error_response(502, "ourairports_unavailable", f"Airport lookup failed: {exc}")
-    if not row_is_hungarian(airport):
-        return error_response(422, "unsupported_airport", _HU_MESSAGE)
     lat = _fnum(airport.get("latitude_deg"))
     lon = _fnum(airport.get("longitude_deg"))
     if lat is None or lon is None:

@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from backend.traffic.aircraft import CATEGORIES
 from backend.traffic.classify import CLASSIFIER_VERSION
 from backend.traffic.filters import Filters
-from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
+
 
 ATTRIBUTION = (
     "Contains data from adsb.lol and OpenStreetMap contributors (ODbL); "
@@ -56,8 +56,6 @@ def _normalize_icao(v: str) -> str:
     v = (v or "").strip().upper()
     if not v or len(v) > 8:
         raise ValueError("icao must be 1-8 characters")
-    if not v.startswith("LH"):
-        raise ValueError(_HU_MESSAGE)
     return v
 
 
@@ -123,9 +121,7 @@ class TrafficIngestRequest(BaseModel):
 class IcaoQuery(BaseModel):
     """ICAO query parameter (``GET /v1/traffic/availability``).
 
-    Pydantic owns the format rule: 1-8 characters, upper-cased. The
-    Hungary-only rule stays a router decision — it has its own error code
-    (``unsupported_airport``), not ``invalid_params``.
+    Pydantic owns the format rule: 1-8 characters, upper-cased.
     """
 
     model_config = ConfigDict(extra="forbid")
