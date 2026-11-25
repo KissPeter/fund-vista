@@ -26,6 +26,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 | F-006 | feature | Traffic map: country border on the Map layer, paper-fill viewport aspect, Detail (min. path length) | done | 2026-10-27 |
 | F-007 | feature | Gallery sheet compose on the backend (`POST /v1/compose-sheet`) | in progress | 2026-10-30 |
 | CR-010 | change request | Local OSM extract (Hungary, SQLite on the Mac) as first Overpass mirror for citymap | done | 2026-11-17 |
+| B-003 | bug | Production STL toolchain runtime install (T7 follow-up) | todo | 2026-11-24 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
@@ -39,6 +40,7 @@ Doc: `docs/CR-009-mac-disk-guard.md` (disk guard + read-only-docker runbook).
 Doc: `docs/F-006-traffic-country-border-detail-aspect.md`.
 Doc: `docs/B-001-tls-ca-fallback.md`.
 Doc: `docs/B-002-ocr-backend-missing-local-suite.md`.
+Doc: `docs/B-003-stl-toolchain-runtime-install.md` (owner: Péter Kiss).
 Doc: `docs/F-001-airport-diagrams.md`.
 Doc: `docs/F-005-technical-drawing.md`, CLI manual `docs/img2plot-cli.md`, SVG ownership metadata `docs/svg-metadata.md`.
 

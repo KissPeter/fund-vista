@@ -8,8 +8,11 @@ the ``{"error": {"code", "message"}}`` envelope so clients can switch on
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -33,30 +36,53 @@ from backend.cancel import (
     start_disconnect_watcher,
 )
 from backend.http import client_ip, error_response
-from backend.penplot import imaging
+from backend.penplot import imaging, stl_views
 from backend.penplot import tokens as design_tokens
-from backend.penplot.config import ALLOWED_RASTER_EXTS, Settings
+from backend.penplot.config import (
+    ALLOWED_RASTER_EXTS,
+    STL_MAX_FACES,
+    STL_MAX_UPLOAD_BYTES,
+    Settings,
+)
 from backend.penplot.errors import (
     ErrorCode,
     PenPlotError,
     image_not_found,
+    invalid_params,
     rate_limited,
+    stl_invalid,
+    stl_too_heavy,
+    stl_toolchain_unavailable,
 )
-from backend.penplot.pipeline import convert_result_filename, run_convert
+from backend.penplot.optimize import count_points, dist, polyline_length
+from backend.penplot.pipeline import (
+    convert_result_filename,
+    estimate_plot_time_s,
+    run_convert,
+)
 from backend.penplot.ratelimit import RateLimiter, get_redis
 from backend.penplot.schemas import (
+    ComposeSheetArtwork,
     ConvertRequest,
     ConvertResponse,
     ConvertStats,
     HealthResponse,
     ImageMetaResponse,
+    PointsStats,
     ResultMetaResponse,
     RetainResponse,
+    SegmentsStats,
+    StlImportResponse,
+    StlViewParams,
+    StlViewResult,
+    StlViewsRequest,
+    StlViewsResponse,
     TokenRequest,
     TokenResponse,
     TokenVerifyResponse,
 )
 from backend.penplot.store import ImageStore
+from backend.penplot.svg_vector import parse_svg_vectors
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +94,7 @@ store = ImageStore(
     results_dir=_settings.results_dir,
     ttl_hours=_settings.image_ttl_hours,
     retained_ttl_hours=_settings.retained_ttl_hours,
+    stl_result_ttl_hours=_settings.stl_result_ttl_hours,
 )
 
 # CPU-exposed endpoints (spec §5 rate limit, review C.2.2) are throttled per
@@ -174,6 +201,137 @@ def _write_fd(fd: int, data: bytes) -> None:
         fh.write(data)
 
 
+# -- STL three-view boundary ------------------------------------------------
+# The external toolchain and the filesystem are kept behind these small
+# functions so HTTP tests can stub a boundary instead of mocking internals.
+# Missing libraries become a 503 envelope, never a raw ModuleNotFoundError.
+
+def _load_stl_bytes(data: bytes):
+    """Load uploaded bytes through the external STL toolchain (boundary)."""
+    with tempfile.NamedTemporaryFile(suffix=".stl") as fh:
+        fh.write(data)
+        fh.flush()
+        return stl_views.load_stl(fh.name)
+
+
+def _render_stl_views(
+    data: bytes, views: list[str], params: StlViewParams,
+) -> dict[str, str]:
+    """Render each requested view from uploaded STL bytes (boundary)."""
+    with tempfile.NamedTemporaryFile(suffix=".stl") as fh:
+        fh.write(data)
+        fh.flush()
+        return {
+            view: stl_views.render_view(
+                fh.name, view=view, slices=params.slices, fit_mm=params.fit_mm,
+                margin_mm=params.margin_mm, stroke_mm=params.stroke_mm,
+            )
+            for view in views
+        }
+
+
+def _stl_view_stats(svg: str) -> ConvertStats:
+    """Server-computed plot stats for one artwork-only view SVG."""
+    lines, _w, _h, _warnings = parse_svg_vectors(svg.encode("utf-8"))
+    pen_down = sum(polyline_length(pl) for pl in lines)
+    pen_up = sum(
+        dist(lines[i][-1], lines[i + 1][0]) for i in range(len(lines) - 1)
+    ) if len(lines) > 1 else 0.0
+    strokes = len(lines)
+    estimate = estimate_plot_time_s(pen_down, pen_up, strokes, pen_lift_s=0.3)
+    return ConvertStats(
+        points=PointsStats(before=count_points(lines), after=count_points(lines)),
+        segments=SegmentsStats(before=strokes, after=strokes),
+        strokes=strokes,
+        pen_down_mm=round(pen_down, 2),
+        pen_up_mm=round(pen_up, 2),
+        estimated_time_s=round(estimate, 1) if estimate < float("inf") else 0.0,
+    )
+
+
+def _stl_params_hash(params: StlViewParams) -> str:
+    # Views are part of the cache key (one result per view), not of the render
+    # parameters: asking for an extra view later MUST reuse earlier results.
+    payload = json.dumps(
+        params.model_dump(mode="json", exclude={"views"}),
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _stl_bounds_error(params: StlViewParams) -> str | None:
+    """Enforce the operator-configured STL ranges after wire validation."""
+    bounds = _settings.stl_bounds()
+    for name, value in (
+        ("slices", params.slices),
+        ("fit_mm", params.fit_mm),
+        ("margin_mm", params.margin_mm),
+        ("stroke_mm", params.stroke_mm),
+    ):
+        low, high = bounds[name]
+        if not low <= value <= high:
+            return f"{name} must be between {low} and {high}"
+    return None
+
+
+def _stl_result_id(
+    image_id: str, view: str, params_hash: str,
+) -> str:
+    key = f"{image_id}|{view}|{stl_views.GENERATOR_VERSION}|{params_hash}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def verify_stored_artworks(
+    artworks: list[ComposeSheetArtwork], result_store: ImageStore,
+) -> list[dict]:
+    """Verify each selected view against the store at the store boundary.
+
+    A strict ``result_id`` alone is not enough: the submitted SVG MUST be the
+    exact bytes of a stored ``_stlview`` result, with a sidecar carrying the
+    provenance the combined sheet needs. Failures are input faults (422).
+    """
+    metas: list[dict] = []
+    for art in artworks:
+        views = [art.view] if art.view else list(stl_views.VIEW_NAMES)
+        matches: list[tuple[str, dict]] = []
+        for view in views:
+            filename = f"{art.result_id}_{view}_stlview.svg"
+            if not result_store.has_result(filename):
+                continue
+            try:
+                stored = _read_text(result_store.result_path(filename))
+            except OSError:
+                continue
+            meta = result_store.get_result_meta(filename)
+            if stored != art.svg or meta is None:
+                continue
+            matches.append((view, meta))
+        if len(matches) != 1:
+            raise invalid_params(
+                "each artwork must match exactly one stored STL view result"
+            )
+        view, meta = matches[0]
+        if not all(meta.get(key) for key in ("image_id", "generator_version", "params_hash")):
+            raise invalid_params("the stored STL view has no usable sidecar")
+        metas.append({**meta, "view": view})
+    return metas
+
+
+_RESULT_STL_RE = re.compile(
+    r"^[0-9a-f]{64}(?:_(?:broad|edge|end))?_stlview\.svg$"
+    r"|^[0-9a-f]{64}_stlsheet\.svg$"
+)
+
+
+def _result_filename_allowed(filename: str) -> bool:
+    """Server-generated result basenames only (never a path traversal)."""
+    if "/" in filename or "\\" in filename or os.path.basename(filename) != filename:
+        return False
+    if filename.endswith("_optimized.svg"):  # legacy convert results
+        return True
+    return bool(_RESULT_STL_RE.fullmatch(filename))
+
+
 @router.post("/images", response_model=ImageMetaResponse,
              dependencies=[Depends(require_rate_limit)])
 async def upload_image(file: Annotated[UploadFile, File(...)]) -> ImageMetaResponse | JSONResponse:
@@ -247,6 +405,179 @@ async def get_image(image_id: str) -> ImageMetaResponse | JSONResponse:
     return _image_meta(
         image_id=image_id.lower(), ext=ext, width=width, height=height,
         is_vector=is_vector, warnings=warnings, path=path,
+    )
+
+
+@router.post("/stl/import", response_model=StlImportResponse,
+             dependencies=[Depends(require_rate_limit)])
+async def import_stl(
+    file: Annotated[UploadFile, File(...)],
+) -> StlImportResponse | JSONResponse:
+    """Upload and validate an STL; store raw bytes under their SHA-256 id.
+
+    ASCII and binary STL use the same content-addressed image namespace as
+    raster uploads, with the shared upload byte cap and per-IP throttle. Bad
+    meshes are 422 ``stl_invalid``, oversized uploads 413
+    ``payload_too_large``, heavy meshes 422 ``stl_too_heavy``, and a missing
+    external toolchain 503 ``stl_toolchain_unavailable``.
+    """
+    filename = os.path.basename(file.filename or "")
+    if not filename.lower().endswith(".stl"):
+        return error_response(
+            415, ErrorCode.UNSUPPORTED_MEDIA_TYPE,
+            "Unsupported format. Upload an ASCII or binary .stl file.",
+        )
+    cap = min(STL_MAX_UPLOAD_BYTES, _settings.stl_max_upload_bytes,
+              _settings.max_upload_bytes)
+    # Read one byte past the cap: an oversized upload is rejected before the
+    # whole body is held in memory (review follow-up).
+    data = await file.read(cap + 1)
+    if len(data) > cap:
+        return error_response(
+            HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            ErrorCode.PAYLOAD_TOO_LARGE,
+            f"STL exceeds {cap // (1024 * 1024)} MiB limit.",
+        )
+    try:
+        mesh = await asyncio.to_thread(_load_stl_bytes, data)
+    except stl_views.StlFormatError as exc:
+        mesh_exc = stl_invalid(str(exc))
+        return error_response(mesh_exc.status, mesh_exc.code, mesh_exc.message)
+    except (ModuleNotFoundError, RuntimeError) as exc:
+        log.warning("stl.import toolchain unavailable: %s", exc)
+        toolchain_exc = stl_toolchain_unavailable()
+        return error_response(toolchain_exc.status, toolchain_exc.code, toolchain_exc.message)
+    faces = len(mesh.faces)
+    if faces > min(STL_MAX_FACES, _settings.stl_max_faces):
+        heavy_exc = stl_too_heavy(
+            f"STL has {faces} faces; the limit is {min(STL_MAX_FACES, _settings.stl_max_faces)}."
+        )
+        return error_response(heavy_exc.status, heavy_exc.code, heavy_exc.message)
+    if faces < 1:
+        mesh_exc = stl_invalid("STL has no triangles.")
+        return error_response(mesh_exc.status, mesh_exc.code, mesh_exc.message)
+    try:
+        axes = stl_views.canonical_axes(mesh)
+        extents = tuple(round(float(mesh.extents[i]), 2) for i in range(3))
+    except (TypeError, ValueError, IndexError) as exc:
+        mesh_exc = stl_invalid(f"Unusable STL mesh: {exc}")
+        return error_response(mesh_exc.status, mesh_exc.code, mesh_exc.message)
+    warnings = []
+    if not bool(getattr(mesh, "is_watertight", True)):
+        warnings.append("mesh_not_watertight")
+    image_id = store.put_image_bytes(data, "stl")
+    path = store.find_image(image_id)
+    assert path is not None
+    log.info(
+        "stl.import id=%s faces=%d extents=%s warnings=%s",
+        image_id[:12], faces, extents, warnings,
+    )
+    return StlImportResponse(
+        image_id=image_id, format="stl", filename=filename,
+        faces=faces, extents_mm=extents, canonical_axes=axes,
+        warnings=warnings, expires_at=store.expires_at_for(path),
+    )
+
+
+@router.post("/stl/views", response_model=StlViewsResponse,
+             dependencies=[Depends(require_rate_limit)])
+async def stl_views_endpoint(
+    body: StlViewsRequest, request: Request,
+) -> StlViewsResponse | JSONResponse:
+    """Render cached artwork-only views with server-computed stats.
+
+    Cache key: ``(image_id, view, generator_version, params_hash)``. The
+    params hash excludes the requested ``views`` list, so adding a view later
+    reuses the views already rendered. Only missing views are re-rendered.
+    Raw view SVGs are artworks only — they are never order files.
+    """
+    image_id = body.image_id.lower()
+    path = store.find_image(image_id)
+    if path is None:
+        exc = image_not_found(image_id)
+        return error_response(exc.status, exc.code, exc.message)
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    if ext != "stl":
+        return error_response(
+            422, ErrorCode.STL_INVALID, "The stored design is not an STL upload."
+        )
+    bounds_error = _stl_bounds_error(body.params)
+    if bounds_error is not None:
+        return error_response(422, ErrorCode.INVALID_PARAMS, bounds_error)
+
+    data = await asyncio.to_thread(_read_bytes, path)
+    params_hash = _stl_params_hash(body.params)
+    base = resolve_public_base(request)
+    cached: dict[str, StlViewResult] = {}
+    missing: list[str] = []
+    for view in body.params.views:
+        result_id = _stl_result_id(image_id, view, params_hash)
+        filename = f"{result_id}_{view}_stlview.svg"
+        meta = store.get_result_meta(filename)
+        stats: ConvertStats | None = None
+        if (meta is not None and store.has_result(filename)
+                and meta.get("generator_version") == stl_views.GENERATOR_VERSION
+                and meta.get("params_hash") == params_hash):
+            try:
+                stats = ConvertStats(**meta["stats"])
+            except (KeyError, TypeError, ValueError):
+                stats = None
+        if stats is None:
+            missing.append(view)
+            continue
+        cached[view] = StlViewResult(
+            view=view, result_id=result_id,
+            svg_url=f"{base}/v1/results/{filename}",
+            meta_url=f"{base}/v1/results/{filename}/meta",
+            stats=stats,
+        )
+
+    hit_count = len(cached)
+    if missing:
+        try:
+            rendered = await asyncio.to_thread(
+                _render_stl_views, data, missing, body.params,
+            )
+            stats_by_view = {view: _stl_view_stats(svg) for view, svg in rendered.items()}
+        except stl_views.StlFormatError as exc:
+            return error_response(422, ErrorCode.STL_INVALID, str(exc))
+        except (ModuleNotFoundError, RuntimeError) as exc:
+            log.warning("stl.views toolchain unavailable: %s", exc)
+            toolchain_exc = stl_toolchain_unavailable()
+            return error_response(toolchain_exc.status, toolchain_exc.code, toolchain_exc.message)
+        except ValueError as exc:
+            return error_response(422, ErrorCode.INVALID_PARAMS, str(exc))
+        for view in missing:
+            result_id = _stl_result_id(image_id, view, params_hash)
+            filename = f"{result_id}_{view}_stlview.svg"
+            svg = rendered[view]
+            stats = stats_by_view[view]
+            store.put_result(filename, svg)
+            store.put_result_meta(filename, {
+                "stats": stats.model_dump(mode="json"),
+                "warnings": [],
+                "view": view,
+                "image_id": image_id,
+                "generator_version": stl_views.GENERATOR_VERSION,
+                "params_hash": params_hash,
+            })
+            cached[view] = StlViewResult(
+                view=view, result_id=result_id,
+                svg_url=f"{base}/v1/results/{filename}",
+                meta_url=f"{base}/v1/results/{filename}/meta",
+                stats=stats,
+            )
+
+    results = [cached[view] for view in body.params.views]
+    cache_state = "hit" if not missing else ("partial" if hit_count else "miss")
+    log.info(
+        "stl.views id=%s views=%s cache=%s",
+        image_id[:12], list(body.params.views), cache_state,
+    )
+    return StlViewsResponse(
+        image_id=image_id,
+        generator_version=stl_views.GENERATOR_VERSION,
+        views=results,
     )
 
 
@@ -380,11 +711,18 @@ async def get_result(
     keeps the inline disposition. Both are idempotent (already-stamped input
     is a byte-identical no-op) and never touch plot geometry.
     """
-    # Filenames are server-generated ({sha}_{hash}_optimized.svg); anything
-    # else is a 404, never a path traversal.
-    if not filename.endswith("_optimized.svg") or "/" in filename or "\\" in filename:
+    # Server-generated basenames only: convert results, STL view artworks and
+    # composed STL sheets. Anything else is a 404, never a path traversal.
+    if not _result_filename_allowed(filename):
         return error_response(
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
+        )
+    # Raw STL views are artworks, not deliverables. They stay previewable via
+    # plain GET, but must never be handed out as an attachment/order file.
+    if download and filename.endswith("_stlview.svg"):
+        return error_response(
+            409, ErrorCode.INVALID_PARAMS,
+            "Raw STL view artworks cannot be downloaded as order files.",
         )
     path = store.result_path(filename)
     try:
@@ -412,7 +750,7 @@ async def get_result_meta(filename: str) -> ResultMetaResponse | JSONResponse:
     will actually do, and the designer reads the same endpoint for the live
     price. Same filename gate as the SVG route: server-generated names only.
     """
-    if not filename.endswith("_optimized.svg") or "/" in filename or "\\" in filename:
+    if not _result_filename_allowed(filename):
         return error_response(
             HTTP_404_NOT_FOUND, "result_not_found", "Unknown result file."
         )
@@ -423,7 +761,9 @@ async def get_result_meta(filename: str) -> ResultMetaResponse | JSONResponse:
         )
     try:
         return ResultMetaResponse(
-            stats=ConvertStats(**meta["stats"]), warnings=list(meta.get("warnings", []))
+            image_id=meta.get("image_id"),
+            stats=ConvertStats(**meta["stats"]),
+            warnings=list(meta.get("warnings", [])),
         )
     except (KeyError, TypeError, ValueError):
         return error_response(
