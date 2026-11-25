@@ -504,14 +504,26 @@ def _plan_sheet(body: ComposeSheetRequest, art: _Artwork) -> _Plan:
         strip = labels.label_outside_mm(
             title, subtitle=subtitle, height_mm=line_h, font=style.font,
         )
+    # The table keeps its own strip reserve; the artwork uses the page padding
+    # from the frame, which is inset by the strip on the title side.
+    art_reserve_bottom = 0.0
+    art_reserve_top = 0.0
     if outside:
         reserve = strip + labels.LABEL_ARTWORK_GAP_MM if strip > 0.0 else 0.0
         reserve_bottom = reserve if below else 0.0
         reserve_top = 0.0 if below else reserve
+        if below:
+            art_reserve_bottom = strip + pad
+        else:
+            # art_top already includes pad; adding it here would double it.
+            art_reserve_top = strip
+            # The side without the strip still keeps its page padding.
+            art_reserve_bottom = pad
     else:
         reserve_bottom = len(lines) * (line_h + LINE_GAP_MM)
         reserve_top = 0.0
-    band_top = h - margin - reserve_bottom
+        art_reserve_bottom = reserve_bottom
+    band_top = h - margin - art_reserve_bottom
 
     # Context table, laid out before the artwork so the art can avoid it. The
     # drawing itself is emitted by compose, unchanged.
@@ -535,7 +547,7 @@ def _plan_sheet(body: ComposeSheetRequest, art: _Artwork) -> _Plan:
 
     # Artwork: centred in [margin+pad+top, band_top] x [margin+pad, w-margin-pad],
     # keeping its own aspect when the root declares its size.
-    art_top = margin + pad + reserve_top
+    art_top = margin + pad + art_reserve_top
     area_w = w - 2 * (margin + pad)
     area_h = band_top - art_top
     box_w, box_h = area_w, area_h

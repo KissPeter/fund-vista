@@ -533,10 +533,68 @@ def test_outside_artwork_and_sheet_have_no_band_and_keep_clear(placement):
     assert _marked(root, "data-kp-title-block") == []
     art = _marked(root, "data-kp-artwork")[0]
     y, height = float(art.attrib["y"]), float(art.attrib["height"])
+    pad = ComposePageParams().padding_mm
     if placement == "below":
-        assert y + height <= H - MARGIN - _strip() - labels.LABEL_ARTWORK_GAP_MM + TOL
+        assert y + height <= H - MARGIN - _strip() - pad + TOL
     else:
-        assert y >= MARGIN + _strip() + labels.LABEL_ARTWORK_GAP_MM - TOL
+        assert y >= MARGIN + _strip() + pad - TOL
+
+
+@pytest.mark.parametrize("placement", ["below", "above"])
+def test_outside_artwork_keeps_the_page_padding_from_the_inset_frame(placement):
+    # An artwork matching the free area's aspect fills it exactly, so the
+    # four gaps between frame and artwork can be asserted, not just bounded.
+    pad = ComposePageParams().padding_mm
+    strip = _strip()
+    art_w = W - 2 * (MARGIN + pad)
+    art_h = H - 2 * MARGIN - strip - 2 * pad
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{art_w:g}" '
+        f'height="{art_h:g}" viewBox="0 0 {art_w:g} {art_h:g}">'
+        f'<rect x="0" y="0" width="{art_w:g}" height="{art_h:g}" fill="#ff0000"/></svg>'
+    )
+    layout = {"page": {"frame": True}, "label": {"placement": placement}}
+    root = _root(_compose(svg=svg, layout=layout, lines=[TITLE, SUB]))
+    frame = _marked(root, "data-kp-frame")[0]
+    art = _marked(root, "data-kp-artwork")[0]
+    fx0, fy0, fx1, fy1 = _bounds(_xy(frame))
+    x, y = float(art.attrib["x"]), float(art.attrib["y"])
+    width, height = float(art.attrib["width"]), float(art.attrib["height"])
+    assert abs(x - (fx0 + pad)) < TOL
+    assert abs((x + width) - (fx1 - pad)) < TOL
+    if placement == "below":
+        assert abs((y + height) - (fy1 - pad)) < TOL
+    else:
+        assert abs(y - (fy0 + pad)) < TOL
+
+
+@pytest.mark.parametrize("placement", ["below", "above"])
+def test_outside_artwork_keeps_padding_with_a_table_present(placement):
+    # The table reserve uses LABEL_ARTWORK_GAP_MM, the artwork reserve uses
+    # page padding. A table that does not touch the ink must not blur that.
+    pad = ComposePageParams().padding_mm
+    strip = _strip()
+    art_w = W - 2 * (MARGIN + pad)
+    art_h = H - 2 * MARGIN - strip - 2 * pad
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{art_w:g}" '
+        f'height="{art_h:g}" viewBox="0 0 {art_w:g} {art_h:g}">'
+        f'<rect x="0" y="{art_h - 10:g}" width="10" height="10" fill="#000"/></svg>'
+    )
+    layout = {"page": {"frame": True}, "label": {"placement": placement}}
+    root = _root(_compose(
+        svg=svg, layout=layout, lines=[TITLE, SUB], context_table=TABLE_TOP_RIGHT,
+    ))
+    assert _placement(root)["data-kp-art-overlap"] == "0"
+    frame = _marked(root, "data-kp-frame")[0]
+    art = _marked(root, "data-kp-artwork")[0]
+    fx0, fy0, fx1, fy1 = _bounds(_xy(frame))
+    x, y = float(art.attrib["x"]), float(art.attrib["y"])
+    width, height = float(art.attrib["width"]), float(art.attrib["height"])
+    assert abs(x - (fx0 + pad)) < TOL
+    assert abs((x + width) - (fx1 - pad)) < TOL
+    assert abs(y - (fy0 + pad)) < TOL
+    assert abs((y + height) - (fy1 - pad)) < TOL
 
 
 def test_outside_sheet_is_deterministic():
@@ -789,7 +847,9 @@ def test_overlap_lists_the_table_fixes_in_the_documented_order():
         {"kind": "removeRows", "n": 1, "corner": "bottom-left"},
         {"kind": "orientation", "orientation": "portrait"},
         {"kind": "margins"},
-        {"kind": "labelOutside", "placement": "below"},
+        # An outside title cannot clear this full-page worst case: the artwork
+        # keeps the page padding from the inset frame. A smaller table still
+        # gets this fix, covered by test_label_outside_fix_still_clears_a_smaller_table.
         {"kind": "disableTable"},
     ]
     ranks = [FIX_ORDER.index(f["kind"]) for f in fixes]
@@ -806,6 +866,23 @@ def test_each_listed_table_fix_clears_the_overlap_when_applied():
             continue
         assert _placement(root)["data-kp-art-overlap"] == "0", fix
         _assert_drawn_ink_clears_table(root, WIDE_INK)
+
+
+def test_label_outside_fix_still_clears_a_smaller_table():
+    # The documented fix producer stays live: with a short table in the
+    # bottom-left corner, moving the title below the frame still clears it.
+    req = copy.deepcopy(OVERLAP_REQ)
+    req["context_table"]["position"] = "bottom-left"
+    req["context_table"]["rows"] = LONG_ROWS[:4]
+    req["context_table"]["pads"] = {"left": 0, "right": 0, "top": 0, "bottom": 0}
+    root = _compose_dict(req)
+    assert _placement(root)["data-kp-art-overlap"] == "1"
+    fixes = json.loads(root.attrib["data-kp-table-fixes"])
+    fix = {"kind": "labelOutside", "placement": "below"}
+    assert fix in fixes
+    cleared = _compose_dict(_apply_fix(req, fix))
+    assert _placement(cleared)["data-kp-art-overlap"] == "0"
+    _assert_drawn_ink_clears_table(cleared, WIDE_INK)
 
 
 #: A row whose characters the table font cannot draw (U+2603 is not in the
