@@ -684,6 +684,67 @@ def test_ink_split_composite_convert_draws_the_furniture_once(live):
     assert base_files[0]["svg"] != composite["svg"]
 
 
+def test_ink_split_airport_composite_keeps_the_pen_colours_when_the_convert_rasterizes(live):
+    """A raster convert method still yields the coloured named layers.
+
+    The composite carries the pen colours in the renderer groups, so it is
+    composed on the group-preserving vector path: a raster method traces the
+    artwork as pixels, flattens the groups and would turn the whole sheet
+    into one black pen.
+    """
+    imported = live.post("/v1/airports/import", json={"icao": "LHBP"})
+    assert imported.status_code == 200, imported.text
+    design_id = imported.json()["image_id"]
+
+    resp = live.post("/v1/fulfill/ink-split", json={
+        "design": _mint(design_id),
+        "kind": "airport",
+        "params": {"icao": "LHBP"},
+        "inks": {"pen": "black", "runway": "red"},
+        "convert": {"methods": ["hatch"]},
+    })
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+    assert len(files) == 1
+    composite = files[0]
+    assert composite["ink"] == "composite"
+    assert 'stroke="#c0392b"' in composite["svg"]  # the buyer's runway pen
+    assert 'stroke="#1a1a1a"' in composite["svg"]  # the pen group
+    assert 'inkscape:label="red runway-ink"' in composite["svg"]
+
+
+def test_ink_split_traffic_composite_keeps_the_pen_colours_when_the_convert_rasterizes(
+    live, monkeypatch, tmp_path,
+):
+    """The traffic layer groups keep their own pen colour on a raster convert."""
+    import datetime as _dt
+
+    day = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).date().isoformat()
+    _seed_l1(str(tmp_path / "traffic"), day)
+    _stub_traffic(monkeypatch)
+
+    params = _traffic_params(day)
+    imported = live.post("/v1/traffic/import", json=params)
+    assert imported.status_code == 200, imported.text
+    design_id = imported.json()["image_id"]
+
+    resp = live.post("/v1/fulfill/ink-split", json={
+        "design": _mint(design_id),
+        "kind": "traffic",
+        "params": {"kind": "traffic", **params},
+        "inks": {"pen": "black", "layer_colors": {"departures": "red"}},
+        "convert": {"methods": ["hatch"]},
+    })
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+    assert len(files) == 1
+    composite = files[0]
+    assert composite["ink"] == "composite"
+    assert 'stroke="#c0392b"' in composite["svg"]  # the departures pen
+    assert 'stroke="#1a1a1a"' in composite["svg"]  # the pen group
+    assert 'inkscape:label="red traffic-departures"' in composite["svg"]
+
+
 def test_ink_split_serves_the_cached_draft(live, monkeypatch, tmp_path):
     """Cache-first: the second call hits the L4 draft cache and splits the
     byte-identical draft (cache_hit=True, same digests)."""

@@ -407,8 +407,17 @@ def _compose_pass(
 
 
 def _composite_convert(convert: ConvertParams, kind: str) -> ConvertParams:
-    """Force the split that gives each pen its own group on the one sheet."""
+    """Force the split that gives each pen its own group on the one sheet.
+
+    The pen colours travel in the renderer groups, so the sheet has to be
+    composed on the group-preserving vector path: a raster method (hatch,
+    flow, centerline) traces the artwork as pixels and flattens the groups,
+    and the one file would arrive as a single black pen. The airport and
+    traffic designer tabs are line art (the contour preset), so this only
+    ever drops a method that could not carry the groups anyway.
+    """
     params = convert.model_copy(deep=True)
+    params.methods = ["contour"]
     if kind == "airport":
         params.runway_ink_group = True
         params.layer_groups = False
