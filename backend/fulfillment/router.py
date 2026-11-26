@@ -162,15 +162,18 @@ def _place_from_params(params: dict[str, object]) -> str:
 @router.post("/ink-split", response_model=InkSplitResponse,
               dependencies=[Depends(require_rate_limit)])
 async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse | JSONResponse:
-    """Split the purchased design into one SVG per distinct ink.
+    """Split the purchased design into the files the shop delivers.
+
+    Airport and traffic return one layered SVG with the buyer's real pen
+    colours on named groups; other kinds keep the one-file-per-ink contract.
 
     ``kind`` picks the artwork's renderer (airport or traffic); ``params`` is
     the exact render body persisted on the order. The purchased design is
     read from the image store first and hash-checked against ``design_id``.
     Only when no intact stored copy exists is the draft re-rendered (the
     cache-first render path), and that draft is hash-checked too. The
-    draft is then split by the documented group-id → ink mapping; layers
-    sharing an ink merge into one file, empty layers produce nothing.
+    draft is then rendered with the documented group-id → ink mapping;
+    empty layers produce nothing.
     """
     started = time.monotonic()
     # Phase 6: plotter SVG leaves the backend only for the shop server's
@@ -253,21 +256,40 @@ async def ink_split(body: InkSplitRequest, request: Request) -> InkSplitResponse
         )
 
     files: list[InkFileOut] = []
-    passes = splitter.split_by_ink(svg_text, group_ink)
-    # The page furniture (frame, title band, tables) is drawn once: on the Pen
-    # pass, or on the first pass when the Pen has no layer of its own.
-    furniture_ink = (
-        pen_ink if any(p.ink == pen_ink for p in passes)
-        else (passes[0].ink if passes else "")
-    )
-    for pass_file in passes:
+    layered = body.kind in ("airport", "traffic")
+    if layered:
+        # WordPress receives this one coloured, named-layer SVG; no per-ink
+        # passes are produced for these custom designs.
+        composite = splitter.composite_by_ink(svg_text, group_ink)
+        outputs = [composite] if composite is not None else []
+        furniture_ink = ""
+    else:
+        outputs = splitter.split_by_ink(svg_text, group_ink)
+        # The page furniture (frame, title band, tables) is drawn once: on the
+        # Pen pass, or on the first pass when the Pen has no layer of its own.
+        furniture_ink = (
+            pen_ink if any(p.ink == pen_ink for p in outputs)
+            else (outputs[0].ink if outputs else "")
+        )
+    for pass_file in outputs:
         pass_svg = pass_file.svg
         if body.convert is not None:
             try:
-                pass_svg = await asyncio.to_thread(
-                    _compose_pass, pass_file, body.convert,
-                    draw_furniture=pass_file.ink == furniture_ink, warnings=warnings,
-                )
+                if layered:
+                    convert_params = _composite_convert(body.convert, body.kind)
+                    composed = await asyncio.to_thread(
+                        _compose_pass, pass_file, convert_params,
+                        draw_furniture=True, warnings=warnings,
+                    )
+                    colors, labels = _composite_style(
+                        pass_file, group_ink, body.kind, pen_ink, convert_params,
+                    )
+                    pass_svg = splitter.colorize_composite(composed, colors, labels)
+                else:
+                    pass_svg = await asyncio.to_thread(
+                        _compose_pass, pass_file, body.convert,
+                        draw_furniture=pass_file.ink == furniture_ink, warnings=warnings,
+                    )
             except PenPlotError as exc:
                 log.warning("fulfill.ink-split design=%s pass=%s compose failed: %s",
                             body.design.design_id[:12], pass_file.ink, exc.code)
@@ -381,6 +403,59 @@ def _compose_pass(
         if warning not in warnings:
             warnings.append(warning)
     return result.svg_text
+
+
+
+def _composite_convert(convert: ConvertParams, kind: str) -> ConvertParams:
+    """Force the split that gives each pen its own group on the one sheet.
+
+    The pen colours travel in the renderer groups, so the sheet has to be
+    composed on the group-preserving vector path: a raster method (hatch,
+    flow, centerline) traces the artwork as pixels and flattens the groups,
+    and the one file would arrive as a single black pen. The airport and
+    traffic designer tabs are line art (the contour preset), so this only
+    ever drops a method that could not carry the groups anyway.
+    """
+    params = convert.model_copy(deep=True)
+    params.methods = ["contour"]
+    if kind == "airport":
+        params.runway_ink_group = True
+        params.layer_groups = False
+    elif kind == "traffic":
+        params.layer_groups = True
+        params.runway_ink_group = False
+    return params
+
+
+def _composite_style(
+    composite: splitter.InkFile,
+    group_ink,
+    kind: str,
+    pen_ink: str,
+    convert: ConvertParams,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Pick converted group ids → pen colours and Inkscape layer labels.
+
+    The unnamed first group carries the Pen artwork and page furniture; the
+    airport's runway strokes land in ``runway-ink``, traffic's movement
+    layers keep their draft ids when ``layer_groups`` is on.
+    """
+    colors: dict[str, str] = {"": splitter.INK_HEX.get(pen_ink, "")}
+    labels: dict[str, str] = {"": f"{pen_ink} pen"}
+    if kind == "airport":
+        for gid in composite.layers:
+            if gid in splitter.AIRPORT_RUNWAY_GROUPS:
+                ink = group_ink(gid)
+                colors["runway-ink"] = splitter.INK_HEX.get(ink, "")
+                labels["runway-ink"] = f"{ink} runway-ink"
+                break
+    elif kind == "traffic" and convert.layer_groups:
+        for gid in composite.layers:
+            if gid.startswith("traffic-"):
+                ink = group_ink(gid)
+                colors[gid] = splitter.INK_HEX.get(ink, "")
+                labels[gid] = f"{ink} {gid}"
+    return colors, labels
 
 
 def _weather_mapper(inks):

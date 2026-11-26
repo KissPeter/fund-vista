@@ -359,6 +359,57 @@ def test_split_is_deterministic():
     assert first == second
 
 
+
+def test_composite_by_ink_keeps_real_pen_colours_on_named_layers():
+    def mapper(gid: str):
+        return ink_split.traffic_group_ink(
+            gid, "black", {"departures": "red", "holding": "blue"}
+        )
+
+    composite = ink_split.composite_by_ink(FULL_TRAFFIC, mapper)
+    assert composite is not None and composite.ink == "composite"
+    body = composite.svg
+    assert 'stroke="#c0392b"' in body  # departures: the buyer's red pen
+    assert 'stroke="#2456a6"' in body  # holding: the buyer's blue pen
+    assert 'stroke="#1a1a1a"' in body  # Pen layers
+    assert 'inkscape:label="red traffic-departures"' in body
+    assert 'inkscape:groupmode="layer"' in body
+    assert "xmlns:inkscape=" in body
+    assert 'stroke="#2c6fbb"' not in body  # the renderer's display colour is gone
+
+
+def test_composite_by_ink_drops_empty_layers():
+    draft = "\n".join([
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">',
+        '<g id="traffic-motorways" fill="none" stroke="#000000"></g>',
+        '<g id="traffic-arrivals" fill="none" stroke="#000000"> </g>',
+        "</svg>",
+    ]) + "\n"
+    assert ink_split.composite_by_ink(draft, lambda gid: "red") is None
+
+
+def test_colorize_composite_recolours_converted_groups_without_touching_geometry():
+    composed = "\n".join([
+        '<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" '
+        'viewBox="0 0 210 297">',
+        '<g fill="none" stroke="#000000"><path d="M0 0 L1 1"/></g>',
+        '<g id="runway-ink" fill="none" stroke="#000000">'
+        '<path d="M2 2 L3 3"/></g>',
+        "</svg>",
+    ]) + "\n"
+    out = ink_split.colorize_composite(
+        composed,
+        {"": "#1a1a1a", "runway-ink": "#c0392b"},
+        {"": "black pen", "runway-ink": "red runway-ink"},
+    )
+    assert out.count('<path d="M0 0 L1 1"/>') == 1
+    assert out.count('<path d="M2 2 L3 3"/>') == 1
+    assert 'stroke="#c0392b"' in out and 'stroke="#1a1a1a"' in out
+    assert 'stroke="#000000"' not in out
+    assert 'inkscape:label="red runway-ink"' in out
+    assert 'inkscape:groupmode="layer"' in out
+
+
 def test_design_id_is_the_draft_sha256():
     assert ink_split.design_id_for(FULL_TRAFFIC) == (
         __import__("hashlib").sha256(FULL_TRAFFIC.encode("utf-8")).hexdigest()
@@ -512,8 +563,8 @@ def test_public_ink_split_refuses_svg_json(public_http_client):
     assert resp.json()["error"]["code"] == "svg_locked"
 
 
-def test_ink_split_traffic_three_passes_over_http(live, monkeypatch, tmp_path):
-    """The #1079/#147 acceptance case end to end: import → token → split."""
+def test_ink_split_traffic_returns_one_layered_composite_over_http(live, monkeypatch, tmp_path):
+    """The #1079/#147 acceptance case end to end: import → token → one SVG."""
     import datetime as _dt
 
     day = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).date().isoformat()
@@ -535,22 +586,24 @@ def test_ink_split_traffic_three_passes_over_http(live, monkeypatch, tmp_path):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["design_id"] == design_id and body["kind"] == "traffic"
-    # departures + holding share red → one file; arrivals + basemap ride the
-    # Pen; the fixture day has no go-arounds → the blue layer is empty → no
-    # blue file (empty layers produce nothing).
-    # departures + holding share red → one file; arrivals + basemap ride the
-    # Pen; the fixture day has no go-arounds → the blue layer is empty → no
-    # blue file (empty layers produce nothing).
-    files = {f["ink"]: f for f in body["files"]}
-    assert sorted(files) == ["black", "red"]
-    assert "traffic-departures" in files["red"]["layers"]
-    assert "traffic-holding" in files["red"]["layers"]
-    assert all(f["svg"].startswith("<svg") for f in body["files"])
+    # One labelled sheet: departures + holding in red, arrivals + basemap in
+    # Pen; the fixture day has no go-arounds, so the blue layer stays empty.
+    files = body["files"]
+    assert len(files) == 1
+    composite = files[0]
+    assert composite["ink"] == "composite"
+    assert "traffic-departures" in composite["layers"]
+    assert "traffic-holding" in composite["layers"]
+    assert "traffic-arrivals" in composite["layers"]
+    assert 'stroke="#c0392b"' in composite["svg"]
+    assert 'stroke="#1a1a1a"' in composite["svg"]
+    assert 'inkscape:label="red traffic-departures"' in composite["svg"]
+    assert composite["svg"].startswith("<svg")
     assert "adsb.lol" in body["attribution"]
 
 
-def test_ink_split_airport_two_passes_over_http(live, monkeypatch):
-    """Two-pen runway order (shop #1079 acceptance case 1) → 2 files."""
+def test_ink_split_airport_returns_one_layered_composite_over_http(live, monkeypatch):
+    """Two-pen runway order (shop #1079 acceptance case 1) → one SVG."""
     from backend.upstream_mock import install  # noqa: F401  (installed by _reset)
 
     imported = live.post("/v1/airports/import", json={"icao": "LHBP"})
@@ -564,20 +617,24 @@ def test_ink_split_airport_two_passes_over_http(live, monkeypatch):
         "inks": {"pen": "black", "runway": "red"},
     })
     assert resp.status_code == 200, resp.text
-    files = {f["ink"]: f for f in resp.json()["files"]}
-    assert sorted(files) == ["black", "red"]
-    # Every runway group the mock data emitted went to the runway ink; the
-    # Pen file carries everything else (context, osm buildings, labels).
-    assert files["red"]["layers"]  # the mock airport has drawn runways
-    assert set(files["red"]["layers"]) <= {"osm-runways", "runways"}
-    assert files["black"]["layers"]
-    assert not (set(files["black"]["layers"]) & {"osm-runways", "runways"})
+    body = resp.json()
+    files = body["files"]
+    assert len(files) == 1
+    composite = files[0]
+    assert composite["ink"] == "composite"
+    assert set(composite["layers"]) >= {"osm-runways", "runways"}
+    assert 'stroke="#c0392b"' in composite["svg"]
+    assert 'stroke="#1a1a1a"' in composite["svg"]
+    assert 'inkscape:label="red osm-runways"' in composite["svg"]
+    assert composite["svg"].startswith("<svg")
 
 
-def test_ink_split_with_convert_params_draws_the_furniture_once(live):
-    """The buyer's framed preview params ride the split: the Pen pass carries
-    the page frame and the title strokes, the runway pass only the artwork,
-    and both are laid out on the same A4 sheet."""
+def test_ink_split_composite_convert_draws_the_furniture_once(live):
+    """The buyer's framed preview params ride the one layered composite.
+
+    The frame and title strokes land on that single sheet only: no extra
+    per-ink copies are emitted, and the sheet stays the shared A4 layout.
+    """
     imported = live.post("/v1/airports/import", json={"icao": "LHBP"})
     assert imported.status_code == 200, imported.text
     design_id = imported.json()["image_id"]
@@ -597,15 +654,21 @@ def test_ink_split_with_convert_params_draws_the_furniture_once(live):
         },
     })
     assert plain.status_code == 200 and framed.status_code == 200, framed.text
-    files = {f["ink"]: f for f in framed.json()["files"]}
-    assert sorted(files) == ["black", "red"]
-    base = {f["ink"]: f for f in plain.json()["files"]}
+    files = framed.json()["files"]
+    assert len(files) == 1
+    composite = files[0]
+    assert composite["ink"] == "composite"
+    assert 'stroke="#c0392b"' in composite["svg"]  # re-coloured after convert
+    assert 'stroke="#1a1a1a"' in composite["svg"]
+    assert 'inkscape:label="red runway-ink"' in composite["svg"]
+    base_files = plain.json()["files"]
+    assert len(base_files) == 1
     # Laid out on the A4 sheet, not the draft's own canvas.
-    assert 'width="210' in files["black"]["svg"] and 'height="297' in files["black"]["svg"]
-    # Furniture strokes are extra geometry only on the Pen pass.
+    assert 'width="210' in composite["svg"] and 'height="297' in composite["svg"]
+
     def strokes(svg: str) -> int:
         return svg.count("<path") + svg.count("<polyline") + svg.count("<line")
-    assert strokes(files["black"]["svg"]) > 0 and strokes(files["red"]["svg"]) > 0
+
     again = live.post("/v1/fulfill/ink-split", json={
         **request,
         "convert": {
@@ -614,10 +677,72 @@ def test_ink_split_with_convert_params_draws_the_furniture_once(live):
             "label": {"enabled": False},
         },
     })
-    bare = {f["ink"]: f for f in again.json()["files"]}
-    assert strokes(files["black"]["svg"]) > strokes(bare["black"]["svg"])
-    assert strokes(files["red"]["svg"]) == strokes(bare["red"]["svg"])
-    assert base["black"]["svg"] != files["black"]["svg"]
+    assert again.status_code == 200, again.text
+    bare_files = again.json()["files"]
+    assert len(bare_files) == 1
+    assert strokes(composite["svg"]) > strokes(bare_files[0]["svg"])
+    assert base_files[0]["svg"] != composite["svg"]
+
+
+def test_ink_split_airport_composite_keeps_the_pen_colours_when_the_convert_rasterizes(live):
+    """A raster convert method still yields the coloured named layers.
+
+    The composite carries the pen colours in the renderer groups, so it is
+    composed on the group-preserving vector path: a raster method traces the
+    artwork as pixels, flattens the groups and would turn the whole sheet
+    into one black pen.
+    """
+    imported = live.post("/v1/airports/import", json={"icao": "LHBP"})
+    assert imported.status_code == 200, imported.text
+    design_id = imported.json()["image_id"]
+
+    resp = live.post("/v1/fulfill/ink-split", json={
+        "design": _mint(design_id),
+        "kind": "airport",
+        "params": {"icao": "LHBP"},
+        "inks": {"pen": "black", "runway": "red"},
+        "convert": {"methods": ["hatch"]},
+    })
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+    assert len(files) == 1
+    composite = files[0]
+    assert composite["ink"] == "composite"
+    assert 'stroke="#c0392b"' in composite["svg"]  # the buyer's runway pen
+    assert 'stroke="#1a1a1a"' in composite["svg"]  # the pen group
+    assert 'inkscape:label="red runway-ink"' in composite["svg"]
+
+
+def test_ink_split_traffic_composite_keeps_the_pen_colours_when_the_convert_rasterizes(
+    live, monkeypatch, tmp_path,
+):
+    """The traffic layer groups keep their own pen colour on a raster convert."""
+    import datetime as _dt
+
+    day = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).date().isoformat()
+    _seed_l1(str(tmp_path / "traffic"), day)
+    _stub_traffic(monkeypatch)
+
+    params = _traffic_params(day)
+    imported = live.post("/v1/traffic/import", json=params)
+    assert imported.status_code == 200, imported.text
+    design_id = imported.json()["image_id"]
+
+    resp = live.post("/v1/fulfill/ink-split", json={
+        "design": _mint(design_id),
+        "kind": "traffic",
+        "params": {"kind": "traffic", **params},
+        "inks": {"pen": "black", "layer_colors": {"departures": "red"}},
+        "convert": {"methods": ["hatch"]},
+    })
+    assert resp.status_code == 200, resp.text
+    files = resp.json()["files"]
+    assert len(files) == 1
+    composite = files[0]
+    assert composite["ink"] == "composite"
+    assert 'stroke="#c0392b"' in composite["svg"]  # the departures pen
+    assert 'stroke="#1a1a1a"' in composite["svg"]  # the pen group
+    assert 'inkscape:label="red traffic-departures"' in composite["svg"]
 
 
 def test_ink_split_serves_the_cached_draft(live, monkeypatch, tmp_path):
