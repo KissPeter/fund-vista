@@ -48,6 +48,8 @@ def _filter_fingerprint(body) -> str:
         # Paper-fill knobs (r4): the framing and the detail filter change
         # the drawn SVG, so both belong in the key.
         f"minlen={body.min_path_len_m}", f"aspect={(body.viewport_aspect or 0.0):.4f}",
+        # Pen-pass cap (r8): two densities of the same funnel are different art.
+        f"passes={body.max_corridor_passes}",
         # types stay case-exact (pen() matches them exactly); airlines and the
         # callsign are upper-cased exactly as Filters/pen() compare them.
         "types=" + _enc_list(body.types),

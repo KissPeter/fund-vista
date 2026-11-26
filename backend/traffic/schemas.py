@@ -224,6 +224,12 @@ class RenderRequest(BaseModel):
         "The view grows to match where the day bbox allows, the rest is "
         "framed fit-contain centred. Omit for the historical bbox ratio.",
     )
+    max_corridor_passes: int = Field(
+        default=10, ge=1, le=50,
+        description="Hard cap on pen passes for one movement corridor. "
+        "Lower means fewer overlapping strokes on the runways; 10 is "
+        "about one pass per 20 movements in a busy funnel.",
+    )
 
     @field_validator("icao")
     @classmethod

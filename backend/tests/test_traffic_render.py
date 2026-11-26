@@ -334,9 +334,10 @@ def test_crop_view_to_aspect_fills_the_page():
 
 
 def test_render_request_framing_knobs():
-    """min_path_len_m / viewport_aspect validate like the citymap knobs."""
+    """Framing, detail and corridor-pass knobs validate like the citymap ones."""
     r = _req()
     assert r.min_path_len_m == 0.0 and r.viewport_aspect is None  # historical default
+    assert r.max_corridor_passes == 10
     assert _req(min_path_len_m=10.0).min_path_len_m == 10.0
     assert _req(viewport_aspect=297 / 210).viewport_aspect == pytest.approx(297 / 210)
     with pytest.raises(Exception):
@@ -346,7 +347,12 @@ def test_render_request_framing_knobs():
     with pytest.raises(Exception):
         _req(viewport_aspect=0.0)  # gt=0 → 422
     with pytest.raises(Exception):
-        _req(viewport_aspect=10.1)  # above cap → 422
+        _req(viewport_aspect=10.1)
+    assert _req(max_corridor_passes=1).max_corridor_passes == 1
+    with pytest.raises(Exception):
+        _req(max_corridor_passes=0)  # below min
+    with pytest.raises(Exception):
+        _req(max_corridor_passes=51)  # above max  # above cap → 422
 
 
 def test_cache_fingerprint_covers_framing_knobs():
@@ -356,9 +362,11 @@ def test_cache_fingerprint_covers_framing_knobs():
     a = _req()
     b = _req(min_path_len_m=10.0)
     c = _req(viewport_aspect=1.414)
-    fps = {_filter_fingerprint(x) for x in (a, b, c)}
-    assert len(fps) == 3  # all three differ
+    d = _req(max_corridor_passes=5)
+    fps = {_filter_fingerprint(x) for x in (a, b, c, d)}
+    assert len(fps) == 4  # all four differ
     assert "minlen=0.0" in _filter_fingerprint(a) and "aspect=0.0000" in _filter_fingerprint(a)
+    assert "passes=10" in _filter_fingerprint(a)
 
 
 # RenderRequest fields that the L4 key already carries outside the fingerprint.
@@ -385,6 +393,7 @@ _FILTER_VARIANTS = {
     "exclude_privacy": dict(exclude_privacy=False),
     "min_path_len_m": dict(min_path_len_m=10.0),
     "viewport_aspect": dict(viewport_aspect=1.414),
+    "max_corridor_passes": dict(max_corridor_passes=5),
 }
 
 

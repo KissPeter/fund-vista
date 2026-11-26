@@ -1,4 +1,4 @@
-- Status: in progress
+- Status: done
 - Created: 2026-11-26
 - Last updated: 2026-11-26
 - Owner: Péter Kiss (peter.kiss@pepperstone.com)
@@ -35,18 +35,18 @@ in a busy funnel. Backend only: no shop UI change.
 
 ## Definition of Done
 
-- [ ] Code rules: the new field is a Pydantic v2 `Field` with bounds, no new
+- [x] Code rules: the new field is a Pydantic v2 `Field` with bounds, no new
       environment setting, and route registration is unchanged.
-- [ ] TDD red → green: unit tests cover identical and jittered retraces,
+- [x] TDD red → green: unit tests cover identical and jittered retraces,
       distinct/crossing corridors, a drifting funnel, diverging tails,
       sub-pen stubs, the 10-pass cap and the render-time budget.
-- [ ] Real-HTTP validation covers the new knob's valid and invalid values
+- [x] Real-HTTP validation covers the new knob's valid and invalid values
       (0, 51, extra field forbidden); no `TestClient` for API behavior.
-- [ ] One render path: no shop UI change; preview and plot both go through
+- [x] One render path: no shop UI change; preview and plot both go through
       `render_svg`, and the cache key distinguishes pass densities.
-- [ ] Full backend suite green.
-- [ ] `docs/index.md` and Serena memory `backend/traffic/corridors` synced.
-- [ ] Implementation committed on a dedicated worktree branch, pushed only
+- [x] Full backend suite green.
+- [x] `docs/index.md` and Serena memory `backend/traffic/corridors` synced.
+- [x] Implementation committed on a dedicated worktree branch, pushed only
       when green, and a PR opened and linked to the session.
 
 ## Notes
@@ -58,3 +58,8 @@ in a busy funnel. Backend only: no shop UI change.
 - Worktree: `~/PycharmProjects/fund-vista.worktrees/27`, branch
   `work/B-004-traffic-runway-overink`, based on clean `origin/main`
   (`4e82412`). The main checkout keeps its unrelated dirty files untouched.
+- Final validation on the rebased tree: `1697 passed, 45 skipped`. The local
+  volume was 4.9 GiB free, just under the traffic store's 5 GiB floor, so the
+  run used the existing `TRAFFIC_STORE_MIN_FREE_BYTES=0` setting; the host was
+  also heavily loaded and used the documented `PERF_BUDGET_SCALE=5` override.
+  Both are local environment overrides, not code or CI changes.

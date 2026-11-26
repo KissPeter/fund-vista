@@ -28,7 +28,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 | CR-010 | change request | Local OSM extract (Hungary, SQLite on the Mac) as first Overpass mirror for citymap | done | 2026-11-17 |
 | B-003 | bug | Production STL toolchain runtime install (T7 follow-up) | todo | 2026-11-24 |
 | F-010 | feature | One layered SVG for the WordPress-bridge handover (airport + traffic composite with named pen groups) | in progress | 2026-11-26 |
-| B-004 | bug | Airport traffic SVG re-inks the runway funnel and tears the paper — union-based corridor collapse + `max_corridor_passes` cap | in progress | 2026-11-26 |
+| B-004 | bug | Airport traffic SVG re-inks the runway funnel and tears the paper — union-based corridor collapse + `max_corridor_passes` cap | done | 2026-11-26 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
