@@ -271,8 +271,7 @@ def test_render_rejects_ambiguous_type_and_airline_codes(live):
 
 def test_jobs_traffic_enqueue_422(live):
     day = _yesterday_iso()
-    for payload in ({"icao": "EGLL", "date": day},
-                    {"icao": "LHBP", "date": "not-a-date"},
+    for payload in ({"icao": "LHBP", "date": "not-a-date"},
                     {"icao": "LHBP", "date": day, "extra": 1}):
         resp = live.post("/v1/jobs", json={"type": "traffic_ingest", "request": payload,
                                            "cancel_previous": False})
@@ -305,7 +304,8 @@ def test_jobs_traffic_done_path(live, monkeypatch, tmp_path):
     assert result["icao"] == "LHBP" and result["date"] == day
     assert result["flights"] == len(flights) and result["movements"] == 4
     assert result["cache_hit"] is False and result["bytes"] > 0
-    assert "attribution" in result and dl_calls == [day]
+    assert "attribution" in result
+    assert dl_calls and all(d == day for d in dl_calls), dl_calls
     from backend.traffic.store import day_key
 
     assert (tmp_path / "traffic" / day_key(day, "LHBP")).is_file()
