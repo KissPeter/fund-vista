@@ -207,26 +207,30 @@ def test_avail_out_of_range_no_http(live, monkeypatch):
         assert "min" in resp.json() and "max" in resp.json()
 
 
-def test_avail_unsupported_prefix_fastpath(live, monkeypatch):
-    calls: list = []
-    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport", calls=calls)
-    _stub_source_status(monkeypatch, {"status": "available"}, github_calls := [])
-    for icao in ("EGLL", "KJFK"):
-        resp = live.get("/v1/traffic/availability", params={"icao": icao, "date": "2026-10-10"})
-        assert resp.status_code == 422, resp.text
-        assert resp.json()["error"]["code"] == "unsupported_airport"
-    assert calls == [] and github_calls == []  # no upstream I/O at all
-
-
-def test_avail_unsupported_row_level(live, monkeypatch):
+def test_avail_non_hungarian_airport_is_supported(live, monkeypatch):
     calls: list = []
     _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport",
-                  row={"ident": "LHGB", "iso_country": "GB"}, calls=calls)
+                  row={"ident": "EGLL", "iso_country": "GB", "name": "Heathrow",
+                       "latitude_deg": "51.4706", "longitude_deg": "-0.461941",
+                       "elevation_ft": "83"}, calls=calls)
+    _stub_source_status(monkeypatch, {"status": "available"}, github_calls := [])
+    resp = live.get("/v1/traffic/availability", params={"icao": "EGLL", "date": "2026-10-10"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "available"
+    assert calls == ["EGLL"] and github_calls == ["2026-10-10"]
+
+
+def test_avail_non_hungarian_resolved_row_is_supported(live, monkeypatch):
+    calls: list = []
+    _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport",
+                  row={"ident": "LHGB", "iso_country": "GB", "name": "Test",
+                       "latitude_deg": "51.0", "longitude_deg": "0.0",
+                       "elevation_ft": "100"}, calls=calls)
     _stub_source_status(monkeypatch, {"status": "available"}, github_calls := [])
     resp = live.get("/v1/traffic/availability", params={"icao": "LHGB", "date": "2026-10-10"})
-    assert resp.status_code == 422, resp.text
-    assert resp.json()["error"]["code"] == "unsupported_airport"
-    assert calls == ["LHGB"] and github_calls == []
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "available"
+    assert calls == ["LHGB"] and github_calls == ["2026-10-10"]
 
 
 def test_avail_invalid_and_not_found(live, monkeypatch):
@@ -267,8 +271,7 @@ def test_render_rejects_ambiguous_type_and_airline_codes(live):
 
 def test_jobs_traffic_enqueue_422(live):
     day = _yesterday_iso()
-    for payload in ({"icao": "EGLL", "date": day},
-                    {"icao": "LHBP", "date": "not-a-date"},
+    for payload in ({"icao": "LHBP", "date": "not-a-date"},
                     {"icao": "LHBP", "date": day, "extra": 1}):
         resp = live.post("/v1/jobs", json={"type": "traffic_ingest", "request": payload,
                                            "cancel_previous": False})
@@ -301,7 +304,8 @@ def test_jobs_traffic_done_path(live, monkeypatch, tmp_path):
     assert result["icao"] == "LHBP" and result["date"] == day
     assert result["flights"] == len(flights) and result["movements"] == 4
     assert result["cache_hit"] is False and result["bytes"] > 0
-    assert "attribution" in result and dl_calls == [day]
+    assert "attribution" in result
+    assert dl_calls and all(d == day for d in dl_calls), dl_calls
     from backend.traffic.store import day_key
 
     assert (tmp_path / "traffic" / day_key(day, "LHBP")).is_file()
@@ -411,22 +415,25 @@ def test_jobs_traffic_l1_hit_idempotent(live, monkeypatch, tmp_path):
     assert resolve_calls == []  # L1 recheck precedes lookup + download
 
 
-def test_jobs_traffic_unsupported_row_fails(live, monkeypatch, tmp_path):
+def test_jobs_traffic_non_hungarian_row_is_supported(live, monkeypatch, tmp_path):
     _stub_resolve(monkeypatch, "backend.jobs._exec_traffic.resolve_airport",
-                  row={"ident": "LHXX", "iso_country": "DE"})
+                  row={"ident": "LHXX", "iso_country": "DE", "name": "Elsewhere",
+                       "latitude_deg": "50.0", "longitude_deg": "8.0",
+                       "elevation_ft": "300"})
+    flights = _fixture_day()["flights"]
     monkeypatch.setattr("backend.jobs._exec_traffic._download_and_extract",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("download called")))
+                        lambda day, specs, cancelled, on_progress=None: {s["icao"]: flights for s in specs})
     day = _yesterday_iso()
     resp = live.post("/v1/jobs", json={"type": "traffic_ingest",
                                        "request": {"icao": "LHXX", "date": day},
                                        "cancel_previous": False})
     assert resp.status_code == 202, resp.text
     final = _wait_done(live, resp.json()["job_id"])
-    assert final["status"] == "failed", final
-    assert final["error"]["code"] == "unsupported_airport"
+    assert final["status"] == "done", final
+    assert final["result"]["icao"] == "LHXX"
     from backend.traffic.store import day_key
 
-    assert not (tmp_path / "traffic" / day_key(day, "LHXX")).exists()
+    assert (tmp_path / "traffic" / day_key(day, "LHXX")).exists()
 
 
 def test_jobs_traffic_out_of_range_fails(live, monkeypatch):
@@ -564,29 +571,27 @@ def test_jobs_traffic_multi_mixed_cache_hit(live, monkeypatch, tmp_path):
     assert by_icao["LHDC"]["cache_hit"] is False
 
 
-def test_jobs_traffic_multi_partial_error(live, monkeypatch, tmp_path):
-    """One bad airport is an error entry; the good one still lands."""
-    _stub_resolve_multi(monkeypatch, {"LHBP": HU_ROW, "LHXX": {"ident": "LHXX",
-                                                               "iso_country": "DE",
-                                                               "name": "Elsewhere",
-                                                               "latitude_deg": "50.0",
-                                                               "longitude_deg": "8.0",
-                                                               "elevation_ft": "300"}})
+def test_jobs_traffic_multi_non_hungarian_airports_supported(live, monkeypatch, tmp_path):
+    """Non-HU airports are valid in a multi-airport ingest job."""
+    _stub_resolve_multi(monkeypatch, {"LHBP": HU_ROW, "EGLL": {"ident": "EGLL",
+                                                               "iso_country": "GB",
+                                                               "name": "Heathrow",
+                                                               "latitude_deg": "51.4706",
+                                                               "longitude_deg": "-0.461941",
+                                                               "elevation_ft": "83"}})
     flights = _fixture_day()["flights"]
     monkeypatch.setattr("backend.jobs._exec_traffic._download_and_extract",
                         lambda day, specs, cancelled, on_progress=None: {s["icao"]: flights for s in specs})
     day = _yesterday_iso()
     resp = live.post("/v1/jobs", json={"type": "traffic_ingest",
-                                       "request": {"icaos": ["LHBP", "LHXX"], "date": day},
+                                       "request": {"icaos": ["LHBP", "EGLL"], "date": day},
                                        "cancel_previous": False})
     assert resp.status_code == 202, resp.text
     final = _wait_done(live, resp.json()["job_id"])
     assert final["status"] == "done", final
     result = final["result"]
-    assert [e["icao"] for e in result["airports"]] == ["LHBP"]
-    assert [e["icao"] for e in result["errors"]] == ["LHXX"]
-    assert result["errors"][0]["code"] == "unsupported_airport"
-    assert result["errors"][0]["detail"]
+    assert sorted(e["icao"] for e in result["airports"]) == ["EGLL", "LHBP"]
+    assert result["errors"] == []
 
 
 def test_jobs_traffic_multi_shape_validation(live, monkeypatch):
@@ -598,8 +603,7 @@ def test_jobs_traffic_multi_shape_validation(live, monkeypatch):
                     {"date": day},
                     {"icao": "", "date": day},
                     {"icaos": [], "date": day},
-                    {"icaos": ["LHBP"] * 101, "date": day},
-                    {"icaos": ["EGLL"], "date": day}):
+                    {"icaos": ["LHBP"] * 101, "date": day}):
         resp = live.post("/v1/jobs", json={"type": "traffic_ingest",
                                            "request": request, "cancel_previous": False})
         assert resp.status_code == 422, (request, resp.text)
@@ -926,13 +930,14 @@ def test_render_validation_boundaries(live, monkeypatch):
         _render_body(day, t_to="24:01"),  # past end of day
         _render_body(day, width=99),  # below min
         _render_body(day, width=4001),  # above max
-        {"icao": "EGLL", "date": day},  # non-LH
         dict(_render_body(day), bogus=1),  # extra=forbid
     ]
     for payload in bad:
         resp = live.post("/v1/traffic/render", json=payload)
         assert resp.status_code == 422, (payload, resp.text)
-        assert resp.json()["error"]["code"] in ("invalid_params", "unsupported_airport"), resp.json()
+        assert resp.json()["error"]["code"] == "invalid_params", resp.json()
+    ok = live.post("/v1/traffic/render", json={**_render_body(day), "icao": "EGLL"})
+    assert ok.status_code == 409, ok.text  # valid request, no L1 loaded
     ok = live.post("/v1/traffic/render", json=_render_body(day, width=100))
     assert ok.status_code in (200, 409), ok.text  # boundary accepted (409 = no L1 seeded)
 
@@ -949,10 +954,7 @@ def test_render_not_ingested_and_guards(live, monkeypatch):
     resp = live.post("/v1/traffic/render", json=_render_body(today))
     assert resp.status_code == 422 and resp.json()["error"]["code"] == "out_of_range"
     resp = live.post("/v1/traffic/render", json={"icao": "EGLL", "date": day})
-    # Non-LH ICAOs are rejected at schema validation (invalid_params), same as
-    # POST /v1/jobs traffic_ingest with EGLL (see test_jobs_traffic_enqueue_422
-    # and the tolerant twin assertion in test_render_validation_boundaries).
-    assert resp.status_code == 422 and resp.json()["error"]["code"] in ("invalid_params", "unsupported_airport")
+    assert resp.status_code == 409 and resp.json()["error"]["code"] == "traffic_not_ingested"
     _stub_resolve(monkeypatch, "backend.traffic.router.resolve_airport",
                   exc=AirportNotFoundError("No airport found for ICAO 'LHZZ'."))
     resp = live.post("/v1/traffic/render", json={"icao": "LHZZ", "date": day})

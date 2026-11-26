@@ -45,8 +45,7 @@ from backend.traffic import availability as _avail
 from backend.traffic import cache as _cache
 from backend.traffic import ingest as _ingest
 from backend.traffic import store as _slices
-from backend.traffic.hungary import MESSAGE as _HU_MESSAGE
-from backend.traffic.hungary import row_is_hungarian
+
 from backend.traffic.classify import CLASSIFIER_VERSION, classify_day
 from backend.traffic.config import settings as _traffic_settings
 from backend.traffic.schemas import ATTRIBUTION, TrafficIngestRequest, movements_key
@@ -208,11 +207,6 @@ async def _exec_traffic_ingest(
                 raise _JobError(502, "ourairports_unavailable", f"Airport data fetch failed: {exc.detail}")
             errors.append({"icao": i, "code": "ourairports_unavailable",
                            "detail": f"Airport data fetch failed: {exc.detail}"})
-            continue
-        if not row_is_hungarian(airport):
-            if not multi:
-                raise _JobError(422, "unsupported_airport", _HU_MESSAGE)
-            errors.append({"icao": i, "code": "unsupported_airport", "detail": _HU_MESSAGE})
             continue
         lat = _fnum(airport.get("latitude_deg"))
         lon = _fnum(airport.get("longitude_deg"))

@@ -110,11 +110,11 @@ def test_icao_is_normalized(live):
     assert resp.json()["status"] in ("available", "ready", "out_of_range")
 
 
-def test_icao_outside_hungary_is_unsupported_not_invalid(live):
+def test_icao_outside_hungary_is_accepted(live):
     resp = live.get("/v1/traffic/availability",
                     params={"icao": "EGLL", "date": "2026-10-10"})
-    assert resp.status_code == 422, resp.text
-    assert resp.json()["error"]["code"] == "unsupported_airport"
+    assert resp.status_code == 200, resp.text
+    assert "error" not in resp.json()
 
 
 # -- the date parameter ------------------------------------------------------
@@ -129,12 +129,11 @@ def test_date_must_be_iso(live):
         assert "date must be YYYY-MM-DD." in resp.json()["error"]["message"]
 
 
-def test_date_is_checked_after_the_hungary_rule(live):
-    # A non-HU ICAO wins over a broken date (the order the API always had).
+def test_date_is_checked_for_non_hungarian_icao(live):
     resp = live.get("/v1/traffic/availability",
                     params={"icao": "EGLL", "date": "not-a-date"})
     assert resp.status_code == 422, resp.text
-    assert resp.json()["error"]["code"] == "unsupported_airport"
+    assert resp.json()["error"]["code"] == "invalid_params"
 
 
 def test_valid_query_is_not_a_validation_error(live):

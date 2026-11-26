@@ -205,8 +205,7 @@ def test_render_request_view_rules():
 
 
 def test_render_request_icao_width_forbid():
-    with pytest.raises(Exception, match="Hungarian"):
-        _req(icao="EGLL")
+    assert _req(icao="EGLL").icao == "EGLL"
     with pytest.raises(Exception):
         _req(width=99)  # below min → 422
     with pytest.raises(Exception):
