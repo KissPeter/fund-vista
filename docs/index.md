@@ -28,6 +28,7 @@ tracked item — see `.opencode/skills/track-work/SKILL.md`.
 | CR-010 | change request | Local OSM extract (Hungary, SQLite on the Mac) as first Overpass mirror for citymap | done | 2026-11-17 |
 | B-003 | bug | Production STL toolchain runtime install (T7 follow-up) | todo | 2026-11-24 |
 | F-010 | feature | One layered SVG for the WordPress-bridge handover (airport + traffic composite with named pen groups) | in progress | 2026-11-26 |
+| B-004 | bug | Airport traffic SVG re-inks the runway funnel and tears the paper — union-based corridor collapse + `max_corridor_passes` cap | done | 2026-11-26 |
 
 Doc: `docs/CR-001-citymap-page-split.md`.
 Doc: `docs/CR-002-convert-performance.md`.
@@ -42,6 +43,7 @@ Doc: `docs/F-006-traffic-country-border-detail-aspect.md`.
 Doc: `docs/B-001-tls-ca-fallback.md`.
 Doc: `docs/B-002-ocr-backend-missing-local-suite.md`.
 Doc: `docs/B-003-stl-toolchain-runtime-install.md` (owner: Péter Kiss).
+Doc: `docs/B-004-traffic-runway-overink.md`.
 Doc: `docs/F-001-airport-diagrams.md`.
 Doc: `docs/F-005-technical-drawing.md`, CLI manual `docs/img2plot-cli.md`, SVG ownership metadata `docs/svg-metadata.md`.
 Doc: `docs/F-010-layered-svg-handover.md` (one layered SVG for the WordPress bridge).

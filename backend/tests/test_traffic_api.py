@@ -930,6 +930,8 @@ def test_render_validation_boundaries(live, monkeypatch):
         _render_body(day, t_to="24:01"),  # past end of day
         _render_body(day, width=99),  # below min
         _render_body(day, width=4001),  # above max
+        _render_body(day, max_corridor_passes=0),  # below min
+        _render_body(day, max_corridor_passes=51),  # above max
         dict(_render_body(day), bogus=1),  # extra=forbid
     ]
     for payload in bad:
@@ -939,7 +941,10 @@ def test_render_validation_boundaries(live, monkeypatch):
     ok = live.post("/v1/traffic/render", json={**_render_body(day), "icao": "EGLL"})
     assert ok.status_code == 409, ok.text  # valid request, no L1 loaded
     ok = live.post("/v1/traffic/render", json=_render_body(day, width=100))
-    assert ok.status_code in (200, 409), ok.text  # boundary accepted (409 = no L1 seeded)
+    assert ok.status_code in (200, 409), ok.text
+    for passes in (1, 50):
+        ok = live.post("/v1/traffic/render", json=_render_body(day, max_corridor_passes=passes))
+        assert ok.status_code in (200, 409), ok.text  # valid field, no L1 seeded  # boundary accepted (409 = no L1 seeded)
 
 
 def test_render_not_ingested_and_guards(live, monkeypatch):

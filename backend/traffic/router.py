@@ -265,7 +265,8 @@ async def render_document(
                                   include_map=body.map, include_airport=body.airport,
                                   include_highways=body.highways,
                                   viewport_aspect=body.viewport_aspect,
-                                  min_path_len_m=body.min_path_len_m)
+                                  min_path_len_m=body.min_path_len_m,
+                                  max_corridor_passes=body.max_corridor_passes)
     stats = movement_stats(window)
     if failed:
         warnings.append("basemap_unavailable")

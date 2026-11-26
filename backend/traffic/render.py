@@ -40,7 +40,7 @@ import math
 from dataclasses import replace
 from xml.sax.saxutils import escape
 
-from backend.traffic.corridors import corridor_keep
+from backend.traffic.corridors import corridor_paths
 from backend.traffic.filters import Filters, low_runs, pen
 from backend.traffic.geo import clip_polyline, rdp
 
@@ -65,7 +65,9 @@ from backend.traffic.geo import clip_polyline, rdp
 #: r7: the airfield basemap comes from the hybrid source (Overture + Overpass),
 #: degraded airfields are not cached and the airfield L3 key carries the
 #: Overture release and switch. Bumped so cached r6 renders expire.
-RENDER_VERSION = "r7"
+#: r8: union-based corridor collapse with a hard pen-pass cap, and the
+#: ``max_corridor_passes`` request knob. Bumped so cached r7 SVGs expire.
+RENDER_VERSION = "r8"
 
 PENS = {  # layer id -> (label, stroke, width)   widths are in SVG user units of a 1000-wide canvas
     # Black on white only: layers are told apart by stroke width, not hue.
@@ -228,6 +230,7 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
                include_map: bool = True, include_airport: bool = True,
                include_highways: bool = True,
                viewport_aspect: float | None = None, min_path_len_m: float = 0.0,
+               max_corridor_passes: int = 10,
                ) -> tuple[str, dict]:
     """Render the traffic SVG + the per-layer **potential** counts.
 
@@ -250,9 +253,11 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
 
     The **corridor collapse** (issue: runway-funnel line storm) merges
     near-identical strokes of a layer into corridor representatives before
-    they are emitted, so a busy approach corridor does not re-ink the same
-    line dozens of times. The counts stay *movement* counts — zero always
-    means "no movements", never "all merged away".
+    they are emitted: a stroke joins the union of recent members of a
+    corridor, and ``max_corridor_passes`` hard-caps the pen passes of one
+    corridor (10 by default, one pass per ~20 movements). A diverging tail is
+    kept as a short extra pass. The counts stay *movement* counts — zero
+    always means "no movements", never "all merged away".
     """
     proj = Projection(bbox, width, viewport_aspect)
     eps_base, eps_trk = 0.3, 0.35
@@ -304,8 +309,9 @@ def render_svg(movements: list[dict], basemap: dict, bbox: tuple[float, float, f
     # Corridor collapse per movement layer (runway funnel): survivors keep
     # their clipped segments and their title verbatim.
     for k, arcs in segs_by_layer.items():
-        for i in corridor_keep([arc for arc, _t in arcs], proj.width):
-            seg, title = arcs[i]
+        for i, seg in corridor_paths([arc for arc, _t in arcs], proj.width,
+                                     max_passes=max_corridor_passes):
+            title = arcs[i][1]
             layers[k].append('<path d="M%s"><title>%s</title></path>' % (" L".join("%.1f,%.1f" % q for q in seg), title))
     out = ['<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
            'data-kp-fit="fill" viewBox="0 0 %.0f %.0f" width="%.0fmm" height="%.0fmm">' % (proj.width, proj.height, proj.width * 0.3, proj.height * 0.3)]

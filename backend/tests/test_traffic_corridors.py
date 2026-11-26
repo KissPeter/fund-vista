@@ -14,7 +14,7 @@ import time
 from backend.traffic import corridors as C
 from backend.traffic import render as R
 from backend.traffic.classify import classify_day
-from backend.traffic.corridors import corridor_keep
+from backend.traffic.corridors import corridor_keep, corridor_paths
 from backend.tests.helpers import perf_budget
 from backend.traffic.filters import Filters
 
@@ -25,9 +25,10 @@ AP = {"lat": LAT, "lon": LON, "elev_ft": ELEV}
 BACKGROUND = {"motorways": [], "waterways": [], "water": [], "airfield": []}
 
 
-def _expected_reps(n: int) -> int:
-    """A seed covers itself + up to CORRIDOR_SPLIT joins (retires after that)."""
-    return math.ceil(n / (C.CORRIDOR_SPLIT + 1))
+def _expected_reps(n: int, cap: int = C.CORRIDOR_MAX_PASSES) -> int:
+    """A busy corridor keeps one pass per stride, hard-capped at `cap` lines."""
+    stride = C.CORRIDOR_REFERENCE_STROKES // cap
+    return min(cap, math.ceil(n / stride))
 
 
 def _line(y: float, x_from: float = 200.0, x_to: float = 800.0, wobble=0.0, n=21):
@@ -43,7 +44,7 @@ def _line(y: float, x_from: float = 200.0, x_to: float = 800.0, wobble=0.0, n=21
 # -- pure geometry ----------------------------------------------------------------
 
 def test_identical_traces_collapse_to_few_lines():
-    """The funnel case: 50 same-corridor flights -> ~1 pass per 9 strokes."""
+    """The funnel case: 50 same-corridor flights -> 3 pen passes, not 50."""
     strokes = [_line(500.0) for _ in range(50)]
     keep = corridor_keep(strokes, W)
     assert len(keep) == _expected_reps(50)
@@ -76,7 +77,7 @@ def test_partial_overlap_with_diverging_tail_kept():
         _line(500.0),
         _line(500.0, x_to=700.0) + [(700.0, 560.0), (760.0, 640.0)],
     ]
-    assert corridor_keep(strokes, W) == [0, 1]
+    assert [i for i, _ in corridor_paths(strokes, W)] == [0, 1]
 
 
 def test_degenerate_and_tiny_strokes_kept():
@@ -84,10 +85,10 @@ def test_degenerate_and_tiny_strokes_kept():
     assert corridor_keep([_line(500.0), one, [(7.0, 7.0)]], W) == [0, 1, 2]
 
 
-def test_split_retire_keeps_density():
-    """A 20-flight funnel keeps ceil(20/9)=3 passes, not 20, not 1."""
-    strokes = [_line(500.0) for _ in range(20)]
-    assert C.collapse_counts(strokes, W) == _expected_reps(20) == 3
+def test_pass_cap_keeps_density():
+    """A 200-flight funnel gets 10 passes; a 400-flight one never exceeds 10."""
+    assert C.collapse_counts([_line(500.0) for _ in range(200)], W) == 10
+    assert C.collapse_counts([_line(500.0) for _ in range(400)], W) == C.CORRIDOR_MAX_PASSES
 
 
 def test_holding_ovals_imperfect_laps_diverge():
@@ -148,7 +149,7 @@ def test_render_collapse_draws_ratio_but_counts_movement():
     arrivals = re.search(r'id="traffic-arrivals".*?</g>', svg, re.S).group(0)
     drawn = arrivals.count("<path")
     assert 1 <= drawn < counts["arrivals"]  # the funnel is collapsed
-    assert drawn == _expected_reps(50)     # — and it follows the retire rule exactly
+    assert drawn == _expected_reps(50)     # — and it follows the pass-budget rule
 
 
 def test_render_zero_movements_means_zero():
@@ -157,3 +158,23 @@ def test_render_zero_movements_means_zero():
                                Filters(t_from=0, t_to=86_400), None)
     assert counts == {"arrivals": 0, "departures": 0, "holding": 0, "go_around": 0}
     assert "<path" not in svg
+
+
+def test_drifted_retraces_join_one_union_corridor():
+    """Union tracking follows a slowly drifting funnel instead of re-seeding it."""
+    strokes = [[(200.0 + 30.0 * i, 500.0 + 0.35 * k) for i in range(21)]
+               for k in range(20)]
+    # First and last strokes are 6.65 units apart — well beyond the 2-unit
+    # tolerance of any single seed; the union of recent members bridges them.
+    assert len(corridor_keep(strokes, W)) < 5
+
+
+def test_diverging_tail_keeps_only_the_short_pass():
+    """A 90 % retrace with a turning tail joins the corridor but keeps its tail."""
+    base = _line(500.0)
+    tail = _line(500.0, x_to=740.0, n=19) + [(740.0, 520.0), (760.0, 560.0)]
+    drawn = corridor_paths([base, tail], W)
+    assert [i for i, _ in drawn] == [0, 1]
+    assert drawn[0][1] == base
+    assert len(drawn[1][1]) < len(tail)
+    assert drawn[1][1][-1][1] >= 550.0
