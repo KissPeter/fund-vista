@@ -4,7 +4,7 @@ Phase 5: extra filters + category pens + window stats).
 Render never touches the archive: it needs the cached L1 day dataset and
 the L3 basemap. If L1 is missing it answers ``409 traffic_not_ingested``
 and the UI offers "Load this day". Mac-only until R2 (plan §6.5):
-``/v1/traffic/*`` has no cloud fallback — nginx must exclude these paths
+``/v1/traffic/*`` has no cloud fallback - nginx must exclude these paths
 (see ``docs/nas-fundvista.md``).
 """
 
@@ -26,8 +26,9 @@ from backend.cancel import check_cancelled, race_cancel
 from backend.http import upstream
 from backend.http.errors import error_response
 from backend.penplot import imaging
+from backend.penplot.public_result import RESULT_RESPONSES, result_response
 from backend.penplot.errors import PenPlotError
-from backend.penplot.router import require_rate_limit, resolve_public_base
+from backend.penplot.router import get_settings, require_rate_limit, resolve_public_base
 from backend.penplot.router import store as penplot_store
 from backend.traffic import availability as _avail
 from backend.traffic import cache as _cache
@@ -173,7 +174,7 @@ async def render_document(
         raw = None
     if raw is None:
         return error_response(409, "traffic_not_ingested",
-                              f"No loaded traffic for {icao} on {body.date} — "
+                              f"No loaded traffic for {icao} on {body.date} - "
                               "load the day first (POST /v1/jobs type traffic_ingest).")
     try:
         data = json.loads(gzip.decompress(raw).decode("utf-8"))
@@ -192,7 +193,7 @@ async def render_document(
         view = (body.view_south, body.view_north, body.view_west, body.view_east)  # type: ignore[misc]
     if body.viewport_aspect is not None:
         # Paper fill (r4): grow the view around its centre to the canvas
-        # ratio first, clamped to the day bbox — the ingest clipped the
+        # ratio first, clamped to the day bbox - the ingest clipped the
         # traces to it, so beyond it there is nothing to draw and the
         # residual mismatch is cropped (crop_view_to_aspect).
         view = expand_view_to_aspect(view, body.viewport_aspect, tuple(float(x) for x in l1_bbox))  # type: ignore[arg-type]
@@ -233,7 +234,7 @@ async def render_document(
     window = [m for m in moves if t_from_ts <= m["t"] < t_to_ts]
 
     # The Map / Airport layer switches (issue #1080): an unticked layer is
-    # never fetched — the Overpass query and the L3 cache entry would be
+    # never fetched - the Overpass query and the L3 cache entry would be
     # wasted work for a group that is not drawn.
     wanted_basemap = tuple(
         layer for layer in LAYERS
@@ -321,7 +322,7 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
 async def import_diagram(body: RenderRequest, request: Request) -> ImportResponse | JSONResponse:
     """Render a traffic map and register it as a penplot image.
 
-    Returns ``image_id`` — convert it with ``POST /v1/convert`` exactly
+    Returns ``image_id`` - convert it with ``POST /v1/convert`` exactly
     like an uploaded SVG (vector branch). An empty movement selection still
     imports (the basemap plots); counts tell the story.
     """
@@ -346,12 +347,12 @@ async def import_diagram(body: RenderRequest, request: Request) -> ImportRespons
     )
 
 
-@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)])
+@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)], responses=RESULT_RESPONSES)
 async def get_result(token: str) -> Response:
-    """Serve a cached rendered traffic SVG (sha1 token from ``svg_url``)."""
+    """Serve a cached traffic result: PNG publicly, SVG only on the internal instance."""
     svg_text = await _load_result_svg(token)
     if svg_text is None:
         return error_response(404, "result_not_found",
-                              "Traffic result expired or unknown — "
+                              "Traffic result expired or unknown - "
                               "re-run POST /v1/traffic/render.")
-    return Response(content=svg_text, media_type="image/svg+xml")
+    return await result_response(svg_text, get_settings())

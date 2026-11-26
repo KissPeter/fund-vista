@@ -5,10 +5,8 @@ already been composed and checked by ``compose_sheet``; this module only
 rasterizes it.
 
 Renderer: ``resvg`` through the ``resvg-py`` binding (binding MIT, resvg itself
-MPL-2.0; see ``backend/THIRD_PARTY_NOTICES.md`` section B). Fallback:
-``cairosvg`` (LGPL-3.0), imported lazily and used only when ``resvg-py`` is not
-importable. ``cairosvg`` is NOT a declared dependency, so the fallback exists
-only where an operator installs it.
+MPL-2.0; see ``backend/THIRD_PARTY_NOTICES.md`` section B). No fallback
+renderer is used: if the declared wheel is missing, rasterization fails closed.
 
 Safety: the SVG is parsed with ``defusedxml`` before rendering, resvg gets no
 ``resources_dir`` (no external ``href`` is loaded), and system fonts are not
@@ -90,8 +88,6 @@ def render_png(svg: str, width_px: int, height_px: int, background: str | None) 
         ) from exc
     try:
         return _render_resvg(pixel_svg, width_px, height_px, background)
-    except ImportError:
-        return _render_cairosvg(pixel_svg, width_px, height_px, background)
     except ValueError as exc:
         log.warning("preview.render failed renderer=%s", RENDERER)
         raise PenPlotError(
@@ -113,18 +109,3 @@ def _render_resvg(svg: str, width_px: int, height_px: int, background: str | Non
         )
     )
 
-
-def _render_cairosvg(svg: str, width_px: int, height_px: int, background: str | None) -> bytes:
-    try:
-        import cairosvg  # noqa: PLC0415 - LGPL-3.0 fallback, not a declared dependency
-    except ImportError as exc:
-        raise PenPlotError(
-            status=500, code=ErrorCode.PROCESSING_FAILED,
-            message="No SVG renderer is installed.",
-        ) from exc
-    return cairosvg.svg2png(
-        bytestring=svg.encode("utf-8"),
-        output_width=width_px,
-        output_height=height_px,
-        background_color=background,
-    )

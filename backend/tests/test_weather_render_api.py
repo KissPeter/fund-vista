@@ -163,3 +163,14 @@ def test_store_with_a_retained_ttl_below_90_days_is_refused(client, monkeypatch)
     assert resp.status_code == 500, resp.text
     assert resp.json()["error"]["code"] == "weather_retention_failed"
 
+
+def test_public_results_route_serves_png(public_http_client):
+    public = public_http_client
+    rendered = public.post("/v1/weather/render", json=BODY)
+    assert rendered.status_code == 200, rendered.text
+    result_url = rendered.json()["svg_url"]
+    result = public.get(result_url)
+    assert result.status_code == 200, result.text
+    assert result.headers["content-type"].startswith("image/png")
+    assert result.content.startswith(b"\x89PNG")
+

@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     # links stay absolute + publicly fetchable even behind a proxy that
     # rewrites Host. Empty = derive from the incoming request.
     public_base_url: str = ""
+    # Phase 6 SVG lock-down. A public instance MUST leave this false; only the
+    # loopback-only internal instance used by the shop server MAY set it true.
+    # Env: PENPLOT_ALLOW_SVG (0/1, default 0).
+    allow_svg: bool = False
     # Purchased-design retention window (§4, option a): POST
     # /v1/images/{id}/retain promotes an image to this TTL (default 90 d).
     # Anonymous previews keep image_ttl_hours.

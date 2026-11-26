@@ -60,18 +60,28 @@ Previews stay clean: plain `GET /v1/results/{file}` serves the cached bytes
 byte-identical (no visible line, deterministic). The download variant applies
 `svgmeta.stamp_download` **at serve time, never stored**:
 
-- `?download=1` — metadata notice (when configured) + a centred domain line
+- `?download=1` - metadata notice (when configured) + a centred domain line
   (`<g id="penplot-credit">`) in the bottom out-of-border margin, placed
   viewBox-aware; answers `Content-Disposition: attachment`.
-- `?credit=1` — same bytes, inline disposition (no attachment header).
+- `?credit=1` - same bytes, inline disposition (no attachment header).
 
 The visible text is the hostname of `PENPLOT_SVG_ATTRIBUTION_URL`
 (`https://pen-pixel.hu/…` → `pen-pixel.hu`), so no new setting
 is needed; with no attribution URL configured the download is byte-identical
 to the preview. Plot geometry (`<path>` data) is never modified, re-requests
-are byte-identical no-ops (including shop-stamped files — the shop guard
+are byte-identical no-ops (including shop-stamped files - the shop guard
 passes them through unchanged), and the SVG parser skips the credit subtree
 on re-ingest, so a download converts back to identical geometry.
+
+On a locked instance (`PENPLOT_ALLOW_SVG=0`) the same contract applies to the
+PNG answer: `svgmeta.stamp_download` runs before rasterization, so
+`?download=1` and `?credit=1` produce credited PNG bytes while a plain
+`GET` stays unstamped. `?download=1` answers
+`Content-Disposition: attachment` with a `.png` filename; `?credit=1` is
+inline. The raster cache under `data_dir/result-png` keeps its
+content-addressed name but expires lazily 24 hours after its mtime
+(`docs/nfr-retention.md`): an expired file is removed on read and regenerated
+on the next request.
 
 ## Production go-live
 
@@ -83,7 +93,7 @@ PENPLOT_SVG_ATTRIBUTION_URL=https://pen-pixel.hu
 ```
 
 The ownership digest is part of result filenames, so enabling this never
-serves a stale file — new converts get new names, old cached files keep
+serves a stale file - new converts get new names, old cached files keep
 their stamp. Verify with `backend/tests/test_penplot_svg_download.py`.
 
 ## Check a file

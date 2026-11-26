@@ -26,6 +26,24 @@ def _assert_clean_svg(resp) -> None:
     assert "<text" not in body
 
 
+def test_public_preview_answers_png_not_svg(public_http_client):
+    resp = _post(public_http_client, "top.gbr", (FIXTURES / "pcb_minimal.gbr").read_bytes())
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("image/png")
+    assert resp.content.startswith(b"\x89PNG")
+
+
+def test_public_render_refuses_svg_json(public_http_client):
+    resp = public_http_client.post(
+        "/v1/pcb/render",
+        files={"file": ("top.gbr", (FIXTURES / "pcb_minimal.gbr").read_bytes(),
+                        "application/octet-stream")},
+        data={"params": "{}"},
+    )
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["error"]["code"] == "svg_locked"
+
+
 def test_gerber_single_file_renders_svg(http_client):
     resp = _post(http_client, "top.gbr", (FIXTURES / "pcb_minimal.gbr").read_bytes())
     _assert_clean_svg(resp)

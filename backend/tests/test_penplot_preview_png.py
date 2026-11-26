@@ -8,14 +8,20 @@ fields left at their defaults.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
+import os
+import sys
+import time
+import types
 
 import pytest
 from PIL import Image
 
-from backend.penplot import colour_bake, raster_out
+from backend.penplot import colour_bake, public_result, raster_out
 from backend.penplot import compose_sheet as cs
+from backend.penplot.config import Settings
 from backend.penplot.errors import PenPlotError
 from backend.penplot.schemas import ComposeSheetRequest
 
@@ -217,8 +223,11 @@ def test_external_reference_in_artwork_is_not_loaded_by_the_renderer():
     # The artwork is embedded as a data URI and resvg gets no resources_dir,
     # so a file:// href inside it is never read: the render still succeeds.
     bad = ART.replace("</svg>", '<image href="file:///etc/hosts" width="1" height="1"/></svg>')
+    clean = _png(_req(svg=ART, preview="png"))
     img = _png(_req(svg=bad, preview="png"))
     assert img.format == "PNG"
+    assert img.size == clean.size
+    assert img.tobytes() == clean.tobytes()
 
 
 def test_render_refuses_malformed_svg():
@@ -269,7 +278,188 @@ def test_http_preview_filename_gate_refuses_other_names(http_client, name):
     assert http_client.get(f"/v1/previews/{name}").status_code == 404
 
 
-def test_http_svg_default_still_answers_svg(http_client):
-    resp = http_client.post("/v1/compose-sheet", json={"svg": ART})
-    assert resp.status_code == 200
-    assert resp.headers["content-type"].startswith("image/svg+xml")
+def test_public_rasterize_answers_png_only(public_http_client):
+    resp = public_http_client.post("/v1/rasterize", json={"svg": ART})
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("image/png")
+    assert resp.content.startswith(b"\x89PNG")
+
+
+def test_rasterized_preview_is_cached_by_content_hash(public_http_client):
+    resp = public_http_client.post("/v1/rasterize", json={"svg": ART})
+    url = resp.headers["x-raster-url"]
+    assert url.endswith(".png")
+    path = url.split("/v1", 1)[1]
+    cached = public_http_client.get("/v1" + path)
+    assert cached.status_code == 200, cached.text
+    assert cached.headers["content-type"].startswith("image/png")
+    assert cached.content == resp.content
+    again = public_http_client.post("/v1/rasterize", json={"svg": ART})
+    assert again.headers["x-raster-url"] == url
+    assert again.content == resp.content
+    assert public_http_client.get("/v1/rasterized/" + "a" * 64 + ".png").status_code == 404
+
+
+def test_rasterize_refuses_a_non_svg_body(public_http_client):
+    resp = public_http_client.post("/v1/rasterize", json={"svg": "not an svg"})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "unsupported_media_type"
+    assert not resp.headers["content-type"].startswith("image/png")
+
+
+def test_png_compose_carries_and_caches_the_table_verdict(http_client):
+    body = {
+        "svg": ART,
+        "preview": "png",
+        "context_table": {
+            "enabled": True,
+            "position": "top-right",
+            "rows": [{"label": "Hajtas", "value": "Hidraulikus"}],
+        },
+    }
+    first = http_client.post("/v1/compose-sheet", json=body)
+    assert first.status_code == 200, first.text
+    assert first.headers["x-table-overlap"] == "0"
+    second = http_client.post("/v1/compose-sheet", json=body)
+    assert second.content == first.content
+    assert second.headers["x-table-overlap"] == "0"
+
+
+def test_allow_svg_defaults_to_false(monkeypatch):
+    from backend.penplot.config import Settings
+
+    monkeypatch.delenv("PENPLOT_ALLOW_SVG", raising=False)
+    assert Settings().allow_svg is False
+
+
+def test_public_compose_svg_is_refused(public_http_client):
+    resp = public_http_client.post("/v1/compose-sheet", json={"svg": ART, "preview": "svg"})
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["error"]["code"] == "svg_locked"
+    assert not resp.headers["content-type"].startswith("image/svg+xml")
+
+
+def test_public_compose_default_is_not_svg(public_http_client):
+    resp = public_http_client.post("/v1/compose-sheet", json={"svg": ART})
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["error"]["code"] == "svg_locked"
+
+
+# -- lockdown regressions ---------------------------------------------------
+
+
+def test_result_png_cache_expires_after_24h_and_regenerates(tmp_path):
+    assert public_result.PUBLIC_PNG_TTL_SECONDS == 24 * 60 * 60
+    settings = Settings(data_dir=str(tmp_path))
+    data, key = public_result.public_result_png(ART, settings)
+    path = public_result.cached_png_path(key, settings)
+    assert os.path.exists(path)
+
+    stale = time.time() - public_result.PUBLIC_PNG_TTL_SECONDS - 60
+    os.utime(path, (stale, stale))
+    assert public_result.read_cached_png(key, settings) is None
+    assert not os.path.exists(path)
+
+    again, again_key = public_result.public_result_png(ART, settings)
+    assert again_key == key  # immutable content-addressed name survives expiry
+    assert again == data
+    assert os.path.exists(path)
+
+
+def test_result_png_cache_key_tracks_the_preview_box_env(monkeypatch):
+    for name in ("PENPLOT_PREVIEW_PNG_BOX_W_PX", "PENPLOT_PREVIEW_PNG_BOX_H_PX"):
+        monkeypatch.delenv(name, raising=False)
+    base = Settings()
+    monkeypatch.setenv("PENPLOT_PREVIEW_PNG_BOX_W_PX", "2048")
+    narrow = Settings()
+    monkeypatch.setenv("PENPLOT_PREVIEW_PNG_BOX_H_PX", "1080")
+    short = Settings()
+
+    keys = {public_result._cache_path(ART, cfg)[1] for cfg in (base, narrow, short)}
+    assert len(keys) == 3
+
+
+def test_missing_resvg_py_fails_closed_without_cairosvg(monkeypatch):
+    fallback_calls: list[int] = []
+    cairosvg = types.ModuleType("cairosvg")
+
+    def _never_fallback(*args, **kwargs):
+        fallback_calls.append(1)
+        raise AssertionError("cairosvg fallback must not be used")
+
+    cairosvg.svg2png = _never_fallback
+    monkeypatch.setitem(sys.modules, "cairosvg", cairosvg)
+    monkeypatch.setitem(sys.modules, "resvg_py", None)
+
+    with pytest.raises(ImportError):
+        raster_out.render_png(ART, 100, 50, None)
+    assert fallback_calls == []
+
+
+def test_cached_png_without_verdict_sidecar_recomputes_both(tmp_path, monkeypatch):
+    settings = Settings(data_dir=str(tmp_path))
+    monkeypatch.setattr(cs, "get_settings", lambda: settings)
+    monkeypatch.setattr(cs.store, "result_path", lambda name: str(tmp_path / name))
+    monkeypatch.setattr(cs, "resolve_public_base", lambda _request: "http://test")
+
+    body = _req(
+        preview="png",
+        context_table={
+            "enabled": True,
+            "position": "top-right",
+            "rows": [{"label": "Hajtas", "value": "Hidraulikus"}],
+        },
+    )
+    key = cs._preview_key(body, settings)
+    filename = f"{key}_preview.png"
+    png_path = tmp_path / filename
+    png_path.write_bytes(b"stale png")
+
+    calls: list[int] = []
+    real_render = cs._render_preview_with_verdict
+
+    def _counted_render(*args, **kwargs):
+        calls.append(1)
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(cs, "_render_preview_with_verdict", _counted_render)
+
+    response = asyncio.run(cs.compose_sheet_endpoint(body, None))
+    assert calls == [1]
+    assert response.headers["x-table-overlap"] == "0"
+    assert os.path.exists(cs._verdict_path(filename))
+    assert png_path.read_bytes().startswith(b"\x89PNG")
+
+
+def test_openapi_advertises_binary_preview_responses():
+    from backend.main import app  # noqa: PLC0415
+
+    schema = app.openapi()
+    compose = schema["paths"]["/v1/compose-sheet"]["post"]["responses"]
+    assert "image/png" in compose["200"]["content"]
+    assert "SVG is internal-only" in compose["200"]["description"]
+    assert "svg_locked" in compose["404"]["description"]
+    expected = {
+        ("/v1/rasterize", "post"): ("image/png",),
+        ("/v1/rasterized/{filename}", "get"): ("image/png",),
+        ("/v1/pcb/preview", "post"): ("image/png", "image/svg+xml"),
+    }
+    for (path, method), media_types in expected.items():
+        content = schema["paths"][path][method]["responses"]["200"]["content"]
+        for media_type in media_types:
+            assert media_type in content
+
+    result_paths = (
+        "/v1/results/{filename}",
+        "/v1/airports/results/{token}",
+        "/v1/citymap/results/{token}",
+        "/v1/traffic/results/{token}",
+        "/v1/weather/results/{token}",
+        "/v1/wordmark/results/{token}",
+        "/v1/pcb/results/{design_id}",
+    )
+    for path in result_paths:
+        response = schema["paths"][path]["get"]["responses"]["200"]
+        assert "image/png" in response["content"], path
+        assert "image/svg+xml" in response["content"], path
+        assert "SVG is internal-only" in response["description"], path

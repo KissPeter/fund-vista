@@ -88,6 +88,7 @@ ink on white paper), no enabled sub-layer, or a board over the plot ceiling
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -112,10 +113,11 @@ from backend.pcb.schemas import (
 )
 from backend.pcb.sheet import sheet_from_source
 from backend.fulfillment.ink_split import design_id_for
-from backend.penplot import tokens as design_tokens
+from backend.penplot import public_result, tokens as design_tokens
 from backend.penplot.config import Settings
-from backend.penplot.errors import ErrorCode, PenPlotError
-from backend.penplot.router import require_rate_limit, resolve_public_base
+from backend.penplot.errors import ErrorCode, PenPlotError, svg_locked
+from backend.penplot.router import get_settings, require_rate_limit, resolve_public_base
+from backend.penplot.public_result import RESULT_RESPONSES, result_response
 
 log = logging.getLogger(__name__)
 
@@ -130,7 +132,12 @@ SHEET_VERSION = "sheet-v2"
 @router.post(
     "/preview",
     response_class=Response,
-    responses={200: {"content": {"image/svg+xml": {}}}},
+    responses={
+        200: {
+            "content": {"image/png": {}, "image/svg+xml": {}},
+            "description": "PNG on public instances; SVG when PENPLOT_ALLOW_SVG=1.",
+        },
+    },
     dependencies=[Depends(require_rate_limit)],
 )
 async def preview(file: UploadFile = File(...)) -> Response:
@@ -138,9 +145,19 @@ async def preview(file: UploadFile = File(...)) -> Response:
     # buffering the whole body.
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     svg = await render_preview_svg(data)
+    settings = get_settings()
+    if settings.allow_svg:
+        return Response(
+            content=svg,
+            media_type="image/svg+xml",
+            headers={"cache-control": "no-store"},
+        )
+    data_png, _ = await asyncio.to_thread(
+        public_result.public_result_png, svg, settings
+    )
     return Response(
-        content=svg,
-        media_type="image/svg+xml",
+        content=data_png,
+        media_type="image/png",
         headers={"cache-control": "no-store"},
     )
 
@@ -197,6 +214,10 @@ async def render(
     params: str = Form(...),
 ) -> PcbRenderResponse | JSONResponse:
     """Plot one Gerber or Excellon file on one A4 sheet (see module docstring)."""
+    # The JSON answer carries the full SVG for the shop server / WordPress
+    # bridge only. Public instances answer PNG previews via /v1/pcb/preview.
+    if not get_settings().allow_svg:
+        raise svg_locked()
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise PenPlotError(
@@ -311,10 +332,14 @@ async def get_source(
 ) -> Response:
     """The uploaded Gerber/Excellon bytes behind a cached sheet.
 
+    This route is internal-only: the public API MUST NOT serve vector source.
+
     Requires the design token (``exp`` and ``sig`` query parameters, the same
     triple ``/render`` returns). 403 for a bad or expired token, 404 once the
     stored source is gone.
     """
+    if not get_settings().allow_svg:
+        raise svg_locked()
     token = design_id.lower()
     try:
         expires = int(exp)
@@ -338,9 +363,9 @@ async def get_source(
     )
 
 
-@router.get("/results/{design_id}", dependencies=[Depends(require_rate_limit)])
+@router.get("/results/{design_id}", dependencies=[Depends(require_rate_limit)], responses=RESULT_RESPONSES)
 async def get_result(design_id: str) -> Response:
-    """Serve a cached rendered sheet SVG (the ``design_id`` from ``svg_url``)."""
+    """Serve a cached sheet: PNG publicly, SVG only on the internal instance."""
     token = design_id.lower()
     if len(token) != 64 or any(c not in "0123456789abcdef" for c in token):
         return error_response(404, "result_not_found", "Unknown PCB result.")
@@ -350,5 +375,5 @@ async def get_result(design_id: str) -> Response:
             404, "result_not_found",
             "PCB result expired or unknown - re-run POST /v1/pcb/render.",
         )
-    return Response(content=svg, media_type="image/svg+xml")
+    return await result_response(svg, get_settings())
 

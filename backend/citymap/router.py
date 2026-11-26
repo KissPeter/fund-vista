@@ -1,4 +1,4 @@
-"""Thin HTTP glue for /v1/citymap. No OSM math lives here — only:
+"""Thin HTTP glue for /v1/citymap. No OSM math lives here - only:
 
 geocode/resolve -> Redis cache -> Overpass -> split/render -> schema out,
 with all failures mapped to the ``{"error": {"code", "message"}}`` envelope
@@ -65,8 +65,9 @@ from backend.citymap.schemas import (
 from backend.citymap.tiles import snap_bbox
 from backend.http import error_response
 from backend.penplot import imaging
+from backend.penplot.public_result import RESULT_RESPONSES, result_response
 from backend.penplot.errors import ErrorCode, PenPlotError
-from backend.penplot.router import require_rate_limit, resolve_public_base
+from backend.penplot.router import get_settings, require_rate_limit, resolve_public_base
 from backend.penplot.router import store as penplot_store
 
 log = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ async def _resolve_area(
     except BBoxTooLargeError:
         return error_response(
             422, ErrorCode.INVALID_PARAMS,
-            f"Area too large (max {settings.max_bbox_deg} deg per side) — "
+            f"Area too large (max {settings.max_bbox_deg} deg per side) - "
             "use a district or neighbourhood instead of a whole region.",
         )
     # Snap outward to a fixed grid. The UI sends raw map.getBounds() floats,
@@ -238,7 +239,7 @@ async def _render_heavy(
     started_mono: float = 0.0,
 ) -> tuple[str, dict[str, int], dict[str, int], bool] | JSONResponse:
     """Uncached part of :func:`_render_uncached` (runs inside the render slot)."""
-    # 1 — before any network/CPU work.
+    # 1 - before any network/CPU work.
     await check_cancelled(request, endpoint=endpoint, stage="validation", started_mono=started_mono)
     # P5: same area+layers with different width/minlen reuses the split
     # and skips the Overpass/tile fetch entirely.
@@ -258,7 +259,7 @@ async def _render_heavy(
         if err is not None:
             return err
         assert raw_elements is not None
-    # 3 — after fetch, before SVG build.
+    # 3 - after fetch, before SVG build.
     await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
 
     stop = threading.Event()
@@ -294,12 +295,12 @@ async def _render_heavy(
     finally:
         stop.set()
         watcher.cancel()
-    # Thread may have finished just as the client went away — do not
+    # Thread may have finished just as the client went away - do not
     # poison the cache with a run nobody will use.
     await check_cancelled(request, endpoint=endpoint, stage="svg_build", started_mono=started_mono)
     if "partial_data" in warnings:
         # Upstream lost layers/cells: serve what we have, but never pin it
-        # as the final render — the next request must refetch the gaps.
+        # as the final render - the next request must refetch the gaps.
         return svg_text, path_counts, raw_counts, False
     if store_me is not None:
         await _store_split(bbox, layers, store_me[0], store_me[1], bucket)
@@ -363,8 +364,8 @@ async def render(body: RenderRequest, request: Request) -> RenderResponse | JSON
 async def import_map(body: RenderRequest, request: Request) -> ImportResponse | JSONResponse:
     """Render a city map and register it as a penplot image.
 
-    Returns ``image_id`` — convert it with ``POST /v1/convert`` exactly
-    like an uploaded SVG (vector branch: every method applies — Contour
+    Returns ``image_id`` - convert it with ``POST /v1/convert`` exactly
+    like an uploaded SVG (vector branch: every method applies - Contour
     traces directly, Centerline/Hatch/Flow rasterize first so threshold
     and tone shape them; pen/page/label/display all apply). The citymap SVG is chrome-free, so
     the plotter draws only street geometry.
@@ -396,7 +397,7 @@ async def import_map(body: RenderRequest, request: Request) -> ImportResponse | 
     if sum(path_counts.values()) == 0:
         return error_response(
             422, ErrorCode.INVALID_PARAMS,
-            "No map features found for these layers in this area — "
+            "No map features found for these layers in this area - "
             "tick more layers or use a bigger area.",
         )
     try:
@@ -422,15 +423,15 @@ async def import_map(body: RenderRequest, request: Request) -> ImportResponse | 
     )
 
 
-@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)])
+@router.get("/results/{token}", dependencies=[Depends(require_rate_limit)], responses=RESULT_RESPONSES)
 async def get_result(token: str) -> Response:
-    """Serve a cached rendered SVG (sha1 token from ``svg_url``)."""
+    """Serve a cached result: PNG publicly, SVG only on the internal instance."""
     if len(token) != 40 or any(c not in "0123456789abcdef" for c in token.lower()):
         return error_response(404, "result_not_found", "Unknown map result.")
     svg_text = await cache_get(f"{KEY_PREFIX}:svg:{token.lower()}")
     if svg_text is None:
         return error_response(
             404, "result_not_found",
-            "Map result expired or unknown — re-run POST /v1/citymap/render.",
+            "Map result expired or unknown - re-run POST /v1/citymap/render.",
         )
-    return Response(content=svg_text, media_type="image/svg+xml")
+    return await result_response(svg_text, get_settings())

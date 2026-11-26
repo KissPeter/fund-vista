@@ -1,4 +1,4 @@
-"""Thin HTTP glue for /v1. No image math lives here — only:
+"""Thin HTTP glue for /v1. No image math lives here - only:
 
 validate input -> store/pipeline -> schema out, with all failures mapped to
 the ``{"error": {"code", "message"}}`` envelope so clients can switch on
@@ -19,7 +19,7 @@ import threading
 import time
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from redis.exceptions import RedisError
@@ -36,7 +36,7 @@ from backend.cancel import (
     start_disconnect_watcher,
 )
 from backend.http import client_ip, error_response
-from backend.penplot import imaging, stl_views
+from backend.penplot import imaging, public_result, stl_views
 from backend.penplot import tokens as design_tokens
 from backend.penplot.config import (
     ALLOWED_RASTER_EXTS,
@@ -117,7 +117,7 @@ def resolve_public_base(request: Request) -> str:
     """Absolute origin for result links (shop work order §3).
 
     ``PENPLOT_PUBLIC_BASE_URL`` wins when set (production behind a proxy);
-    otherwise the request's own origin is used. Always absolute — the shop
+    otherwise the request's own origin is used. Always absolute - the shop
     frontend runs on a different origin and cannot use relative links.
     """
     override = _settings.public_base_url.strip().rstrip("/")
@@ -588,7 +588,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
 
     P1: the result is content-addressed by ``convert_result_filename``
     (image_id + effective-params hash). When the SVG and its sidecar JSON
-    already exist, the response is rebuilt from metadata with zero CPU —
+    already exist, the response is rebuilt from metadata with zero CPU -
     nothing is parsed, probed or re-rendered. Misses run the pipeline with
     the same P2 checkpoints: 1. after validation + image lookup, before any
     CPU work; 2. before image decode; 3. after decode; 4. inside the CPU
@@ -606,7 +606,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
     is_vector = ext == "svg"
     filename = convert_result_filename(image_id, body.params, is_vector, _settings)
 
-    # P1 fast path: both the SVG and its sidecar are cached — serve the
+    # P1 fast path: both the SVG and its sidecar are cached - serve the
     # response from metadata (no image read, no probe, no CPU).
     meta = store.get_result_meta(filename)
     if meta is not None and store.has_result(filename):
@@ -632,7 +632,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
     # Authoritative dims (cheap re-probe; keeps stats honest even if the
     # cached file was replaced between upload and convert). Vector inputs
     # never need the low-res hint (it is raster-only), so we do not parse
-    # the SVG here — the pipeline resolves the real size from its own
+    # the SVG here - the pipeline resolves the real size from its own
     # (P5-cached) parse.
     src_w = src_h = 0.0
     if not is_vector:
@@ -694,7 +694,7 @@ async def convert(body: ConvertRequest, request: Request) -> ConvertResponse | J
     )
 
 
-@router.get("/results/{filename}", dependencies=[Depends(require_rate_limit)])
+@router.get("/results/{filename}", dependencies=[Depends(require_rate_limit)], responses=public_result.RESULT_RESPONSES)
 async def get_result(
     filename: str,
     download: bool = False,
@@ -702,14 +702,20 @@ async def get_result(
 ) -> Response:
     """Serve a stored convert result; previews stay clean, downloads stamp.
 
+    Public instances always answer PNG; the internal instance keeps the
+    byte-identical SVG for the shop server's order file.
+
     Plain ``GET`` returns the cached bytes byte-identical (previews, shop
     thumbnails). ``?download=1`` (or ``?credit=1``) applies
-    :func:`backend.penplot.svgmeta.stamp_download` at serve time — metadata
-    notice plus the centred domain line in the bottom margin — without ever
-    writing back to disk, so cached bytes stay deterministic. ``?download=1``
-    additionally answers ``Content-Disposition: attachment``; ``?credit=1``
-    keeps the inline disposition. Both are idempotent (already-stamped input
-    is a byte-identical no-op) and never touch plot geometry.
+    :func:`backend.penplot.svgmeta.stamp_download` at serve time - metadata
+    notice plus the centred domain line in the bottom margin - without ever
+    writing back to disk, so cached bytes stay deterministic. On a locked
+    instance the stamped SVG is rasterized, so a PNG preview and a PNG
+    download differ only by that visible credit. ``?download=1`` additionally
+    answers ``Content-Disposition: attachment`` with a ``.png`` filename on a
+    locked instance; ``?credit=1`` keeps the inline disposition. Both are
+    idempotent (already-stamped input is a byte-identical no-op) and never
+    touch plot geometry.
     """
     # Server-generated basenames only: convert results, STL view artworks and
     # composed STL sheets. Anything else is a 404, never a path traversal.
@@ -735,10 +741,83 @@ async def get_result(
     if download or credit:
         from backend.penplot import svgmeta as _svgmeta
 
+        # Stamp before rasterization so a locked PNG carries the same
+        # download-only credit as the internal SVG answer.
         svg = _svgmeta.stamp_download(svg, _settings)
+    if not _settings.allow_svg:
         if download:
-            headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+            png_name = filename[:-4] + ".png"
+            headers["Content-Disposition"] = f'attachment; filename="{png_name}"'
+        data, etag = await asyncio.to_thread(
+            public_result.public_result_png, svg, _settings
+        )
+        return public_result.png_response(data, etag, headers)
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return Response(content=svg, media_type="image/svg+xml", headers=headers)
+
+
+@router.post(
+    "/rasterize",
+    response_class=Response,
+    response_model=None,
+    responses={200: {"content": {"image/png": {}}}},
+    dependencies=[Depends(require_rate_limit)],
+)
+async def rasterize_svg(request: Request, payload: dict = Body(...)) -> Response:
+    """Rasterize one SVG to PNG for browser-reachable artwork previews.
+
+    This endpoint NEVER answers SVG: the vector stays in the request body and
+    the shop server, never a browser, is its intended caller. The PNG is
+    cached by content hash like a result preview.
+    """
+    svg = payload.get("svg")
+    if not isinstance(svg, str) or "<svg" not in svg[:2048].lower():
+        return error_response(
+            HTTP_422_UNPROCESSABLE_ENTITY, ErrorCode.UNSUPPORTED_MEDIA_TYPE,
+            "The body must carry an SVG document.",
+        )
+    if len(svg.encode("utf-8")) > _settings.max_upload_bytes:
+        return error_response(
+            HTTP_413_REQUEST_ENTITY_TOO_LARGE, ErrorCode.PAYLOAD_TOO_LARGE,
+            "The SVG is too large to rasterize.",
+        )
+    paper = payload.get("paper")
+    if paper is not None and (
+        not isinstance(paper, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", paper)
+    ):
+        return error_response(
+            HTTP_422_UNPROCESSABLE_ENTITY, ErrorCode.INVALID_PARAMS,
+            "paper must be a #rrggbb colour.",
+        )
+    try:
+        data, etag = await asyncio.to_thread(
+            public_result.public_result_png, svg, _settings, paper
+        )
+    except PenPlotError as exc:
+        return error_response(exc.status, exc.code, exc.message)
+    return public_result.png_response(
+        data,
+        etag,
+        {"X-Raster-Url": f"{resolve_public_base(request)}/v1/rasterized/{etag}.png"},
+    )
+
+
+@router.get(
+    "/rasterized/{filename}",
+    response_class=Response,
+    response_model=None,
+    responses={200: {"content": {"image/png": {}}}},
+    dependencies=[Depends(require_rate_limit)],
+)
+async def get_rasterized(filename: str) -> Response:
+    """Serve one cached raster preview PNG. The name is a content hash only."""
+    if not re.fullmatch(r"[0-9a-f]{64}\.png", filename):
+        return error_response(HTTP_404_NOT_FOUND, "result_not_found", "Unknown preview file.")
+    data = public_result.read_cached_png(filename[:-4], _settings)
+    if data is None:
+        return error_response(HTTP_404_NOT_FOUND, "result_not_found", "Unknown preview file.")
+    return public_result.png_response(data, filename[:-4])
 
 
 @router.get("/results/{filename}/meta", response_model=ResultMetaResponse,
@@ -852,7 +931,7 @@ async def health() -> HealthResponse | JSONResponse:
     """Dependency status for uptime monitoring (§6). Anonymous, unthrottled.
 
     200 ``ok`` when the store is writable and disk is free (Redis reports
-    honestly but never fails the check — memory fallback is a supported
+    honestly but never fails the check - memory fallback is a supported
     mode); 503 ``down`` when designs cannot be persisted.
     """
     store_writable = True

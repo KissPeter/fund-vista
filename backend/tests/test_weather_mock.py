@@ -152,6 +152,7 @@ def mock_app(tmp_path_factory):
     env.update({
         upstream_mock.ENV_VAR: "mock",
         "PENPLOT_DATA_DIR": str(tmp_path_factory.mktemp("weather-mock-data")),
+        "PENPLOT_ALLOW_SVG": "1",
         "LOG_LEVEL": "WARNING",
         "REDIS_CLOUD_URL": "redis://127.0.0.1:1/0",
         "PENPLOT_RATE_LIMIT": "100000",
