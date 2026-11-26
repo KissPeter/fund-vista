@@ -30,7 +30,9 @@ deterministic.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
+from xml.sax.saxutils import quoteattr
 
 #: Plotter ink hexes - the shop's ``RUNWAY_INK_HEX`` (issue #938) plus white
 #: (electric-blue paper's single ink). The pass files are re-stroked to these.
@@ -242,6 +244,27 @@ def _restroke(open_tag: str, hex_color: str) -> str:
     return open_tag.replace("<g", f'<g stroke="{hex_color}"', 1)
 
 
+def _name_root(root: str) -> str:
+    """Declare the Inkscape namespace so layer labels parse in a viewer."""
+    if "xmlns:inkscape=" in root:
+        return root
+    return root.replace(
+        "<svg",
+        '<svg xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"',
+        1,
+    )
+
+
+def _as_layer(open_tag: str, label: str) -> str:
+    """Name a group in Inkscape's layer panel and mark it as a layer."""
+    open_tag = re.sub(r'\sinkscape:label="[^"]*"', "", open_tag, count=1)
+    if "inkscape:groupmode=" not in open_tag:
+        open_tag = open_tag.replace(
+            "<g", '<g inkscape:groupmode="layer"', 1
+        )
+    return open_tag.replace("<g", f"<g inkscape:label={quoteattr(label)}", 1)
+
+
 def _has_ink(body: str) -> bool:
     """True when a group body would leave ink on the page (any element)."""
     return "<" in body
@@ -290,6 +313,69 @@ def split_by_ink(svg_text: str, group_ink) -> list[InkFile]:
         parts.append("</svg>")
         files.append(InkFile(ink=ink, layers=layers, svg="\n".join(parts) + "\n"))
     return files
+
+
+
+def composite_by_ink(svg_text: str, group_ink) -> InkFile | None:
+    """Merge every non-empty layer into one SVG, each group in its pen colour.
+
+    The draft's chunk order and root tag are kept; groups are re-stroked to
+    ``INK_HEX`` and labelled with their ink and group id, so one file shows the
+    whole design in named, coloured layers. Empty layers produce nothing.
+    """
+    root, chunks = _find_top_level_groups(svg_text)
+    parts: list[str] = [_name_root(root)]
+    layers: list[str] = []
+    for open_tag, maybe_body in chunks:
+        if maybe_body is None:
+            parts.append(open_tag)
+            continue
+        if not _has_ink(maybe_body):
+            continue
+        gid = _group_id(open_tag)
+        if gid:
+            layers.append(gid)
+        ink = group_ink(gid)
+        label = f"{ink} {gid}".strip()
+        parts.append(_as_layer(_restroke(open_tag, INK_HEX.get(ink, "")), label))
+        parts.append(maybe_body)
+        parts.append("</g>")
+    if not layers:
+        return None
+    parts.append("</svg>")
+    return InkFile(ink="composite", layers=layers, svg="\n".join(parts) + "\n")
+
+
+def colorize_composite(
+    svg_text: str,
+    colors: dict[str, str],
+    labels: dict[str, str] | None = None,
+) -> str:
+    """Restore per-group pen colours on a composed composite.
+
+    ``run_convert`` lays every pen out on the same sheet but emits one display
+    stroke colour for all groups. This recolours and names those top-level
+    groups after composition without touching geometry; ``colors[""]`` is the
+    main (Pen + furniture) group.
+    """
+    root, chunks = _find_top_level_groups(svg_text)
+    parts: list[str] = [_name_root(root)]
+    for open_tag, maybe_body in chunks:
+        if maybe_body is None:
+            parts.append(open_tag)
+            continue
+        gid = _group_id(open_tag)
+        color = colors.get(gid, colors.get("", ""))
+        if color:
+            open_tag = _restroke(open_tag, color)
+        label = (labels or {}).get(gid)
+        if label is not None:
+            open_tag = _as_layer(open_tag, label)
+        parts.append(open_tag)
+        parts.append(maybe_body)
+        parts.append("</g>")
+    parts.append("</svg>")
+    return "\n".join(parts) + "\n"
 
 
 def _default_ink(group_ink):

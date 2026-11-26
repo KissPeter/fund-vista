@@ -155,7 +155,7 @@ class InkFileOut(BaseModel):
 
 
 class InkSplitResponse(BaseModel):
-    """One SVG per distinct ink, plus the split's provenance."""
+    """Plot files: one layered SVG for airport/traffic, else one per ink."""
 
     model_config = ConfigDict(extra="forbid")
 
